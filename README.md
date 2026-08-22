@@ -56,38 +56,25 @@
 
 ## 安装（挂载到 profile）
 
-**方式一：npm 安装（推荐）**
+插件通过 **bundle patch** 挂载：把包加入 `dsh.profile.bundles` 后，dsh 启动时
+按顺序合成每个 bundle 的 patch（`dsh.bundle.patch` 指向的 `cordis.patch.yml`）
+作为插件行。**不要再往 profile 的 `cordis.patch.yml` 手动插入同名行**——两层
+同时存在会启动失败：`duplicate loader entry id: mcp-project`（EntryGroup
+拒绝重复 id）。二选一：留在 bundles，或移出 bundles 改手动插行，不能同时。
 
-```powershell
-# web profile 示例；headless 等其他 profile 同样操作
-cd C:\Users\haima\.dsh\profiles\web
-pnpm add dsh-project-mcp-manager
-```
-
-**方式二：dsh 官方插件命令**（自动处理依赖与 bundle patch 挂载）
-
-```powershell
-dsh plugin add dsh-project-mcp-manager --profile web
-```
-
-两种方式装完后，在 `cordis.patch.yml` 追加（dsh 官方 patch 语法）：
-
-```yaml
-- insert:
-    - id: mcp-project
-      name: dsh-project-mcp-manager
-```
-
-profile patch 由 dsh 自带 HMR 热装载，无需重启；未生效时重启 dsh。
-包自带 `cordis.patch.yml` 的 bundle patch（`dsh.bundle.patch`），
-`dsh plugin add` 安装时会自动挂载。
-
-**本地开发安装**（源码即改即用，junction 实时同步）：
+**本地开发安装**（未发布 npm 前的推荐方式，junction 实时同步源码）：
 
 ```powershell
 cd C:\Users\haima\.dsh\profiles\web
-pnpm add link:D:\path\to\dsh-project-mcp-manager
+pnpm add link:D:\path\to\dsh-mcp-project   # 源码包目录
 ```
+
+然后在 `package.json` 的 `dsh.profile.bundles` 数组末尾追加
+`"dsh-project-mcp-manager"`，重启 dsh 生效（HMR 只热装首次 insert 的行，
+换实现需重启宿主进程）。
+
+**发布后安装**：`pnpm add dsh-project-mcp-manager`（或 dsh 的插件子命令，
+`dsh plugin --profile web ...`），同样确认包已加入 `dsh.profile.bundles`。
 
 ## 与 dsh-skill-mcp-panel 的关系
 
