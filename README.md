@@ -62,33 +62,45 @@
 同时存在会启动失败：`duplicate loader entry id: mcp-project`（EntryGroup
 拒绝重复 id）。二选一：留在 bundles，或移出 bundles 改手动插行，不能同时。
 
-**方式一：npm 安装（推荐）**
+**前置：安装 dsh 本体**（尚未安装 dsh 的用户）：
 
 ```powershell
-# dshHome 默认为 %USERPROFILE%\.dsh（设置了 DSH_HOME 则用其值）；web profile 示例，其他 profile 同理
-cd $env:USERPROFILE\.dsh\profiles\web
-pnpm add dsh-project-mcp-manager
+npm install -g @deepseek-ai/dsh        # npm 官方包
+npm install -g deepseek-ai/dsh         # 或从 GitHub 源码安装
 ```
 
-**方式二：本地开发安装**（junction 实时同步源码，改代码即生效）：
+**方式一：dsh 插件命令（推荐）**——`dsh plugin` 在 profile 目录内转发 pnpm，
+负责安装/升级依赖：
+
+```powershell
+# 安装最新版（web profile 示例；headless 等其他 profile 替换名字即可）
+dsh plugin --profile web add dsh-project-mcp-manager@latest
+
+# 安装指定版本（版本号可先 npm view dsh-project-mcp-manager versions 查看）
+dsh plugin --profile web add dsh-project-mcp-manager@0.1.0
+```
+
+**方式二：直接 pnpm 安装**（与方式一等价）：
+
+```powershell
+# dshHome 默认为 %USERPROFILE%\.dsh（设置了 DSH_HOME 则用其值）
+cd $env:USERPROFILE\.dsh\profiles\web
+pnpm add dsh-project-mcp-manager@latest
+```
+
+**方式三：本地开发安装**（junction 实时同步源码，改代码即生效）：
 
 ```powershell
 cd $env:USERPROFILE\.dsh\profiles\web
 pnpm add link:<你的 dsh-mcp-project 源码目录>   # 例如 D:\dev\dsh-mcp-project
 ```
 
-两种方式装完后，都在 `package.json` 的 `dsh.profile.bundles` 数组末尾追加
+**三种方式装完后**，都在 `package.json` 的 `dsh.profile.bundles` 数组末尾追加
 `"dsh-project-mcp-manager"`，重启 dsh 生效（HMR 只热装首次 insert 的行，
 换实现需重启宿主进程）。
 
-## 与 dsh-skill-mcp-panel 的关系
-
-- 已装的 v2.0.1 面板：无项目级装载能力，与本插件不冲突；其全局受管块行
-  会被本插件读取（loader entries），项目同名行自动改名避开。
-- v2.1 面板源码（含 ProjectMcpRegistry）：与本插件功能重复，**同一进程内
-  两者只能启用一个**（双装载同一 serverName 会触发 mcp-client 的进程根
-  预留冲突）。v2.1 写出的项目文件行（`panel-mcp-` 前缀 id）本插件可直接
-  读取，过渡平滑。
+**升级/锁定版本**：重跑方式一的 `add` 命令并带上目标版本后缀——`@latest`
+升级到最新，`@0.1.0` 锁定到指定版本。
 
 ## 构建与测试
 
