@@ -65,16 +65,16 @@
 **方式一：npm 安装（推荐）**
 
 ```powershell
-# web profile 示例，其他 profile 同理
-cd C:\Users\haima\.dsh\profiles\web
+# dshHome 默认为 %USERPROFILE%\.dsh（设置了 DSH_HOME 则用其值）；web profile 示例，其他 profile 同理
+cd $env:USERPROFILE\.dsh\profiles\web
 pnpm add dsh-project-mcp-manager
 ```
 
 **方式二：本地开发安装**（junction 实时同步源码，改代码即生效）：
 
 ```powershell
-cd C:\Users\haima\.dsh\profiles\web
-pnpm add link:D:\path\to\dsh-mcp-project   # 源码包目录
+cd $env:USERPROFILE\.dsh\profiles\web
+pnpm add link:<你的 dsh-mcp-project 源码目录>   # 例如 D:\dev\dsh-mcp-project
 ```
 
 两种方式装完后，都在 `package.json` 的 `dsh.profile.bundles` 数组末尾追加
