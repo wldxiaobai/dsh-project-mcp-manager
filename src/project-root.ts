@@ -1,5 +1,5 @@
 /**
- * dsh-mcp-project —— 项目锚点解析。
+ * dsh-project-mcp-manager —— 项目锚点解析。
  *
  * 与 dsh 官方 skills 发现（@deepseek-ai/dsh-skill-filesystem）的项目根规则
  * 一致：向上找最近的含 .git 的祖先目录，找不到就退回 cwd 本身。

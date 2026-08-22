@@ -1,7 +1,7 @@
 {
-  "name": "dsh-mcp-project",
+  "name": "dsh-project-mcp-manager",
   "version": "0.1.0",
-  "description": "dsh-mcp-project: per-project MCP server loading for DSH. Reads <projectRoot>/.dsh/mcp.yml, mounts each server as an @deepseek-ai/dsh-mcp-client instance, hot-reloads on file change, and scopes tool visibility per session.",
+  "description": "dsh-project-mcp-manager: per-project MCP server loading for DSH. Reads <projectRoot>/.dsh/mcp.yml, mounts each server as an @deepseek-ai/dsh-mcp-client instance, hot-reloads on file change, and scopes tool visibility per session.",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

@@ -1,5 +1,5 @@
 /**
- * dsh-mcp-project —— 独立项目级 MCP 自动加载插件（宿主半区，无 UI）。
+ * dsh-project-mcp-manager —— 独立项目级 MCP 自动加载插件（宿主半区，无 UI）。
  *
  * 用法：在项目根创建 <projectRoot>/.dsh/mcp.yml（格式与 profile
  * cordis.patch.yml 的受管块一致），在该项目开启 dsh 会话时自动装载其中的
@@ -11,7 +11,7 @@ import { Context } from "@deepseek-ai/cordis";
 import { MCP_PLUGIN_NAME } from "./mcp-file.js";
 import { ProjectMcpRegistry } from "./registry.js";
 
-export const name = "dsh-mcp-project";
+export const name = "dsh-project-mcp-manager";
 /** agents 为硬依赖：宿主启动早期插件行先于 agents 服务装载时，等待其就绪后再 apply，
  *  保证构造时的 liveAgents 补扫能看到已恢复/已存在的会话。 */
 export const inject = ["tools", "agents"];

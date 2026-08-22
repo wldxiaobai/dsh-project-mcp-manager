@@ -1,4 +1,4 @@
-# dsh-mcp-project
+# dsh-project-mcp-manager
 
 独立项目级 MCP 自动加载插件：在项目根 `<projectRoot>/.dsh/mcp.yml` 写入 MCP
 服务器配置，在该项目开启 dsh 会话时自动装载（经官方
@@ -31,7 +31,7 @@
 一致（begin/end 标记之间的 YAML insert 列表），每行一个 MCP 服务器：
 
 ```yaml
-# >>> dsh-mcp-project:mcp:begin
+# >>> dsh-project-mcp-manager:mcp:begin
 - insert:
     - id: panel-mcp-gitlab
       name: '@deepseek-ai/dsh-mcp-client'
@@ -48,7 +48,7 @@
           initialDelayMs: 500
           maxDelayMs: 30000
           maxAttempts: 10
-# <<< dsh-mcp-project:mcp:end
+# <<< dsh-project-mcp-manager:mcp:end
 ```
 
 `transport` 支持 `stdio`（command/args/env/cwd）与 `streamable-http`
@@ -61,13 +61,13 @@
 ```powershell
 # web profile 示例；headless 等其他 profile 同样操作
 cd C:\Users\haima\.dsh\profiles\web
-pnpm add dsh-mcp-project
+pnpm add dsh-project-mcp-manager
 ```
 
 **方式二：dsh 官方插件命令**（自动处理依赖与 bundle patch 挂载）
 
 ```powershell
-dsh plugin add dsh-mcp-project --profile web
+dsh plugin add dsh-project-mcp-manager --profile web
 ```
 
 两种方式装完后，在 `cordis.patch.yml` 追加（dsh 官方 patch 语法）：
@@ -75,7 +75,7 @@ dsh plugin add dsh-mcp-project --profile web
 ```yaml
 - insert:
     - id: mcp-project
-      name: dsh-mcp-project
+      name: dsh-project-mcp-manager
 ```
 
 profile patch 由 dsh 自带 HMR 热装载，无需重启；未生效时重启 dsh。
@@ -86,7 +86,7 @@ profile patch 由 dsh 自带 HMR 热装载，无需重启；未生效时重启 d
 
 ```powershell
 cd C:\Users\haima\.dsh\profiles\web
-pnpm add link:D:\path\to\dsh-mcp-project
+pnpm add link:D:\path\to\dsh-project-mcp-manager
 ```
 
 ## 与 dsh-skill-mcp-panel 的关系

@@ -85,7 +85,7 @@ function fakeAgent(id, cwd) {
   };
 }
 
-const dir = await mkdtemp(join(tmpdir(), "dsh-mcp-project-registry-"));
+const dir = await mkdtemp(join(tmpdir(), "dsh-project-mcp-manager-registry-"));
 const originalCwd = process.cwd();
 try {
   process.chdir(dir); // 进程 cwd 兜底指向 temp 目录，避免污染断言

@@ -1,5 +1,5 @@
 /**
- * dsh-mcp-project —— MCP 服务器配置模型（纯函数）。
+ * dsh-project-mcp-manager —— MCP 服务器配置模型（纯函数）。
  *
  * 模型本身不含 scope：scope 是配置所在文件（profile cordis.patch.yml =
  * 全局，<projectRoot>/.dsh/mcp.yml = 项目）的属性。env/headers 的 null 是
