@@ -62,19 +62,24 @@
 同时存在会启动失败：`duplicate loader entry id: mcp-project`（EntryGroup
 拒绝重复 id）。二选一：留在 bundles，或移出 bundles 改手动插行，不能同时。
 
-**本地开发安装**（未发布 npm 前的推荐方式，junction 实时同步源码）：
+**方式一：npm 安装（推荐）**
+
+```powershell
+# web profile 示例，其他 profile 同理
+cd C:\Users\haima\.dsh\profiles\web
+pnpm add dsh-project-mcp-manager
+```
+
+**方式二：本地开发安装**（junction 实时同步源码，改代码即生效）：
 
 ```powershell
 cd C:\Users\haima\.dsh\profiles\web
 pnpm add link:D:\path\to\dsh-mcp-project   # 源码包目录
 ```
 
-然后在 `package.json` 的 `dsh.profile.bundles` 数组末尾追加
+两种方式装完后，都在 `package.json` 的 `dsh.profile.bundles` 数组末尾追加
 `"dsh-project-mcp-manager"`，重启 dsh 生效（HMR 只热装首次 insert 的行，
 换实现需重启宿主进程）。
-
-**发布后安装**：`pnpm add dsh-project-mcp-manager`（或 dsh 的插件子命令，
-`dsh plugin --profile web ...`），同样确认包已加入 `dsh.profile.bundles`。
 
 ## 与 dsh-skill-mcp-panel 的关系
 
