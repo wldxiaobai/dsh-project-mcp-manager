@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ProjectMcpRegistry, projectMcpFile } from "../lib/registry.js";
@@ -9,6 +9,19 @@ let passed = 0;
 function pass(name) {
   passed += 1;
   console.log("PASS  " + name);
+}
+
+const diagFile = (projectRoot) => join(projectRoot, ".dsh", ".mcp-diag.json");
+async function pathExists(path) {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function readDiag(projectRoot) {
+  return JSON.parse(await readFile(diagFile(projectRoot), "utf8"));
 }
 
 const stdioRow = (name, command = "node") => ({
@@ -93,6 +106,8 @@ try {
   const projectB = join(dir, "projB");
   const fileA = projectMcpFile(projectA);
   await writeManagedRows(fileA, [stdioRow("gitlab")], { createIfMissing: true });
+  // 项目 B：有 .dsh 目录（如放了 skills）但没有 mcp.yml —— 纯"零配置项目"场景。
+  await mkdir(join(projectB, ".dsh"), { recursive: true });
 
   const ctx = fakeCtx();
   const registry = new ProjectMcpRegistry(ctx, {
@@ -148,12 +163,43 @@ try {
   assert.equal(waited, true);
   pass("registry waitForState confirms unmounted state");
 
-  // 6. 清理：effect 收集的 disposer 关闭 watcher、释放装载（chokidar 句柄）
+  // 6. 诊断落盘：零配置项目（有 .dsh 目录但无 mcp.yml）不写诊断、不算已知项目；
+  //    已配置项目的扫描/装载仍留痕。修复前：第二轮 reconcile 起每轮都往
+  //    <projectB>/.dsh/.mcp-diag.json 追加一条误报的 ENOENT "error"。
+  await registry.reconcileNow();
+  await registry.reconcileNow();
+  assert.equal(await pathExists(diagFile(projectB)), false, "clean project without mcp.yml must not get a diag file");
+  assert.equal((await registry.snapshot()).find((file) => file.project === projectB), undefined, "project without config is not a known project");
+  const diagA = await readDiag(projectA);
+  assert.ok(diagA.some((row) => row.kind === "scan" && row.ok === true && row.rows.includes("gitlab")), "configured project still logs its scans");
+  assert.equal(diagA.some((row) => row.ok === false), false, "no spurious scan error recorded for a project that only emptied its rows");
+  pass("registry writes no diagnostics for a clean project without mcp.yml");
+
+  // 7. 真异常仍要留痕：装载存续期间 mcp.yml 被删除 → scan 记 ok:false + ENOENT 并卸载
+  const projectC = join(dir, "projC");
+  await writeManagedRows(projectMcpFile(projectC), [stdioRow("echo-c")], { createIfMissing: true });
+  // 项目由会话 cwd / 进程 cwd 发现，新目录必须先有会话指向它
+  const agentC = fakeAgent("session-c", projectC);
+  ctx.agentsList.push(agentC);
+  await registry.reconcileNow();
+  assert.ok(ctx.mounts.some((config) => config.serverName === "echo-c"), "project C server mounted");
+  assert.equal(await pathExists(diagFile(projectC)), true, "configured project gets a diag file");
+  await rm(projectMcpFile(projectC), { force: true });
+  await registry.reconcileNow();
+  const vanished = (await readDiag(projectC)).filter((row) => row.kind === "scan").at(-1);
+  assert.equal(vanished.ok, false, "losing mcp.yml under a live mount is reported as an error");
+  assert.match(String(vanished.error), /ENOENT/);
+  assert.ok(ctx.disposals.includes("echo-c"), "server unmounted after its config file vanished");
+  pass("registry records a real scan error when the config file disappears under a live mount");
+
+  // 8. 清理：effect 收集的 disposer 关闭 watcher、不重复 dispose 已卸载的 fiber
+  const disposedBeforeCleanup = [...ctx.disposals];
+  assert.deepEqual(disposedBeforeCleanup, [mounted.serverName, "echo-c"], "both mounted servers were disposed by their own unmount paths");
   for (const disposer of ctx.disposers) {
     const cleanup = disposer();
     if (typeof cleanup === "function") cleanup();
   }
-  assert.deepEqual(ctx.disposals, [mounted.serverName]);
+  assert.deepEqual(ctx.disposals, disposedBeforeCleanup, "cleanup does not re-dispose already-unmounted fibers");
   pass("registry cleanup disposes watcher and mounted fibers");
 } finally {
   process.chdir(originalCwd);
