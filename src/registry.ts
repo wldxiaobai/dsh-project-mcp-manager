@@ -21,8 +21,8 @@
  * 会话”场景）。
  */
 import chokidar from "chokidar";
-import { join, resolve } from "node:path";
-import { readFile, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as mcpClient from "@deepseek-ai/dsh-mcp-client";
 import { extractManagedRows, readPatchFile, type PatchRow } from "./mcp-file.js";
 import { findProjectRoot } from "./project-root.js";
@@ -353,14 +353,23 @@ export class ProjectMcpRegistry {
           rows.push({ rawName, row });
         }
       } catch (catchError) {
-        if (this.projects.has(key) || !String(catchError).includes("ENOENT")) {
+        const message = catchError instanceof Error ? catchError.message : String(catchError);
+        // 「配置文件不存在」(ENOENT) 只有在该项目确实有活着的装载时才算异常——
+        // 意味着文件在装载之后被删/移走。零配置项目缺文件是常态：不能用
+        // projects.has(key) 当判据，空项目条目也会让它恒真（误报根因）。
+        const liveServers = this.projects.get(key)?.servers.size ?? 0;
+        if (liveServers > 0 || !message.includes("ENOENT")) {
           ok = false;
-          error = catchError instanceof Error ? catchError.message : String(catchError);
+          error = message;
         }
         rows = [];
       }
       desiredByProject.set(key, { projectRoot, rows, ok, error });
-      await this.writeDiag(projectRoot, { kind: "scan", ok, error, rows: rows.map((row) => row.rawName) });
+      // 诊断只记有信息量的扫描：异常，或确实解析出了配置行。干净且无配置的
+      // 项目不写任何记录——否则每个被访问过的目录都会凭空多出 .dsh/.mcp-diag.json。
+      if (!ok || rows.length > 0) {
+        await this.writeDiag(projectRoot, { kind: "scan", ok, error, rows: rows.map((row) => row.rawName) });
+      }
     }
 
     const catalogProjects = [...desiredByProject.values()]
@@ -378,6 +387,10 @@ export class ProjectMcpRegistry {
   private async reconcileProject(key: string, entry: { projectRoot: string; rows: DesiredProjectRow[]; ok: boolean; error: string | null }) {
     let project = this.projects.get(key);
     if (project === undefined) {
+      // 只为「确实有行要装载」的项目建条目：否则会话/进程访问过的每个目录都会
+      // 永久留在 projects 里（knownProjects 会一直把它带上），零配置项目也就
+      // 不该算作已知项目。已有条目保留，用于卸载后仍能在快照里看到该文件。
+      if (entry.rows.length === 0) return;
       project = { projectRoot: entry.projectRoot, servers: new Map() };
       this.projects.set(key, project);
     }
@@ -389,6 +402,7 @@ export class ProjectMcpRegistry {
   }
 
   // ── 装载诊断（写 <projectRoot>/.dsh/.mcp-diag.json，宿主日志不可见时定位失败）──
+  // 调用方只在有异常或有配置行时写入：无配置的干净项目不创建该文件。
 
   private async writeDiag(projectRoot: string, event: Record<string, unknown>): Promise<void> {
     try {
@@ -402,6 +416,8 @@ export class ProjectMcpRegistry {
       }
       lines.push({ ts: new Date().toISOString(), ...event });
       if (lines.length > 30) lines = lines.slice(-30);
+      // .dsh 可能已被用户删掉（而项目仍有活装载）：补建目录，避免诊断静默丢失。
+      await mkdir(dirname(path), { recursive: true });
       await writeFile(path, JSON.stringify(lines, null, 2), "utf8");
     } catch {
       // 诊断失败不影响主流程
