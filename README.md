@@ -1,5 +1,7 @@
 # dsh-project-mcp-manager
 
+English | [中文](docs/README.zh.md)
+
 A project-level MCP auto-loading plugin for DSH: write MCP server configs in
 `<projectRoot>/.dsh/mcp.yml` and they are mounted automatically (via the
 official `@deepseek-ai/dsh-mcp-client`) whenever a dsh session opens in that

@@ -1,5 +1,7 @@
 # dsh-project-mcp-manager
 
+[English](../README.md) | 中文
+
 项目级 MCP 自动加载插件：在项目根 `<projectRoot>/.dsh/mcp.yml` 写入 MCP
 服务器配置，在该项目开启 dsh 会话时自动装载（经官方
 `@deepseek-ai/dsh-mcp-client`），文件改动热重载到运行中的 dsh 进程，并按
