@@ -21,11 +21,18 @@ export const DEFAULT_RECONNECT = {
 
 const serverNameSchema = z.string().regex(SERVER_NAME_RE, "serverName 只能包含 1-32 位字母、数字、下划线或连字符");
 const secretMapSchema = z.record(z.string(), z.string().nullable()).optional();
+/**
+ * 与官方 dsh-mcp-client 的 reconnect 上限一致（@deepseek-ai/dsh-mcp-client
+ * lib/index.js:734-735）；2147483647 = MAX_TIMER_DELAY_MS（@deepseek-ai/
+ * dsh-timeout，Node 不钳制的最大 timer 延迟）。上限不镜像的话越界值会绕过
+ * 本地校验、到 ctx.plugin 装载时才以 plugin-throw 爆错，归因更晚更难查。
+ */
+export const MAX_TIMER_DELAY_MS = 2147483647;
 const reconnectSchema = z.object({
   enabled: z.boolean().default(DEFAULT_RECONNECT.enabled),
-  initialDelayMs: z.number().int().min(1).default(DEFAULT_RECONNECT.initialDelayMs),
-  maxDelayMs: z.number().int().min(1).default(DEFAULT_RECONNECT.maxDelayMs),
-  maxAttempts: z.number().int().min(1).default(DEFAULT_RECONNECT.maxAttempts)
+  initialDelayMs: z.number().int().min(1).max(MAX_TIMER_DELAY_MS).default(DEFAULT_RECONNECT.initialDelayMs),
+  maxDelayMs: z.number().int().min(1).max(MAX_TIMER_DELAY_MS).default(DEFAULT_RECONNECT.maxDelayMs),
+  maxAttempts: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).default(DEFAULT_RECONNECT.maxAttempts)
 }).default({ ...DEFAULT_RECONNECT });
 
 export const stdioServerSchema = z.object({
@@ -283,6 +290,12 @@ export function patchRowToView(row: PatchRow, scope?: McpScopeInfo, effectiveSer
 /** 从 patch 行读取完整输入（含 secret 值，仅供本机装载/测试使用，不跨 RPC）。 */
 export function inputFromPatchRow(row: PatchRow): McpServerInput {
   const config = configFromPatchRow(row) ?? {};
+  // 显式拒绝未知 transport：此前非 "streamable-http" 一律落 stdio 分支，
+  // `transport: http` 之类的笔误报的是「command 必填」而非「未知 transport」。
+  const transportRaw = config.transport;
+  if (transportRaw !== undefined && transportRaw !== "stdio" && transportRaw !== "streamable-http") {
+    throw new Error('transport 必须为 "stdio" 或 "streamable-http"，当前为 ' + JSON.stringify(transportRaw));
+  }
   const serverName = asString(config.serverName, serverNameFromRowId(row.id) ?? "");
   const common = {
     serverName,

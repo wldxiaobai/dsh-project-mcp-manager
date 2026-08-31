@@ -671,7 +671,17 @@ export class ProjectMcpRegistry {
         out.push(file);
         continue;
       }
-      for (const row of extractManagedRows(raw)) {
+      let rows: PatchRow[];
+      try {
+        rows = extractManagedRows(raw);
+      } catch (error) {
+        // 受管块损坏 / 不支持的标签（如 !!js）：只标该文件失败，不炸全局快照。
+        file.ok = false;
+        file.error = error instanceof Error ? error.message : String(error);
+        out.push(file);
+        continue;
+      }
+      for (const row of rows) {
         const rawName = rowNameOf(row);
         if (rawName === undefined) continue;
         const view = patchRowToView(row, { kind: "workspace", path: entry.projectRoot });

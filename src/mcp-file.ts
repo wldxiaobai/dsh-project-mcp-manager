@@ -88,6 +88,15 @@ export function extractManagedRows(raw: string): PatchRow[] {
   const blockText = raw.slice(blockStart + 1, end);
   const doc = parseDocument(blockText, { logLevel: "silent" });
   if (doc.errors.length > 0) throw new Error("受管块解析失败：" + String(doc.errors[0]?.message ?? doc.errors[0]));
+  // 原生 cordis 方言的 `!!js` 标签（cordis-plugin-include 的
+  // js-yaml JSON_SCHEMA.extend(JsExpr)，由 Loader 求值）在 yaml 包中无法
+  // 解析：只产生 Unresolved tag 警告，值会静默降级为 "process.env.X" 字面
+  // 量字符串（env/headers 拿到假值，disabled 表达式因 !== true 被当启用装载）。
+  // 受管块内出现任何未解析标签都必须显式报错，不能带病装载。
+  const unresolved = doc.warnings.find((warning) => /Unresolved tag/.test(String(warning?.message ?? warning)));
+  if (unresolved !== undefined) {
+    throw new Error("受管块包含不支持的 YAML 标签：原生 cordis 方言 `!!js` 不能用于项目 mcp.yml，env/headers/disabled 请写字面值。位置：" + String(unresolved.message ?? unresolved));
+  }
   const parsed = doc.toJS();
   if (!Array.isArray(parsed)) throw new Error("受管块内容必须是 YAML 数组");
   return flattenPatchRows(parsed);

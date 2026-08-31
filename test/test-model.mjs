@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import {
+  MAX_TIMER_DELAY_MS,
   SERVER_NAME_RE,
   denySetFor,
   effectiveServerNames,
+  inputFromPatchRow,
   mcpServerInputSchema,
   mergeSecretPatch,
   namespacedServerName,
@@ -119,6 +121,28 @@ pass("denySetFor scopes visibility to the session's own project");
 assert.equal(SERVER_NAME_RE.test("a_b-1"), true);
 assert.equal(SERVER_NAME_RE.test("bad/name"), false);
 pass("serverName regex matches official contract");
+
+// 11. 未知 transport 显式报错（此前落 stdio 分支，误报「command 必填」）
+expectThrow(
+  "unknown transport reports the real problem",
+  () => inputFromPatchRow({ id: "panel-mcp-x", name: "@deepseek-ai/dsh-mcp-client", config: { serverName: "x", transport: "http", url: "http://localhost:3000/mcp" } }),
+  /transport 必须为 "stdio" 或 "streamable-http"/
+);
+// 已知 transport 不受影响
+assert.equal(inputFromPatchRow({ id: "panel-mcp-x", name: "@deepseek-ai/dsh-mcp-client", config: { serverName: "x", transport: "stdio", command: "node" } }).transport, "stdio");
+assert.equal(inputFromPatchRow({ id: "panel-mcp-x", name: "@deepseek-ai/dsh-mcp-client", config: { serverName: "x", transport: "streamable-http", url: "http://localhost:3000/mcp" } }).transport, "streamable-http");
+pass("known transports still parse through inputFromPatchRow");
+
+// 12. reconnect 上限镜像官方（dsh-mcp-client lib/index.js:734-735）
+expectThrow("maxDelayMs above MAX_TIMER_DELAY_MS rejected", () => mcpServerInputSchema.parse({
+  serverName: "x", transport: "stdio", command: "n", reconnect: { maxDelayMs: MAX_TIMER_DELAY_MS + 1 }
+}), /maxDelayMs/);
+expectThrow("initialDelayMs above MAX_TIMER_DELAY_MS rejected", () => mcpServerInputSchema.parse({
+  serverName: "x", transport: "stdio", command: "n", reconnect: { initialDelayMs: 2147483648 }
+}), /initialDelayMs/);
+assert.equal(MAX_TIMER_DELAY_MS, 2147483647);
+assert.equal(mcpServerInputSchema.parse({ serverName: "x", transport: "stdio", command: "n", reconnect: { maxDelayMs: MAX_TIMER_DELAY_MS } }).reconnect.maxDelayMs, MAX_TIMER_DELAY_MS);
+pass("reconnect delays clamped to the official MAX_TIMER_DELAY_MS");
 
 console.log("\n" + passed + " passed, 0 failed");
 console.log("ALL MCP MODEL TESTS PASSED");

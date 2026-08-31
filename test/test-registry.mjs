@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ProjectMcpRegistry, projectMcpFile } from "../lib/registry.js";
-import { writeManagedRows } from "../lib/mcp-file.js";
+import { MCP_BLOCK_BEGIN, MCP_BLOCK_END, writeManagedRows } from "../lib/mcp-file.js";
 
 let passed = 0;
 function pass(name) {
@@ -192,9 +192,43 @@ try {
   assert.ok(ctx.disposals.includes("echo-c"), "server unmounted after its config file vanished");
   pass("registry records a real scan error when the config file disappears under a live mount");
 
-  // 8. 清理：effect 收集的 disposer 关闭 watcher、不重复 dispose 已卸载的 fiber
+  // 8. 原生 `!!js` 标签（官方 README 的 env 示例写法）在项目文件里必须显式
+  //    拒绝：先正常装载一行，再把块改成含 !!js —— 重对账应卸载该行、diag 留
+  //    痕，快照把该文件标 ok:false（带 !!js 错误）而不是整体炸掉。
+  const projectD = join(dir, "projD");
+  await writeManagedRows(projectMcpFile(projectD), [stdioRow("echo-d")], { createIfMissing: true });
+  const agentD = fakeAgent("session-d", projectD);
+  ctx.agentsList.push(agentD);
+  await registry.reconcileNow();
+  assert.ok(ctx.mounts.some((config) => config.serverName === "echo-d"), "project D baseline row mounted");
+  await writeFile(projectMcpFile(projectD), [
+    MCP_BLOCK_BEGIN,
+    "- insert:",
+    "    - id: panel-mcp-echo-d",
+    "      name: '@deepseek-ai/dsh-mcp-client'",
+    "      config:",
+    "        serverName: echo-d",
+    "        transport: stdio",
+    "        command: node",
+    "        env:",
+    "          TOKEN: !!js process.env.MCP_TOKEN",
+    MCP_BLOCK_END,
+    ""
+  ].join("\n"), "utf8");
+  await registry.reconcileNow();
+  assert.ok(ctx.disposals.includes("echo-d"), "row unmounted when its file became unparseable");
+  assert.equal(ctx.mounts.filter((config) => config.serverName === "echo-d").length, 1, "!!js file must not re-mount");
+  const snapD = (await registry.snapshot()).find((entryFile) => entryFile.project === projectD);
+  assert.ok(snapD !== undefined && snapD.ok === false, "snapshot marks the bad file instead of throwing");
+  assert.match(String(snapD.error), /!!js/);
+  assert.equal(snapD.servers.length, 0);
+  const diagD = await readDiag(projectD);
+  assert.ok(diagD.some((row) => row.kind === "scan" && row.ok === false && String(row.error).includes("!!js")), "diag records the rejection");
+  pass("registry rejects native !!js tags in project files with an explicit error");
+
+  // 9. 清理：effect 收集的 disposer 关闭 watcher、不重复 dispose 已卸载的 fiber
   const disposedBeforeCleanup = [...ctx.disposals];
-  assert.deepEqual(disposedBeforeCleanup, [mounted.serverName, "echo-c"], "both mounted servers were disposed by their own unmount paths");
+  assert.deepEqual(disposedBeforeCleanup, [mounted.serverName, "echo-c", "echo-d"], "all mounted servers were disposed by their own unmount paths");
   for (const disposer of ctx.disposers) {
     const cleanup = disposer();
     if (typeof cleanup === "function") cleanup();

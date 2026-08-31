@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Managed-block reader regression tests (`test/test-mcp-file.mjs`): literal rows load;
+  `!!js` in `env` or `disabled` and any other unresolved YAML tag inside the managed block
+  fail the file with an explicit error; tags outside the markers do not affect reading, and
+  panel writes preserve out-of-marker content byte-for-byte.
+- Registry regression scenario: a hot-reloaded file whose managed block becomes invalid is
+  unmounted (previously mounted servers disposed) without a remount attempt; the snapshot
+  reports the file error and the diagnostic file keeps the reason.
+- README and `docs/README.zh.md`: a "Divergences from the native cordis dialect" section
+  (`!!js` unsupported, `env`/`headers` `KEY: null` superset semantics), and a note that
+  model-visible tool names are built from the effective (possibly renamed) server name.
+- Repository guidance `AGENTS.md`: authoritative project overview, key behavior contracts,
+  and — as the single home the git skills point to — the Git commit cadence and branch
+  policy (features and fixes commit directly to `dev`; `main` only advances through
+  user-initiated PR/MR).
+
+### Changed
+
+- A project whose managed block fails to parse no longer takes down the whole snapshot: the
+  error is reported per file (`ok: false` plus the message) and that project's section is
+  empty, while every other project still reports its servers.
+- `reconnect.initialDelayMs` and `reconnect.maxDelayMs` are now bounded by 2147483647
+  (`MAX_TIMER_DELAY_MS`, mirroring `@deepseek-ai/dsh-mcp-client`'s timer ceiling), and
+  `reconnect.maxAttempts` by `Number.MAX_SAFE_INTEGER`. Out-of-range values are rejected at
+  config load instead of surfacing later as a plugin-mount failure.
+
+### Fixed
+
+- Native cordis `!!js` tags (js-yaml expressions the profile loader evaluates) inside the
+  managed block no longer load silently as literal strings. An unresolved tag now fails the
+  file with an explicit error naming the offending position, logged and written to
+  `.dsh/.mcp-diag.json` — previously such a line mounted with e.g.
+  `TOKEN: "process.env.GITHUB_TOKEN"` verbatim, or an expression-disabled line mounted as
+  enabled.
+- An unknown `transport` value is rejected with a clear "must be stdio or streamable-http"
+  error instead of falling into the stdio branch and reporting a misleading missing-`command`
+  error.
+
 ## [0.1.1] - 2026-08-28
 
 ### Added

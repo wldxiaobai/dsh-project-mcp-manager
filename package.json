@@ -32,7 +32,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepack": "npm run build",
-    "test": "node test/test-model.mjs && node test/test-registry.mjs"
+    "test": "node test/test-model.mjs && node test/test-mcp-file.mjs && node test/test-registry.mjs"
   },
   "files": [
     "lib",
