@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Claude Code read-only compatibility layer (`src/cc-file.ts`): the plugin now
+  loads `<projectRoot>/.mcp.json` and the **top-level `mcpServers` allowlist** of
+  `~/.claude.json` (CC's monolithic state file — nothing else in it is read, written,
+  logged, or echoed). Shadow priority: project `.dsh/mcp.yml` > project `.mcp.json` >
+  `~/.dsh/mcp.yml` > `~/.claude.json`, with shadowed names recorded in
+  `.dsh/.mcp-diag.json` (`shadowedByYml` / `shadowedByProject`). `type: "sse"` entries
+  are rejected per entry (the mount backend only speaks stdio and streamable-http);
+  unknown CC keys are tolerated; `type: "http"` maps to `streamable-http`; stdio `cwd`
+  defaults to the project root. The `~/.claude.json` watcher gates on a canonical-JSON
+  hash of the `mcpServers` subtree, so CC's routine state rewrites do not trigger
+  reconciles; `DSH_MCP_IGNORE_CLAUDE_JSON=1` disables reading and watching the file
+  entirely. There is deliberately no `local` scope (CC's `claude mcp add` default
+  location is explained wherever a user would expect it).
+- `${VAR}` runtime expansion (`src/model.ts` `expandEnvRefs`): whole-value references
+  (`^\$\{[A-Za-z_][A-Za-z0-9_]*\}$`) in `command`, `args[*]`, `env[*]`, `url`, and
+  `headers[*]` expand against the dsh host environment at mount time for every
+  configuration source. A missing variable skips the row with an `env-missing`
+  diagnostic naming the variable only — values are never persisted by the plugin, so
+  configs can live in git while secrets stay in the environment.
+- `dsh-mcp` CLI (`src/cli.ts`, new `bin` entry): `add` / `list` / `get` / `remove` with
+  `--scope project|user` (default project) and `--transport stdio|http`, mirroring CC
+  ergonomics. Writes land exclusively in native `.dsh/mcp.yml` files (project root or
+  `~/.dsh/mcp.yml`) through the locked atomic writer; `.mcp.json` / `~/.claude.json`
+  stay read-only and `remove` on a name that only exists there prints editing
+  guidance. `list`/`get` show all four layers with shadow annotations; secret values
+  render as key names only. No new runtime dependencies (hand-rolled argv parsing);
+  `runCli(argv, io, deps)` is importable for tests.
+- Tests: `test/test-cc-file.mjs` (dialect mapping, allowlist, hash stability,
+  content-free errors), `test/test-cli.mjs` (add/list/get/remove incl. `--` passthrough
+  and scope routing), and registry scenarios for multi-source shadowing, user-layer hot
+  mounting, the `~/.claude.json` hash gate, and `${VAR}` skip-then-mount.
 - Managed-block reader regression tests (`test/test-mcp-file.mjs`): literal rows load;
   `!!js` in `env` or `disabled` and any other unresolved YAML tag inside the managed block
   fail the file with an explicit error; tags outside the markers do not affect reading, and
@@ -26,6 +57,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `snapshot()` partitions now carry a `source` tag (`yml` / `cc-project` / `user-yml` /
+  `cc-user`) and an optional `kind` (`workspace` projects, new `global` user-layer
+  partitions); each project additionally reports a `.mcp.json` partition (with
+  `entryErrors` for broken CC entries) when it has one, and per-server views gained
+  `source`. Absent a project `.dsh/mcp.yml`, the yml partition is skipped when no
+  yml-sourced server is mounted (user-layer mounts no longer look like "file deleted
+  under a live mount").
+- Whole-value `${VAR}` references now expand at mount time for **all** sources,
+  including native `.dsh/mcp.yml` rows — previously documented as literal-only. The
+  expansion never rewrites files; mixed-form strings (e.g. `http://h/${PART}`) and
+  anything not matching the reference grammar keep their literal behavior.
+- The reconcile pipeline additionally reads the user layer (`~/.dsh/mcp.yml` and,
+  unless disabled, `~/.claude.json`) and watches both files' directories; the
+  zero-config "leave no trace" rule still holds — user-layer rows falling into a
+  project never create that project's diag file by themselves.
 - A project whose managed block fails to parse no longer takes down the whole snapshot: the
   error is reported per file (`ok: false` plus the message) and that project's section is
   empty, while every other project still reports its servers.
@@ -36,6 +82,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Diagnostics from async fiber callbacks (`active`/`failed` mount-phase events) are now
+  serialized through the reconcile chain instead of firing raw read-modify-write
+  appends that could clobber concurrently written scan lines out of
+  `.dsh/.mcp-diag.json`.
 - Native cordis `!!js` tags (js-yaml expressions the profile loader evaluates) inside the
   managed block no longer load silently as literal strings. An unresolved tag now fails the
   file with an explicit error naming the offending position, logged and written to

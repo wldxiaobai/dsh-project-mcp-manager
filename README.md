@@ -61,8 +61,7 @@ pins to a specific version.
 ```powershell
 npm install
 npm run build     # tsc → lib/
-node test/test-model.mjs
-node test/test-registry.mjs
+npm test          # node test/test-model.mjs / test-mcp-file / test-cc-file / test-registry / test-cli
 ```
 
 ## Configuration format
@@ -101,12 +100,88 @@ expression evaluated by the profile loader, e.g. the official README's
 `env: { TOKEN: !!js process.env.GITHUB_TOKEN }`) is **not supported** in
 project files — an unresolved tag inside the managed block makes the whole
 file fail with an explicit error (logged and written to `.dsh/.mcp-diag.json`)
-instead of silently mounting the expression text as a literal string. Write
-literal values in `env`/`headers`; `disabled` must be `true`/`false`. The
-project file is otherwise a superset grammar: `env`/`headers` accept
-`KEY: null` to delete a key (stripped at mount), which the official
-mcp-client schema rejects — such lines would fail if moved back to
-`cordis.patch.yml`.
+instead of silently mounting the expression text as a literal string. Values
+in `env`/`headers` are otherwise literal, except for whole-value `${VAR}`
+references which are expanded at mount time (see `${VAR}` expansion below);
+`disabled` must be `true`/`false`. The project file is otherwise a superset
+grammar: `env`/`headers` accept `KEY: null` to delete a key (stripped at
+mount), which the official mcp-client schema rejects — such lines would fail
+if moved back to `cordis.patch.yml`.
+
+## Claude Code compatibility (read-only)
+
+To fit the habits of Claude Code users, two CC locations are **loaded** but
+never written by this plugin:
+
+- `<projectRoot>/.mcp.json` — the CC project file (`{ "mcpServers": { … } }`).
+- `~/.claude.json` — only the **top-level `mcpServers`** subtree is read
+  (strict allowlist: this file is CC's monolithic state store — oauth
+  credentials, per-project history and UI state in it are never touched,
+  logged or displayed).
+
+Notes and limits:
+
+- **No `local` scope.** CC's `claude mcp add` defaults to a per-project
+  section inside `~/.claude.json` (`projects.<cwd>.mcpServers`); this plugin
+  does not read it. Use `dsh-mcp add --scope user` or the project files.
+- `type: "sse"` entries are rejected with a per-entry diagnostic — the mount
+  backend (`dsh-mcp-client`) only speaks `stdio` and `streamable-http`.
+  CC's `type: "http"` maps to `streamable-http`; omitted `type` means stdio.
+- stdio `cwd` defaults to the project root (`~` for user-scope rows: each
+  mount resolves relative to its own project root).
+- Unknown CC keys are ignored per entry. `enabled: false` skips the row.
+- Broken files/entries never take down the valid ones; entry errors land in
+  `.dsh/.mcp-diag.json` and the host log (file content is never echoed).
+- `~/.claude.json` is rewritten by CC on every session; the watcher re-reads
+  it but only triggers reconciliation when the `mcpServers` subtree actually
+  changed (canonical-JSON hash gate).
+- Escape hatch: set `DSH_MCP_IGNORE_CLAUDE_JSON=1` in the dsh host environment
+  to disable reading and watching `~/.claude.json` entirely.
+
+**Shadow priority** when the same `serverName` appears in several layers
+(first wins, losers reported in `.dsh/.mcp-diag.json` as `shadowedByYml` /
+`shadowedByProject`):
+
+1. `<projectRoot>/.dsh/mcp.yml` (native, panel/CLI-managed)
+2. `<projectRoot>/.mcp.json` (CC project)
+3. `~/.dsh/mcp.yml` (native user layer — see CLI)
+4. `~/.claude.json` top-level `mcpServers` (CC user)
+
+User-layer rows apply to every known project, so a name defined both in one
+project and in a user layer (or in two projects) participates in the regular
+effective-name conflict renaming (see How it works).
+
+## `${VAR}` expansion
+
+Whole-value `${VAR}` references (matching `^\$\{[A-Za-z_][A-Za-z0-9_]*\}$`)
+in `command`, `args[*]`, `env[*]`, `url` and `headers[*]` — from **any** of
+the four sources above — are expanded from the dsh host process environment
+at mount time. Mixed forms like `http://host/${PART}` stay literal. If the
+variable is unset the row is skipped with an `env-missing` diagnostic naming
+the variable (never its value). Values are never persisted anywhere by the
+plugin; the CLI writes `${VAR}` through literally, so secrets can live in the
+environment while configs live in git.
+
+## CLI: `dsh-mcp`
+
+CC-style command-line management for the **native** files (writes only
+`.dsh/mcp.yml` — never `.mcp.json` / `~/.claude.json`; running hosts
+converge via the file watchers, no dsh connection needed):
+
+```powershell
+dsh-mcp add gitlab npx -y @modelcontextprotocol/server-gitlab -e GITLAB_TOKEN=${GITLAB_TOKEN}
+dsh-mcp add --transport http sentry https://mcp.sentry.dev/mcp -H "Authorization: Bearer ${SENTRY_TOKEN}"
+dsh-mcp add --scope user shared node ./tools/shared.js   # writes ~/.dsh/mcp.yml
+dsh-mcp list          # all four layers, with shadow annotations
+dsh-mcp get gitlab    # winning entry, secret values shown as key names only
+dsh-mcp remove gitlab # native yml only; read-only layers get guidance
+```
+
+Scopes: `--scope project` (default; writes `<projectRoot>/.dsh/mcp.yml` under
+the nearest `.git` ancestor) and `--scope user` (writes `~/.dsh/mcp.yml`,
+mounted into every project). There is no `local` scope — `--scope local`
+fails with an explanation. `--transport` accepts `stdio` (default) and `http`;
+`sse` is refused (unsupported by the backend).
 
 ## How it works
 
@@ -119,12 +194,15 @@ mcp-client schema rejects — such lines would fail if moved back to
   registers it into the global tool layer. Multiple sessions inside the same
   project share a single connection.
 - **Hot reload**: chokidar watches each project root (depth 2, ignoring
-  node_modules/.git/.hg/.svn); changes to `.dsh/mcp.yml` trigger a full
-  reconciliation after a 150 ms debounce: added lines are mounted, removed
-  lines are unmounted, and config changes are remounted.
+  node_modules/.git/.hg/.svn); changes to `.dsh/mcp.yml` or `.mcp.json`
+  trigger a full reconciliation after a 150 ms debounce: added lines are
+  mounted, removed lines are unmounted, and config changes are remounted. A
+  second watcher covers the user-layer files' directories
+  (`~/.dsh/mcp.yml` directly, `~/.claude.json` behind the hash gate).
 - **Effective names**: when the original `serverName` is unique across the
-  whole catalog (global lines + all project lines) it keeps its name; on a
-  conflict both sides are renamed to
+  whole catalog (global lines + all project lines, where each project's
+  merged rows include the user-layer rows that survived shadowing) it keeps
+  its name; on a conflict both sides are renamed to
   `p<first 6 chars of sha256(projectRoot)>_<original name>` (truncated to 32
   characters, deterministic and independent of mount order) to avoid the
   serverName reservation conflicts that `dsh-mcp-client` makes per process
@@ -142,7 +220,10 @@ mcp-client schema rejects — such lines would fail if moved back to
 
 ## Security boundary
 
-`stdio` lines in `.dsh/mcp.yml` spawn their `command` inside the dsh host
-process — project files are **executable code carriers**, so only add them in
-projects you trust. Lines that fail to mount or are invalid are skipped with a
-warning and do not affect other servers.
+`stdio` lines in `.dsh/mcp.yml` (and `.mcp.json` rows mounted from it) spawn
+their `command` inside the dsh host process — project files are **executable
+code carriers**, so only add them in projects you trust. Lines that fail to
+mount or are invalid are skipped with a warning and do not affect other
+servers. The read-only `~/.claude.json` allowlist exists precisely because
+that file also holds credentials: nothing from it is ever written out, echoed
+into diagnostics, or printed by the CLI.
