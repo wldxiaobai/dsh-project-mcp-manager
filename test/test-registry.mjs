@@ -334,8 +334,14 @@ try {
     pass("registry watches and hot-mounts the user ~/.dsh/mcp.yml");
 
     // 15. ~/.claude.json 哈希门：CC 重写无关状态位不触发 reconcile
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 600)); // 让 14 的防抖彻底落定
-    const count15 = registry2.debugReconcileCount;
+    // 先等对账计数稳定（14 的热事件可能还有余波），基线才可信。
+    let count15 = registry2.debugReconcileCount;
+    for (let waited = 0; waited < 6000; waited += 300) {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
+      const next = registry2.debugReconcileCount;
+      if (next === count15) break;
+      count15 = next;
+    }
     const claude15 = JSON.parse(await readFile(join(home2, ".claude.json"), "utf8"));
     claude15.telemetry = { ping: 9 };
     await writeFile(join(home2, ".claude.json"), JSON.stringify(claude15), "utf8");

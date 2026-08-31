@@ -666,14 +666,19 @@ export class ProjectMcpRegistry {
         if (this.projects.get(key) !== project || project.servers.get(item.rawName) !== state) return;
         state.phase = "active";
         state.error = undefined;
-        void this.writeDiag(project.projectRoot, { kind: "active", effectiveName });
+        // 诊断写必须排进 reconcile 链：异步回调里裸写会与之交叉丢行（read-modify-write 竞态）。
+        this.enqueue(async () => {
+          await this.writeDiag(project.projectRoot, { kind: "active", effectiveName });
+        }).catch(() => {});
         this.kickSweep();
       },
       (error: unknown) => {
         if (this.projects.get(key) !== project || project.servers.get(item.rawName) !== state) return;
         state.phase = "failed";
         state.error = error instanceof Error ? error.message : String(error);
-        void this.writeDiag(project.projectRoot, { kind: "failed", effectiveName, error: state.error });
+        this.enqueue(async () => {
+          await this.writeDiag(project.projectRoot, { kind: "failed", effectiveName, error: state.error });
+        }).catch(() => {});
         this.ctx.logger.error(`项目 MCP "${effectiveName}"（${project.projectRoot}）装载失败：${state.error}`);
         this.kickSweep();
       }
