@@ -315,7 +315,8 @@ try {
     assert.deepEqual(ccPart11.servers.map((server) => server.serverName).sort(), ["alpha", "beta"]);
     assert.ok(Array.isArray(ccPart11.entryErrors) && ccPart11.entryErrors.some((note) => note.includes("bad")));
     const betaView11 = ccPart11.servers.find((server) => server.serverName === "beta");
-    assert.equal(betaView11.fiberPhase, "env-missing", "env-skipped row shows its skip reason, not pending");
+    assert.equal(betaView11.fiberPhase, "pending", "fiberPhase stays on the lifecycle vocabulary");
+    assert.equal(betaView11.skipReason, "env-missing", "the skip reason rides on its own field");
     const userYml11 = snap11.find((file) => file.source === "user-yml");
     assert.ok(userYml11 === undefined, "no user yml yet");
     const ccUser11 = snap11.find((file) => file.source === "cc-user");

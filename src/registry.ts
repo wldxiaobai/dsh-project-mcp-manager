@@ -32,7 +32,7 @@
 import chokidar from "chokidar";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import * as mcpClient from "@deepseek-ai/dsh-mcp-client";
 import { extractManagedRows, readPatchFile, type PatchRow } from "./mcp-file.js";
 import {
@@ -257,9 +257,7 @@ export class ProjectMcpRegistry {
   private userWatchedPaths: string[] = [];
   /** 最近一次读到的 ~/.claude.json mcpServers 子树规范化哈希（watcher 门控用）。 */
   private claudeServersHash: string | undefined;
-  /** 上次事件门控看到的 ~/.claude.json size/mtime（幂等重写快路径）。 */
-  private claudeFileStat: { size: number; mtimeMs: number } | undefined;
-  /** 装载被跳过的行（key\0rawName → 原因），快照据此显示 env-missing 而非 pending。 */
+  /** 装载被跳过的行（key\0rawName → 原因）；快照按独立 skipReason 字段展示，fiberPhase 保持枚举。 */
   private skipReasons = new Map<string, string>();
   /** 最近一次用户层读取结果（reconcile 与 snapshot 共享；首轮 reconcile 前为空）。 */
   private userLayer: {
@@ -479,8 +477,9 @@ export class ProjectMcpRegistry {
    * 监听用户层两个具体文件（与项目层的精确路径过滤同构；不监视家目录递归：
    * 探针实测 chokidar v5 盯「父目录已存在的缺失文件」能在创建时补发 add，而盯
    * 不存在的目录则永久瞎——具体文件路径是更稳的监听形态）。~/.claude.json 事件
-   * 先过 stat 快路径 + serversHash 门：CC 每次会话都重写整个状态文件，先比
-   * size/mtime，未变连读都不读；变了再解析并比对 mcpServers 子树哈希，未变不触发 reconcile。
+   * 过 serversHash 门：CC 每次会话都重写整个状态文件，先解析并比对 mcpServers
+   * 子树的规范哈希，未变不触发 reconcile（不做 size/mtime 快路径：那会在
+   * 同刻同体积的真实改动上误杀，内容哈希才是唯一可靠门）。
    */
   private async syncUserWatcher(): Promise<void> {
     const paths = this.resolveUserLayerPaths();
@@ -519,15 +518,8 @@ export class ProjectMcpRegistry {
   private async claudeGateThenKick(): Promise<void> {
     if (this.disposed) return;
     const { claudeJson } = this.resolveUserLayerPaths();
-    try {
-      // stat 快路径：CC 反复重写但 size/mtime 全同（幂等重写）时连文件都不碰。
-      const statNow = await stat(claudeJson);
-      const seen = this.claudeFileStat;
-      if (seen !== undefined && seen.size === statNow.size && seen.mtimeMs === statNow.mtimeMs) return;
-      this.claudeFileStat = { size: statNow.size, mtimeMs: statNow.mtimeMs };
-    } catch {
-      this.claudeFileStat = undefined; // 读不动（含 unlink）：落到哈希门/诊断路径
-    }
+    // 内容哈希门是唯一裁决：不缓存 size/mtime 走快路径——Windows 上两次不同
+    // 内容的重写可能落在同一 mtime 粒度且体积相仿，mtime 相等不等于内容相等。
     let hash: string | undefined;
     try {
       hash = (await readClaudeUserFile(claudeJson)).serversHash;
@@ -611,6 +603,13 @@ export class ProjectMcpRegistry {
     }
     const current = [...project.servers.values()].map((state) => ({ rawName: state.rawName, effectiveName: state.effectiveName, row: state.row }));
     const plan = planProjectChanges(current, entry.rows, this.effective, key);
+    // 清理死键：从未挂上（被跳过）的行若从文件里删掉，既不在 toMount 也不在
+    // toUnmount，其 skipReasons 标记没人再触碰——按当前 desired 集合剪掉。
+    const desiredNames = new Set(entry.rows.map((item) => item.rawName));
+    const markPrefix = key + "\u0000";
+    for (const markKey of this.skipReasons.keys()) {
+      if (markKey.startsWith(markPrefix) && !desiredNames.has(markKey.slice(markPrefix.length))) this.skipReasons.delete(markKey);
+    }
     // 先卸载（同名重装载必须先释放 serverName 预留），再装载。
     for (const rawName of plan.toUnmount) {
       await this.unmountServer(project, rawName);
@@ -628,8 +627,9 @@ export class ProjectMcpRegistry {
   // 调用方只在有异常或有配置行时写入：无配置的干净项目不创建该文件。
 
   private async writeDiag(projectRoot: string, event: Record<string, unknown>): Promise<void> {
+    const path = join(projectRoot, ".dsh", ".mcp-diag.json");
+    const tmp = path + `.tmp-${process.pid}`;
     try {
-      const path = join(projectRoot, ".dsh", ".mcp-diag.json");
       let lines: Record<string, unknown>[] = [];
       try {
         const parsed = JSON.parse(await readFile(path, "utf8"));
@@ -641,9 +641,13 @@ export class ProjectMcpRegistry {
       if (lines.length > 30) lines = lines.slice(-30);
       // .dsh 可能已被用户删掉（而项目仍有活装载）：补建目录，避免诊断静默丢失。
       await mkdir(dirname(path), { recursive: true });
-      await writeFile(path, JSON.stringify(lines, null, 2), "utf8");
+      // 原子落盘（临时文件 + rename）：裸 writeFile 会让并发读取方看到半截
+      // JSON（快照/测试轮询都算），与 mcp-file 的写路径同一标准。
+      await writeFile(tmp, JSON.stringify(lines, null, 2), "utf8");
+      await rename(tmp, path);
     } catch {
-      // 诊断失败不影响主流程
+      // 诊断失败不影响主流程；清掉半截临时文件
+      await rm(tmp, { force: true }).catch(() => {});
     }
   }
 
@@ -928,11 +932,13 @@ export class ProjectMcpRegistry {
     const view = patchRowToView(row, { kind: "workspace", path: projectRoot });
     if (view === undefined) return undefined;
     const effectiveName = this.effective.get(key + "\u0000" + rawName);
+    const skipReason = state === undefined && row.disabled !== true ? this.skipReasons.get(key + "\u0000" + rawName) : undefined;
     return {
       ...view,
       ...(source === undefined ? {} : { source }),
       ...(effectiveName === undefined ? {} : { effectiveServerName: effectiveName }),
-      fiberPhase: state === undefined ? (row.disabled === true ? null : this.skipReasons.get(key + "\u0000" + rawName) ?? "pending") : phaseToFiberPhase(state.phase),
+      fiberPhase: state === undefined ? (row.disabled === true ? null : "pending") : phaseToFiberPhase(state.phase),
+      skipReason: skipReason ?? null,
       toolCount: state !== undefined && state.phase === "active" ? mcpToolCount(this.ctx, state.effectiveName) : 0
     };
   }
@@ -1031,15 +1037,17 @@ export class ProjectMcpRegistry {
       const state = entry.servers.get(rawName);
       const owned = state !== undefined && state.source === source;
       const effectiveName = this.effective.get(key + "\u0000" + rawName);
+      const skipReason = state === undefined && row.disabled !== true ? this.skipReasons.get(key + "\u0000" + rawName) : undefined;
       out.push({
         ...view,
         source,
         ...(effectiveName === undefined ? {} : { effectiveServerName: effectiveName }),
         fiberPhase: state === undefined
-          ? (row.disabled === true ? null : this.skipReasons.get(key + "\u0000" + rawName) ?? "pending")
+          ? (row.disabled === true ? null : "pending")
           : owned
             ? phaseToFiberPhase(state.phase)
             : null, // 该名字由更高优先层装载：本分区行只作展示
+        skipReason: skipReason ?? null, // env-missing / env-invalid / config-invalid / plugin-throw；fiberPhase 保持生命周期枚举
         toolCount: owned && state !== undefined && state.phase === "active" ? mcpToolCount(this.ctx, state.effectiveName) : 0
       });
     }
