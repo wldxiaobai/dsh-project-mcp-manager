@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runCli } from "../lib/cli.js";
@@ -15,6 +15,15 @@ function io() {
   const out = [];
   const err = [];
   return { lines: out, errs: err, io: { out: (l) => out.push(l), err: (l) => err.push(l) } };
+}
+
+async function pathExists(path) {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const dir = await mkdtemp(join(tmpdir(), "dsh-mcp-cli-"));
@@ -145,6 +154,50 @@ try {
     assert.match(projRaw, /cwd:\s*\.?\s*$/m, "project-scope row defaults to .");
     assert.ok(projRaw.includes("cwd: ."), "project-scope cwd is the dot literal");
     pass("cli default cwd is '.' for project scope and '' for user scope");
+  }
+  // 10. DSH_MCP_IGNORE_CLAUDE_JSON=1：list 整个 cc-user 层消失（与 registry 同源开关）
+  {
+    process.env.DSH_MCP_IGNORE_CLAUDE_JSON = "1";
+    try {
+      const cap = io();
+      assert.equal(await runCli(["list"], cap.io, deps), 0);
+      const text = cap.lines.join("\n");
+      assert.ok(!text.includes("ccuser"), "ignored: cc-user rows must not be listed");
+      assert.ok(!text.includes(".claude.json"), "ignored: no cc-user layer label at all");
+      assert.ok(text.includes("psrv"), "ignored: other three layers still listed");
+    } finally {
+      delete process.env.DSH_MCP_IGNORE_CLAUDE_JSON;
+    }
+    const cap2 = io();
+    assert.equal(await runCli(["list"], cap2.io, deps), 0);
+    assert.ok(cap2.lines.join("\n").includes("ccuser"), "switch unset: cc-user layer is back");
+    pass("cli list honors DSH_MCP_IGNORE_CLAUDE_JSON");
+  }
+
+  // 11. 未注入 resolveProjectRoot 时走真实 findProjectRoot：git 根向上命中 / 无 git 根退回 cwd
+  {
+    const originalCwd = process.cwd();
+    const nogit = join(dir, "nogit");
+    const gitroot = join(dir, "gitroot");
+    await mkdir(nogit, { recursive: true });
+    await mkdir(join(gitroot, ".git"), { recursive: true });
+    await mkdir(join(gitroot, "sub"), { recursive: true });
+    try {
+      process.chdir(nogit);
+      const cap = io();
+      assert.equal(await runCli(["add", "fb", "node", "f.js"], cap.io, { home }), 0, cap.errs.join("\n"));
+      const fbRaw = await readFile(projectMcpFile(nogit), "utf8");
+      assert.ok(fbRaw.includes("serverName: fb"), "no git root above → project file lands in cwd");
+      process.chdir(join(gitroot, "sub"));
+      const cap2 = io();
+      assert.equal(await runCli(["add", "up", "node", "u.js"], cap2.io, { home }), 0, cap2.errs.join("\n"));
+      const upRaw = await readFile(projectMcpFile(gitroot), "utf8");
+      assert.ok(upRaw.includes("serverName: up"), "walks up to the nearest .git ancestor");
+      assert.equal(await pathExists(projectMcpFile(join(gitroot, "sub"))), false, "cwd itself is not the project when a git root exists above");
+    } finally {
+      process.chdir(originalCwd);
+    }
+    pass("cli resolves project root through real findProjectRoot (git hit and cwd fallback)");
   }
 } finally {
   await rm(dir, { recursive: true, force: true });

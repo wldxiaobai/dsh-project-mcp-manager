@@ -461,6 +461,44 @@ try {
     assert.ok(eta20, "sibling rows unaffected");
     pass("disabled native rows shadow lower layers instead of yielding the name");
 
+    // 21. D2b 逃生门：DSH_MCP_IGNORE_CLAUDE_JSON=1 → ~/.claude.json 停读、停看，
+    // 其余来源不受牵连；开关撤掉后恢复装载。
+    process.env.DSH_MCP_IGNORE_CLAUDE_JSON = "1";
+    try {
+      const dispBefore21 = ctx2.disposals.length;
+      await registry2.reconcileNow();
+      // 用户行进入每个项目的目录 → gamma/zeta 在 dir2、dir3 下同名冲突，生效名已改 p<hash>_
+      const disposed21 = ctx2.disposals.slice(dispBefore21);
+      assert.equal(disposed21.length, 4, "both user rows unmount in both known projects");
+      assert.ok(disposed21.every((name) => /^p[0-9a-f]{6}_(gamma|zeta)$/.test(name)), "renamed user-row fibers are the ones disposed: " + disposed21.join(","));
+      assert.ok(await registry2.waitForState(dir2, "hot-cc", (state) => state?.phase === "active", 500), "project .mcp.json rows are untouched by the switch");
+      const snap21 = await registry2.snapshot();
+      assert.equal(snap21.find((file) => file.source === "cc-user"), undefined, "no cc-user partition while ignored");
+      assert.notEqual(snap21.find((file) => file.source === "cc-project"), undefined, "cc-project partition survives");
+      // 停看：改 fakehome/.claude.json（mcpServers 变化）也不得驱动 reconcile。
+      // 先安抚前面写入留下的 debounce 定时器，基线才可信。
+      let count21 = registry2.debugReconcileCount;
+      for (let waited = 0; waited < 6000; waited += 300) {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
+        const next = registry2.debugReconcileCount;
+        if (next === count21) break;
+        count21 = next;
+      }
+      const ig21 = JSON.parse(await readFile(join(home2, ".claude.json"), "utf8"));
+      ig21.mcpServers["ig-off"] = { command: "node", args: [] };
+      await writeFile(join(home2, ".claude.json"), JSON.stringify(ig21), "utf8");
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 900));
+      assert.equal(registry2.debugReconcileCount, count21, "claude.json edits must not drive reconciles while ignored");
+      assert.ok(!(await registry2.waitForState(dir2, "ig-off", (state) => state !== undefined, 300)), "ig-off never mounts under the switch");
+      delete process.env.DSH_MCP_IGNORE_CLAUDE_JSON;
+      await registry2.reconcileNow();
+      assert.ok(await registry2.waitForState(dir2, "zeta", (state) => state?.phase === "active", 5000), "rows remount once the switch is cleared");
+      assert.ok(ctx2.mounts.filter((config) => /_ig-off$/.test(config.serverName)).length >= 2, "claude.json is read again in every project after clearing the switch");
+    } finally {
+      delete process.env.DSH_MCP_IGNORE_CLAUDE_JSON;
+    }
+    pass("DSH_MCP_IGNORE_CLAUDE_JSON=1 gates reading and watching of ~/.claude.json");
+
     for (const disposer of ctx2.disposers) {
       const cleanup = disposer();
       if (typeof cleanup === "function") cleanup();
