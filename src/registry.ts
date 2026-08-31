@@ -534,7 +534,7 @@ export class ProjectMcpRegistry {
     await this.readUserLayer();
 
     const roots = await this.knownProjects();
-    const desiredByProject = new Map<string, { projectRoot: string; rows: DesiredProjectRow[]; ok: boolean; error: string | null }>();
+    const desiredByProject = new Map<string, { projectRoot: string; rows: DesiredProjectRow[] }>();
     for (const projectRoot of roots) {
       const key = projectKeyOf(projectRoot);
       const liveServers = this.projects.get(key)?.servers.size ?? 0;
@@ -543,14 +543,16 @@ export class ProjectMcpRegistry {
       // 影子优先级：项目 mcp.yml > 项目 .mcp.json > 用户 ~/.dsh/mcp.yml > 用户 ~/.claude.json。
       const merged = mergeSourcedRows([yml.rows, cc.rows, this.userLayer.ymlRows, this.userLayer.cc?.rows ?? []]);
       const ownRows = merged.rows.filter((row) => row.source === "yml" || row.source === "cc-project");
-      desiredByProject.set(key, { projectRoot, rows: merged.rows, ok: yml.ok && cc.fileError === undefined, error: yml.error ?? cc.fileError ?? null });
+      // 源级隔离：某个源坏了只清空该源的 rows（读取器已保证），其余源照常进
+      // desired。绝不能整项目一票否决——那会把坏文件的代价转嫁给好文件的行。
+      desiredByProject.set(key, { projectRoot, rows: merged.rows });
       // 诊断只记有信息量的扫描：异常，或确实解析出了项目自身配置行。干净且无配置的
       // 项目不写任何记录——用户层行落到每个项目不算该项目的事件。
       if (!yml.ok || ownRows.length > 0 || cc.fileError !== undefined || cc.entryErrors.length > 0 || merged.shadowedOwnCc.length > 0 || merged.shadowedUser.length > 0) {
         await this.writeDiag(projectRoot, {
           kind: "scan",
           ok: yml.ok && cc.fileError === undefined,
-          error: yml.error ?? cc.fileError ?? null,
+          error: [yml.error, cc.fileError].filter(Boolean).join(" ; ") || null,
           rows: ownRows.map((row) => row.rawName),
           ...(merged.shadowedOwnCc.length > 0 ? { shadowedByYml: merged.shadowedOwnCc } : {}),
           ...(merged.shadowedUser.length > 0 ? { shadowedByProject: merged.shadowedUser } : {}),
@@ -561,9 +563,10 @@ export class ProjectMcpRegistry {
       if (cc.fileError !== undefined) this.ctx.logger.warn(`项目 MCP（${CC_PROJECT_FILE}，${projectRoot}）：${cc.fileError}`);
     }
 
-    const catalogProjects = [...desiredByProject.values()]
-      .filter((entry) => entry.ok)
-      .map((entry) => ({ projectRoot: entry.projectRoot, names: entry.rows.map((row) => row.rawName) }));
+    const catalogProjects = [...desiredByProject.values()].map((entry) => ({
+      projectRoot: entry.projectRoot,
+      names: entry.rows.map((row) => row.rawName)
+    }));
     const globalNames = await this.providers.globalNames().catch(() => []);
     this.effective = effectiveServerNames(catalogProjects, globalNames);
 
@@ -573,7 +576,7 @@ export class ProjectMcpRegistry {
     await this.sweepRestrictions();
   }
 
-  private async reconcileProject(key: string, entry: { projectRoot: string; rows: DesiredProjectRow[]; ok: boolean; error: string | null }) {
+  private async reconcileProject(key: string, entry: { projectRoot: string; rows: DesiredProjectRow[] }) {
     let project = this.projects.get(key);
     if (project === undefined) {
       // 只为「确实有行要装载」的项目建条目：否则会话/进程访问过的每个目录都会

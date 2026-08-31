@@ -354,6 +354,38 @@ try {
     assert.ok(zetaActive, "changed mcpServers subtree passes the hash gate and mounts");
     pass("claude.json watcher gates on the mcpServers subtree hash");
 
+    // 16. P0 回归：坏 .mcp.json 不得卸掉同项目的原生 yml 服务器（源级隔离）。
+    // 修复前：项目级 ok = yml.ok && cc 无 fileError，整项目被踢出生效名目录，
+    // yml 行连同好配置一起被卸载且装不回去。
+    const dir3 = join(dir2, "proj3");
+    await mkdir(join(dir3, ".dsh"), { recursive: true });
+    await writeManagedRows(projectMcpFile(dir3), [stdioRow("keep-yml")], { createIfMissing: true });
+    await writeFile(join(dir3, ".mcp.json"), JSON.stringify({ mcpServers: { "cc-x": { command: "node", args: [] } } }), "utf8");
+    ctx2.agentsList.push(fakeAgent("session-f", dir3));
+    await registry2.reconcileNow();
+    assert.ok(
+      ctx2.mounts.some((config) => config.serverName === "keep-yml") && ctx2.mounts.some((config) => config.serverName === "cc-x"),
+      "both project sources mounted in baseline");
+    const dispBefore16 = ctx2.disposals.length;
+    await writeFile(join(dir3, ".mcp.json"), "{ invalid json", "utf8");
+    await registry2.reconcileNow();
+    assert.deepEqual(ctx2.disposals.slice(dispBefore16), ["cc-x"], "only the broken source's rows unmount; the yml server stays");
+    assert.ok(await registry2.waitForState(dir3, "keep-yml", (state) => state?.phase === "active", 500), "yml row stayed active through the bad .mcp.json");
+    const snap16 = await registry2.snapshot();
+    const ccPart16 = snap16.find((file) => file.source === "cc-project" && file.project === dir3);
+    assert.ok(ccPart16 !== undefined && ccPart16.ok === false && /json/i.test(String(ccPart16.error)), "cc partition reports the file error");
+    pass("a broken .mcp.json does not unmount native yml servers of the same project");
+
+    // 17. 反向：yml 坏时，同项目 .mcp.json 行照常装载/重装载
+    await writeFile(join(dir3, ".mcp.json"), JSON.stringify({ mcpServers: { "cc-x": { command: "node", args: ["x2.js"] } } }), "utf8");
+    await writeFile(projectMcpFile(dir3), "data: [unclosed\n", "utf8");
+    await registry2.reconcileNow();
+    assert.ok(ctx2.disposals.includes("keep-yml"), "yml row unmounts while its file is unparseable");
+    const remount17 = ctx2.mounts.filter((config) => config.serverName === "cc-x").at(-1);
+    assert.ok(remount17 !== undefined && ctx2.mounts.filter((config) => config.serverName === "cc-x").length >= 2, ".mcp.json row remounts despite the broken yml");
+    assert.deepEqual(remount17.args, ["x2.js"], "remounted with the repaired .mcp.json config");
+    pass("a broken project mcp.yml does not block .mcp.json rows");
+
     for (const disposer of ctx2.disposers) {
       const cleanup = disposer();
       if (typeof cleanup === "function") cleanup();
