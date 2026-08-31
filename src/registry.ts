@@ -51,6 +51,7 @@ import {
   effectiveServerNames,
   expandEnvRefs,
   inputFromPatchRow,
+  mcpServerInputSchema,
   patchRowToView,
   projectKeyOf,
   serverNameFromRowId,
@@ -641,6 +642,16 @@ export class ProjectMcpRegistry {
         return;
       }
       input = expanded.input;
+      // 展开后的值可能不再合法（占位 `${URL}` 骗过了装载前 schema），补跑一次校验，
+      // 让错误在这里以诊断形式落地，而不是留给 ctx.plugin 炸 plugin-throw。
+      const revalidated = mcpServerInputSchema.safeParse(input);
+      if (!revalidated.success) {
+        const note = revalidated.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ");
+        await this.writeDiag(project.projectRoot, { kind: "env-invalid", rawName: item.rawName, effectiveName, error: note });
+        this.ctx.logger.warn(`项目 MCP "${item.rawName}"（${project.projectRoot}）配置无效：\${VAR} 展开后校验失败（${note}）`);
+        return;
+      }
+      input = revalidated.data;
       const configInput: any = { ...input, serverName: effectiveName };
       if (input.transport === "stdio" && typeof input.cwd === "string" && input.cwd !== "") {
         configInput.cwd = resolve(project.projectRoot, input.cwd);

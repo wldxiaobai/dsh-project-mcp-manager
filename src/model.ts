@@ -12,11 +12,15 @@ import { MANAGED_ROW_ID_PREFIX, MCP_PLUGIN_NAME, type PatchRow } from "./mcp-fil
 
 export const SERVER_NAME_RE = /^[A-Za-z0-9_-]{1,32}$/;
 /**
- * `${VAR}` 整值引用（对齐 CC 展开行为与 dsh-mcp-mgr 的 ENV_REF）：仅当整个
- * 值恰好是 `${VAR}` 时展开；`${A}x`、`$A`、`${9bad}` 等一律按字面量处理。
- * 只在 mount 时运行时展开，展开结果绝不回写文件、不进诊断明文。
+ * `${VAR}` 整值引用形态（url 占位判定用）：值恰好是 `${VAR}`。
+ * 展开本身支持串内插值（见 expandEnvRefs）；`$VAR` 裸形、`${9bad}`
+ * 非法名一律按字面量处理。只在 mount 时运行时展开，展开结果绝不回写
+ * 文件、不进诊断明文。
  */
 export const ENV_REF_RE = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
+
+/** 串内 `${VAR}` 引用扫描/替换（全局态独立于 ENV_REF_RE，勿共享 lastIndex 陷阱）。 */
+const EMBEDDED_ENV_REF_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
 /** url 字段允许合法 URL 或整值 `${VAR}` 占位（占位必须在 mount 展开前过 schema）。 */
 export function isUrlOrEnvRef(value: string): boolean {
@@ -195,9 +199,14 @@ export function mergeSecretPatch(previous: Record<string, string> | undefined, p
   return merged;
 }
 
-function envRefName(value: string): string | undefined {
-  const match = ENV_REF_RE.exec(value);
-  return match === null ? undefined : match[1];
+/** 值中引用的全部环境变量名（含串内插值形态），按出现顺序去重。 */
+function envRefNames(value: string): string[] {
+  const names: string[] = [];
+  EMBEDDED_ENV_REF_RE.lastIndex = 0;
+  for (let match = EMBEDDED_ENV_REF_RE.exec(value); match !== null; match = EMBEDDED_ENV_REF_RE.exec(value)) {
+    if (!names.includes(match[1])) names.push(match[1]);
+  }
+  return names;
 }
 
 export type ExpandEnvRefsResult =
@@ -215,10 +224,12 @@ function expandSecretMap(
 }
 
 /**
- * 运行时展开 env/headers 值、url、command、args[*] 中的 `${VAR}` 引用。
- * 纯函数：环境经参数注入（宿主传 process.env），便于测试。任一被引用的
- * 变量缺失即整体失败（ok:false + 变量名，调用方据此跳过该条目装载）——
- * 带空凭据 spawn 比不 spawn 更危险，诊断消息只含变量名不含值。
+ * 运行时展开 command、args[*]、env/headers 值、url 中的 `${VAR}` 引用，
+ * 支持串内插值（`Bearer ${TOKEN}` 与整值 `${TOKEN}` 都会展开），对齐 CC 的
+ * 写法习惯。纯函数：环境经参数注入（宿主传 process.env），便于测试。
+ * 任一被引用的变量缺失或为空串即整体失败（ok:false + 变量名，调用方据此
+ * 跳过该条目装载）——空 token 与缺失同样危险，宁可 spawn 前拒绝。诊断
+ * 消息只含变量名不含值。`$VAR` 裸形与 `${9bad}` 非法名保持字面量。
  */
 export function expandEnvRefs(input: McpServerInput, env: NodeJS.ProcessEnv): ExpandEnvRefsResult {
   const strings: string[] = [];
@@ -230,12 +241,15 @@ export function expandEnvRefs(input: McpServerInput, env: NodeJS.ProcessEnv): Ex
     strings.push(input.url, ...secretValues(input.headers));
   }
   for (const value of strings) {
-    const name = envRefName(value);
-    if (name !== undefined && env[name] === undefined) return { ok: false, missingVar: name };
+    for (const name of envRefNames(value)) {
+      const resolved = env[name];
+      if (resolved === undefined || resolved === "") return { ok: false, missingVar: name };
+    }
   }
   const expand = (value: string): string => {
-    const name = envRefName(value);
-    return name === undefined ? value : env[name]!;
+    if (envRefNames(value).length === 0) return value;
+    EMBEDDED_ENV_REF_RE.lastIndex = 0;
+    return value.replace(EMBEDDED_ENV_REF_RE, (whole, name: string) => env[name]!);
   };
   if (input.transport === "stdio") {
     return {

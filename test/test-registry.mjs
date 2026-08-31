@@ -23,6 +23,18 @@ async function pathExists(path) {
 async function readDiag(projectRoot) {
   return JSON.parse(await readFile(diagFile(projectRoot), "utf8"));
 }
+/** Windows 上 chokidar 关闭后目录句柄可能仍短暂占用：rm 带退避重试。 */
+async function rmRetry(path) {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    try {
+      await rm(path, { recursive: true, force: true });
+      return;
+    } catch {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+    }
+  }
+  await rm(path, { recursive: true, force: true });
+}
 
 const stdioRow = (name, command = "node") => ({
   id: "panel-mcp-" + name,
@@ -405,6 +417,27 @@ try {
     assert.ok(registry2.debugReconcileCount > count18, "the .mcp.json write itself must have driven the reconcile");
     pass("registry hot-reloads project .mcp.json edits via the watcher");
 
+    // 19. http 行端到端：Bearer 串内插值进装载配置；展开后非法 url 以 env-invalid 拒载
+    const parsed19 = JSON.parse(await readFile(ccFile18, "utf8"));
+    parsed19.mcpServers["http-ok"] = { type: "http", url: "http://127.0.0.1:9/mcp", headers: { Authorization: "Bearer ${CC_TEST_MISSING}" } };
+    parsed19.mcpServers["http-bad"] = { type: "http", url: "${CC_TEST_NOTURL}" };
+    process.env.CC_TEST_NOTURL = "not a url";
+    try {
+      await writeFile(ccFile18, JSON.stringify(parsed19), "utf8");
+      assert.ok(await registry2.waitForState(dir2, "http-ok", (state) => state?.phase === "active", 5000), "http row with interpolated Bearer header mounts");
+      const httpOk19 = ctx2.mounts.filter((config) => config.serverName === "http-ok").at(-1);
+      assert.equal(httpOk19.headers.Authorization, "Bearer sekret", "in-string interpolation reaches the mount config");
+      assert.ok(await registry2.waitForState(dir2, "http-bad", (state) => state === undefined, 500), "invalid expanded url is never mounted");
+      const diag19 = await readDiag(dir2);
+      assert.ok(
+        diag19.some((row) => row.kind === "env-invalid" && row.rawName === "http-bad"),
+        "post-expansion schema failure lands as env-invalid diag");
+      assert.equal(diag19.some((row) => row.error === "not a url"), false, "diag must not echo the offending value");
+    } finally {
+      delete process.env.CC_TEST_NOTURL;
+    }
+    pass("registry interpolates Bearer ${VAR} end-to-end and rejects invalid post-expansion urls");
+
     for (const disposer of ctx2.disposers) {
       const cleanup = disposer();
       if (typeof cleanup === "function") cleanup();
@@ -415,11 +448,11 @@ try {
     if (savedMissing === undefined) delete process.env.CC_TEST_MISSING;
     else process.env.CC_TEST_MISSING = savedMissing;
     process.chdir(dir);
-    await rm(dir2, { recursive: true, force: true });
+    await rmRetry(dir2);
   }
 } finally {
   process.chdir(originalCwd);
-  await rm(dir, { recursive: true, force: true });
+  await rmRetry(dir);
 }
 
 console.log("\n" + passed + " passed, 0 failed");
