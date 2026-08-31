@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README and `docs/README.zh.md`: a "Divergences from the native cordis dialect" section
   (`!!js` unsupported, `env`/`headers` `KEY: null` superset semantics), and a note that
   model-visible tool names are built from the effective (possibly renamed) server name.
+- Repository guidance `AGENTS.md`: authoritative project overview, key behavior contracts,
+  and — as the single home the git skills point to — the Git commit cadence and branch
+  policy (features and fixes commit directly to `dev`; `main` only advances through
+  user-initiated PR/MR).
 
 ### Changed
 
