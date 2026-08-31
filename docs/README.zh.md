@@ -87,6 +87,15 @@ node test/test-registry.mjs
 `transport` 支持 `stdio`（command/args/env/cwd）与 `streamable-http`
 （url/headers）。行加 `disabled: true` 即停用。标记之外的内容逐字节保留。
 
+**与原生 cordis 方言的差异**：`!!js` 标签（profile 的 `cordis.patch.yml` 由
+Loader 求值的 js-yaml 表达式，如官方 README 示例 `env: { TOKEN: !!js
+process.env.GITHUB_TOKEN }`）在项目文件里**不支持**——受管块内出现未解析
+标签会使该文件整体报错跳过（写入 `.dsh/.mcp-diag.json` 并打日志），不会把
+表达式当字面量字符串静默装载。`env`/`headers` 请写字面值，`disabled` 只能是
+`true`/`false`。反之项目文件是超集语法：`env`/`headers` 允许 `KEY: null`
+表示删除该键（装载时被剔除），这在官方 mcp-client 校验里会被拒绝——把这类
+行原样挪回 `cordis.patch.yml` 会装载失败。
+
 ## 工作原理
 
 - **项目发现**：在线 agent 会话的 `session.header.cwd` + dsh 进程启动目录 →
@@ -101,7 +110,8 @@ node test/test-registry.mjs
   保持原名；冲突时双方都改为 `p<sha256(项目根)前6位>_<原名>`（截断 32 字符，
   确定性、与装载顺序无关），避免 `dsh-mcp-client` 按进程根的 serverName
   预留冲突。全局行（profile `cordis.patch.yml` / bundle 层已装载的
-  mcp-client 行）参与占用判定但不改名。
+  mcp-client 行）参与占用判定但不改名。模型可见的工具名用生效名拼
+  `mcp__<生效名>__<原工具名>`，与文件里写的 `serverName` 可能不同。
 - **会话可见性**：agent 创建时按其会话 cwd 解析项目，对该 agent 应用
   `tools.restrict({ deny })`，deny 掉除本会话项目外的全部项目服务器；会话
   无 cwd 时回退 owner 项目（子代理），再回退 dsh 进程 cwd 所在项目。会话

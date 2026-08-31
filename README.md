@@ -96,6 +96,18 @@ MCP server per line:
 (url/headers). Add `disabled: true` to a line to deactivate it. Content outside
 the markers is preserved byte-for-byte.
 
+**Divergences from the native cordis dialect**: the `!!js` tag (a js-yaml
+expression evaluated by the profile loader, e.g. the official README's
+`env: { TOKEN: !!js process.env.GITHUB_TOKEN }`) is **not supported** in
+project files — an unresolved tag inside the managed block makes the whole
+file fail with an explicit error (logged and written to `.dsh/.mcp-diag.json`)
+instead of silently mounting the expression text as a literal string. Write
+literal values in `env`/`headers`; `disabled` must be `true`/`false`. The
+project file is otherwise a superset grammar: `env`/`headers` accept
+`KEY: null` to delete a key (stripped at mount), which the official
+mcp-client schema rejects — such lines would fail if moved back to
+`cordis.patch.yml`.
+
 ## How it works
 
 - **Project discovery**: the `session.header.cwd` of an active agent session,
@@ -118,7 +130,9 @@ the markers is preserved byte-for-byte.
   serverName reservation conflicts that `dsh-mcp-client` makes per process
   root. Global lines (profile `cordis.patch.yml` / mcp-client lines already
   mounted at the bundle level) participate in occupancy determination but are
-  never renamed.
+  never renamed. Model-visible tool names are built from the **effective**
+  name (`mcp__<effectiveServerName>__<rawName>`), which may differ from the
+  `serverName` written in the file.
 - **Session visibility**: when an agent is created, its session cwd resolves
   to a project, and `tools.restrict({ deny })` is applied to that agent to deny
   every project server except those of the session's own project; a session
