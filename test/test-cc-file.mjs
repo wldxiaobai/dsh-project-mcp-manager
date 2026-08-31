@@ -78,6 +78,22 @@ try {
   assert.ok(r3.entryErrors.some((e) => /缺少 command/.test(e)));
   pass("sse and broken entries are rejected per-entry without affecting valid ones");
 
+  // 3b. enabled:false 静默跳过（不装载不报错不占名）；url 无 type 按 http 推断；
+  //     type:"streamable-http" 显式写法容忍。
+  const p3b = await write("quirks.json", JSON.stringify({
+    mcpServers: {
+      "off-switch": { command: "node", enabled: false },
+      "url-only": { url: "https://example.com/mcp" },
+      "full-name": { type: "streamable-http", url: "https://example.com/s" }
+    }
+  }));
+  const r3b = await readMcpJsonFile(p3b, "/work/proj");
+  assert.deepEqual(r3b.entryErrors, [], "enabled:false must be silent, url-only must not error as missing-command");
+  assert.deepEqual(r3b.rows.map((row) => row.rawName).sort(), ["full-name", "url-only"]);
+  assert.equal(r3b.rows.find((row) => row.rawName === "url-only").row.config.transport, "streamable-http");
+  assert.equal(r3b.rows.find((row) => row.rawName === "full-name").row.config.transport, "streamable-http");
+  pass("enabled:false skipped silently; url inferred as http; streamable-http type accepted");
+
   // 4. JSON 损坏：fileError 不得含文件内容片段（~/.claude.json 可能带凭据）
   const secret = "sk-liv${secret-not-allowed-in-error}e";
   const p4 = await write("broken.json", `{"mcpServers": {"a": {"command": "${secret}",}}`);

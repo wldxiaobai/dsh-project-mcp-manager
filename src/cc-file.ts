@@ -36,11 +36,13 @@ export const IGNORE_CLAUDE_JSON_ENV = "DSH_MCP_IGNORE_CLAUDE_JSON";
 /** 配置行来源（冲突遮蔽优先序见 registry：yml > cc-project > user-yml > cc-user）。 */
 export type McpRowSource = "yml" | "cc-project" | "user-yml" | "cc-user";
 
-/** 带来源标记的配置行：主管线合并与快照展示用。 */
+/** 带来源标记的配置行：主管线合并与快照展示用。disabled=true 的行参与占名
+ * （遮蔽下层同名）但不进入装载集合。 */
 export interface SourcedRow {
   rawName: string;
   row: PatchRow;
   source: McpRowSource;
+  disabled?: boolean;
 }
 
 export interface CcReadResult {
@@ -80,7 +82,9 @@ function ccEntryToInput(name: string, entry: CcServerEntry, projectRoot: string)
     return { error: 'sse transport not supported（dsh-mcp-client 仅支持 stdio | streamable-http）' };
   }
   try {
-    if (entry.type === "http") {
+    // url 而无 type/command：按 http 处理（手写文件常见，CC 官方要求 type 但容忍度向实用倾斜）
+    const inferredHttp = entry.type === undefined && typeof entry.url === "string" && entry.command === undefined;
+    if (entry.type === "http" || entry.type === "streamable-http" || inferredHttp) {
       if (typeof entry.url !== "string" || entry.url === "") return { error: 'type:"http" 条目缺少 url' };
       const input = mcpServerInputSchema.parse({
         serverName: name,
@@ -117,6 +121,8 @@ function parseMcpServersValue(mcpServers: unknown, source: McpRowSource, project
     return { rows, entryErrors };
   }
   for (const [name, raw] of Object.entries(mcpServers)) {
+    // enabled:false（README 承诺的跳过语义）：静默不装载、不报错、不占名。
+    if (isPlainObject(raw) && raw.enabled === false) continue;
     if (!SERVER_NAME_RE.test(name)) {
       entryErrors.push(`"${name}": serverName 非法（允许 1-32 位字母、数字、下划线或连字符）`);
       continue;
