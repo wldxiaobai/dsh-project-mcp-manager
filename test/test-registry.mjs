@@ -23,6 +23,15 @@ async function pathExists(path) {
 async function readDiag(projectRoot) {
   return JSON.parse(await readFile(diagFile(projectRoot), "utf8"));
 }
+/** 轮询 diag 直到谓词成立：事件驱动用例里对账链可能仍在落盘（不能用固定 sleep）。 */
+async function waitForDiag(projectRoot, predicate, timeoutMs = 5000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (predicate(await readDiag(projectRoot))) return true;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 150));
+  }
+  return false;
+}
 /** Windows 上 chokidar 关闭后目录句柄可能仍短暂占用：rm 带退避重试。 */
 async function rmRetry(path) {
   for (let attempt = 0; attempt < 20; attempt++) {
@@ -299,7 +308,7 @@ try {
     assert.deepEqual(ccPart11.servers.map((server) => server.serverName).sort(), ["alpha", "beta"]);
     assert.ok(Array.isArray(ccPart11.entryErrors) && ccPart11.entryErrors.some((note) => note.includes("bad")));
     const betaView11 = ccPart11.servers.find((server) => server.serverName === "beta");
-    assert.equal(betaView11.fiberPhase, "pending", "env-skipped row shows pending, not active");
+    assert.equal(betaView11.fiberPhase, "env-missing", "env-skipped row shows its skip reason, not pending");
     const userYml11 = snap11.find((file) => file.source === "user-yml");
     assert.ok(userYml11 === undefined, "no user yml yet");
     const ccUser11 = snap11.find((file) => file.source === "cc-user");
@@ -428,15 +437,29 @@ try {
       const httpOk19 = ctx2.mounts.filter((config) => config.serverName === "http-ok").at(-1);
       assert.equal(httpOk19.headers.Authorization, "Bearer sekret", "in-string interpolation reaches the mount config");
       assert.ok(await registry2.waitForState(dir2, "http-bad", (state) => state === undefined, 500), "invalid expanded url is never mounted");
+      const seen19 = await waitForDiag(dir2, (lines) => lines.some((row) => row.kind === "env-invalid" && row.rawName === "http-bad"), 5000);
+      assert.ok(seen19, "post-expansion schema failure lands as env-invalid diag");
       const diag19 = await readDiag(dir2);
-      assert.ok(
-        diag19.some((row) => row.kind === "env-invalid" && row.rawName === "http-bad"),
-        "post-expansion schema failure lands as env-invalid diag");
       assert.equal(diag19.some((row) => row.error === "not a url"), false, "diag must not echo the offending value");
     } finally {
       delete process.env.CC_TEST_NOTURL;
     }
     pass("registry interpolates Bearer ${VAR} end-to-end and rejects invalid post-expansion urls");
+
+    // 20. P2：yml 禁用行占名遮蔽下层——关掉 yml 的 alpha 后，.mcp.json 同名行
+    // 不得「顶上」装载（修复前：disabled 在读取层直接消失，名字让位给 CC 副本）。
+    const alphaMounts20 = ctx2.mounts.filter((config) => config.serverName === "alpha").length;
+    await writeManagedRows(projectMcpFile(dir2), [
+      { ...stdioRow("alpha"), disabled: true, config: { ...stdioRow("alpha").config, args: ["a-yml.js"] } },
+      stdioRow("eta")
+    ]);
+    await registry2.reconcileNow();
+    assert.ok(ctx2.disposals.includes("alpha"), "disabled yml row unmounts");
+    assert.equal(ctx2.mounts.filter((config) => config.serverName === "alpha").length, alphaMounts20, "disabled name is not taken over by the .mcp.json row");
+    assert.ok(!(await registry2.waitForState(dir2, "alpha", (state) => state !== undefined, 400)), "no alpha state while yml keeps it disabled");
+    const eta20 = await registry2.waitForState(dir2, "eta", (state) => state?.phase === "active", 1000);
+    assert.ok(eta20, "sibling rows unaffected");
+    pass("disabled native rows shadow lower layers instead of yielding the name");
 
     for (const disposer of ctx2.disposers) {
       const cleanup = disposer();

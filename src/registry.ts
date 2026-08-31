@@ -32,7 +32,7 @@
 import chokidar from "chokidar";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import * as mcpClient from "@deepseek-ai/dsh-mcp-client";
 import { extractManagedRows, readPatchFile, type PatchRow } from "./mcp-file.js";
 import {
@@ -225,7 +225,13 @@ export function mergeSourcedRows(candidates: SourcedRow[][]): { rows: DesiredPro
       byName.set(item.rawName, item);
     }
   }
-  return { rows: [...byName.values()].map((item) => ({ rawName: item.rawName, row: item.row, source: item.source })), shadowedOwnCc, shadowedUser };
+  return {
+    rows: [...byName.values()]
+      .filter((item) => item.disabled !== true)
+      .map((item) => ({ rawName: item.rawName, row: item.row, source: item.source })),
+    shadowedOwnCc,
+    shadowedUser
+  };
 }
 
 /**
@@ -246,11 +252,15 @@ export class ProjectMcpRegistry {
 
   private watcher?: ReturnType<typeof chokidar.watch>;
   private watchedFiles: string[] = [];
-  /** 用户层文件所在目录的独立 watcher（.claude.json 走哈希门）。 */
+  /** 用户层具体文件的独立 watcher（.claude.json 走 stat 快路径 + 哈希门）。 */
   private userWatcher?: ReturnType<typeof chokidar.watch>;
   private userWatchedDirs: string[] = [];
   /** 最近一次读到的 ~/.claude.json mcpServers 子树规范化哈希（watcher 门控用）。 */
   private claudeServersHash: string | undefined;
+  /** 上次事件门控看到的 ~/.claude.json size/mtime（幂等重写快路径）。 */
+  private claudeFileStat: { size: number; mtimeMs: number } | undefined;
+  /** 装载被跳过的行（key\0rawName → 原因），快照据此显示 env-missing 而非 pending。 */
+  private skipReasons = new Map<string, string>();
   /** 最近一次用户层读取结果（reconcile 与 snapshot 共享；首轮 reconcile 前为空）。 */
   private userLayer: {
     mcpYml: string;
@@ -436,8 +446,9 @@ export class ProjectMcpRegistry {
       const raw = await readPatchFile(path);
       for (const row of extractManagedRows(raw)) {
         const rawName = rowNameOf(row);
-        if (rawName === undefined || row.disabled === true) continue;
-        rows.push({ rawName, row, source });
+        // disabled 行不跳过：带着占位旗进合并——显式禁用应同时遮蔽下层同名，
+        // 否则「关掉 yml 行」会意外改去装载 .mcp.json 副本。
+        if (rawName !== undefined) rows.push({ rawName, row, source, disabled: row.disabled === true });
       }
     } catch (catchError) {
       const message = catchError instanceof Error ? catchError.message : String(catchError);
@@ -469,14 +480,17 @@ export class ProjectMcpRegistry {
   }
 
   /**
-   * 监听用户层文件所在目录（默认 ~ 与 ~/.dsh 各一个非递归 watcher）。
-   * ~/.claude.json 事件先过 serversHash 门：CC 每次会话都重写整个状态文件，
-   * mcpServers 子树未变就不触发 reconcile。
+   * 监听用户层两个具体文件（不监视整个家目录：chokidar 支持等待不存在的路径
+   * 出现）。~/.claude.json 事件先过 stat 快路径 + serversHash 门：CC 每次会话
+   * 都重写整个状态文件，先比 size/mtime，未变连读都不读；变了再解析并比对
+   * mcpServers 子树哈希，未变不触发 reconcile。
    */
   private async syncUserWatcher(): Promise<void> {
     const paths = this.resolveUserLayerPaths();
-    const dirs = [...new Set([dirname(paths.mcpYml), dirname(paths.claudeJson)])];
-    const keys = dirs.map((dir) => normalizePathKey(dir)).sort();
+    // ~/.dsh 以目录形态监听（可能不存在，chokidar 会等待其出现；非递归、代价小）；
+    // ~/.claude.json 只监听这一个具体文件，家目录其余内容一概不碰。
+    const targets = process.env[IGNORE_CLAUDE_JSON_ENV] === "1" ? [dirname(paths.mcpYml)] : [dirname(paths.mcpYml), paths.claudeJson];
+    const keys = targets.map((target) => normalizePathKey(target)).sort();
     const same = this.userWatchedDirs.length === keys.length && keys.every((key, index) => key === this.userWatchedDirs[index]);
     if (same) return;
     const old = this.userWatcher;
@@ -484,13 +498,9 @@ export class ProjectMcpRegistry {
     if (old !== undefined) await old.close().catch(() => {});
     this.userWatchedDirs = keys;
     if (keys.length === 0 || this.disposed) return;
-    const watcher = chokidar.watch(dirs, {
+    const watcher = chokidar.watch(targets, {
       ignoreInitial: true,
-      depth: 1,
-      ignored: (candidate: string) => {
-        const parts = candidate.split(/[/\\]/);
-        return parts.some((part) => part === "node_modules" || part === ".git" || part === ".hg" || part === ".svn");
-      }
+      depth: 0
     });
     const onEvent = (path: string) => {
       const target = normalizePathKey(path);
@@ -513,6 +523,15 @@ export class ProjectMcpRegistry {
   private async claudeGateThenKick(): Promise<void> {
     if (this.disposed) return;
     const { claudeJson } = this.resolveUserLayerPaths();
+    try {
+      // stat 快路径：CC 反复重写但 size/mtime 全同（幂等重写）时连文件都不碰。
+      const statNow = await stat(claudeJson);
+      const seen = this.claudeFileStat;
+      if (seen !== undefined && seen.size === statNow.size && seen.mtimeMs === statNow.mtimeMs) return;
+      this.claudeFileStat = { size: statNow.size, mtimeMs: statNow.mtimeMs };
+    } catch {
+      this.claudeFileStat = undefined; // 读不动（含 unlink）：落到哈希门/诊断路径
+    }
     let hash: string | undefined;
     try {
       hash = (await readClaudeUserFile(claudeJson)).serversHash;
@@ -597,8 +616,16 @@ export class ProjectMcpRegistry {
     const current = [...project.servers.values()].map((state) => ({ rawName: state.rawName, effectiveName: state.effectiveName, row: state.row }));
     const plan = planProjectChanges(current, entry.rows, this.effective, key);
     // 先卸载（同名重装载必须先释放 serverName 预留），再装载。
-    for (const rawName of plan.toUnmount) await this.unmountServer(project, rawName);
-    for (const item of plan.toMount) await this.mountServer(project, item);
+    for (const rawName of plan.toUnmount) {
+      await this.unmountServer(project, rawName);
+      this.skipReasons.delete(key + "\u0000" + rawName);
+    }
+    for (const item of plan.toMount) {
+      const skip = await this.mountServer(project, item);
+      const markKey = key + "\u0000" + item.rawName;
+      if (skip === undefined) this.skipReasons.delete(markKey);
+      else this.skipReasons.set(markKey, skip);
+    }
   }
 
   // ── 装载诊断（写 <projectRoot>/.dsh/.mcp-diag.json，宿主日志不可见时定位失败）──
@@ -624,22 +651,23 @@ export class ProjectMcpRegistry {
     }
   }
 
-  private async mountServer(project: ProjectEntry, item: DesiredProjectRow) {
-    if (this.disposed) return;
+  /** 装载一个期望行；返回跳过原因（有则不建装载实例），undefined = 已发起装载。 */
+  private async mountServer(project: ProjectEntry, item: DesiredProjectRow): Promise<string | undefined> {
+    if (this.disposed) return undefined;
     const key = projectKeyOf(project.projectRoot);
     const effectiveName = this.effective.get(key + "\u0000" + item.rawName);
-    if (effectiveName === undefined) return;
+    if (effectiveName === undefined) return undefined;
     await this.writeDiag(project.projectRoot, { kind: "attempt", rawName: item.rawName, effectiveName });
     let config: Record<string, unknown>;
     try {
       let input = inputFromPatchRow(item.row);
-      // ${VAR} 整值展开对所有来源统一（CLI 按 CC 习惯写进原生 yml 的引用也要生效）；
-      // 值不含 ${NAME} 整值形态的行行为不变。
+      // ${VAR} 串内插值展开对所有来源统一（CLI 按 CC 习惯写进原生 yml 的
+      // Bearer ${TOKEN} 也要生效）；值不含 ${NAME} 引用的行行为不变。
       const expanded = expandEnvRefs(input, process.env);
       if (!expanded.ok) {
         await this.writeDiag(project.projectRoot, { kind: "env-missing", rawName: item.rawName, effectiveName, missingVar: expanded.missingVar });
         this.ctx.logger.warn(`项目 MCP "${item.rawName}"（${project.projectRoot}）未装载：环境变量 \${${expanded.missingVar}} 未设置`);
-        return;
+        return "env-missing";
       }
       input = expanded.input;
       // 展开后的值可能不再合法（占位 `${URL}` 骗过了装载前 schema），补跑一次校验，
@@ -649,7 +677,7 @@ export class ProjectMcpRegistry {
         const note = revalidated.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ");
         await this.writeDiag(project.projectRoot, { kind: "env-invalid", rawName: item.rawName, effectiveName, error: note });
         this.ctx.logger.warn(`项目 MCP "${item.rawName}"（${project.projectRoot}）配置无效：\${VAR} 展开后校验失败（${note}）`);
-        return;
+        return "env-invalid";
       }
       input = revalidated.data;
       const configInput: any = { ...input, serverName: effectiveName };
@@ -661,7 +689,7 @@ export class ProjectMcpRegistry {
       const message = error instanceof Error ? error.message : String(error);
       await this.writeDiag(project.projectRoot, { kind: "config-invalid", rawName: item.rawName, error: message });
       this.ctx.logger.warn(`项目 MCP "${item.rawName}"（${project.projectRoot}）配置无效：${message}`);
-      return;
+      return "config-invalid";
     }
     let fiber: any;
     try {
@@ -670,7 +698,7 @@ export class ProjectMcpRegistry {
       const message = error instanceof Error ? error.message : String(error);
       await this.writeDiag(project.projectRoot, { kind: "plugin-throw", effectiveName, error: message });
       this.ctx.logger.error(`项目 MCP "${effectiveName}"（${project.projectRoot}）装载失败：${message}`);
-      return;
+      return "plugin-throw";
     }
     const state: ProjectServerState = {
       projectRoot: project.projectRoot,
@@ -704,6 +732,7 @@ export class ProjectMcpRegistry {
         this.kickSweep();
       }
     );
+    return undefined;
   }
 
   private async unmountServer(project: ProjectEntry, rawName: string) {
@@ -901,7 +930,7 @@ export class ProjectMcpRegistry {
       ...view,
       ...(source === undefined ? {} : { source }),
       ...(effectiveName === undefined ? {} : { effectiveServerName: effectiveName }),
-      fiberPhase: state === undefined ? (row.disabled === true ? null : "pending") : phaseToFiberPhase(state.phase),
+      fiberPhase: state === undefined ? (row.disabled === true ? null : this.skipReasons.get(key + "\u0000" + rawName) ?? "pending") : phaseToFiberPhase(state.phase),
       toolCount: state !== undefined && state.phase === "active" ? mcpToolCount(this.ctx, state.effectiveName) : 0
     };
   }
@@ -1005,7 +1034,7 @@ export class ProjectMcpRegistry {
         source,
         ...(effectiveName === undefined ? {} : { effectiveServerName: effectiveName }),
         fiberPhase: state === undefined
-          ? (row.disabled === true ? null : "pending")
+          ? (row.disabled === true ? null : this.skipReasons.get(key + "\u0000" + rawName) ?? "pending")
           : owned
             ? phaseToFiberPhase(state.phase)
             : null, // 该名字由更高优先层装载：本分区行只作展示
