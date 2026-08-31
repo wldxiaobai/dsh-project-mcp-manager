@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- CC entries with `"disabled": true` are treated exactly like `"enabled": false`
+  — skipped silently, and (unlike a native-yml `disabled: true` row) without
+  occupying the name in the shadow chain.
+- `${VAR}` references in stdio `cwd` are now expanded like every other string
+  field, and a `url` containing a reference passes the pre-mount schema in any
+  position — including the host part (`https://${HOST}/mcp`); validity is
+  judged only on the expanded value (`env-invalid` skip when it fails).
+- Registry scenarios for the post-release fixes (project-vs-user empty `cwd`,
+  exact-config-file watcher kicks) and CLI tests for the
+  `DSH_MCP_IGNORE_CLAUDE_JSON` listing gate and real project-root fallback.
+
+### Changed
+
+- The user-layer watcher watches the two exact file paths `~/.dsh/mcp.yml` and
+  `~/.claude.json` instead of the `~/.dsh` directory, and `~/.claude.json`
+  events are arbitrated by the canonical-JSON content hash alone — the
+  size/mtime fast path is gone, since same-instant, same-length rewrites with
+  different content must not be swallowed.
+- Snapshot/row views keep `fiberPhase` on the strict mount-lifecycle vocabulary
+  (`pending` for a row that never mounted) and report the concrete reason on a
+  separate `skipReason` field (`env-missing` / `env-invalid` / `config-invalid`
+  / `plugin-throw`).
+- Dead export `ENV_REF_RE` removed from `src/model.ts` (superseded by the
+  embedded-reference scan).
+
+### Fixed
+
+- An empty stdio `cwd` now resolves **per source**: project-layer rows
+  (`.dsh/mcp.yml`, `.mcp.json`) get the project root, while user-layer rows
+  (`~/.dsh/mcp.yml`, `~/.claude.json`) keep inheriting the dsh host's working
+  directory — previously every empty `cwd` was resolved against the project
+  root of whichever project mounted the row.
+- The project watcher kick now matches the exact config-file paths of known
+  project roots; a stray `<root>/**/.dsh/mcp.yml` deeper in the tree no longer
+  triggers a reconciliation.
+- `.dsh/.mcp-diag.json` is written atomically (temp file + rename), so
+  concurrent readers (snapshot tooling, tests) can no longer observe
+  half-written JSON; stale skip-reason marks for deleted unmounted rows are
+  pruned during reconciliation.
+
 ## [0.2.0] - 2026-09-01
 
 ### Added

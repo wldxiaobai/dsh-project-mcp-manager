@@ -28,7 +28,7 @@ npm install -g deepseek-ai/dsh         # 或从 GitHub 源码安装
 dsh plugin --profile web add dsh-project-mcp-manager@latest
 
 # 安装指定版本（版本号可先 npm view dsh-project-mcp-manager versions 查看）
-dsh plugin --profile web add dsh-project-mcp-manager@0.1.0
+dsh plugin --profile web add dsh-project-mcp-manager@0.2.0
 ```
 
 **方式二：直接 pnpm 安装**（与方式一等价）：
@@ -47,7 +47,7 @@ pnpm add link:<你的 dsh-mcp-project 源码目录>   # 例如 D:\dev\dsh-mcp-pr
 ```
 
 **升级/锁定版本**：重跑方式一的 `add` 命令并带上目标版本后缀——`@latest`
-升级到最新，`@0.1.0` 锁定到指定版本。
+升级到最新，`@0.2.0` 锁定到指定版本。
 
 ## 构建与测试
 
@@ -115,12 +115,17 @@ process.env.GITHUB_TOKEN }`）在项目文件里**不支持**——受管块内�
   `type: "streamable-http"` 都映射为 `streamable-http`；缺省 `type` 时，
   只带 `url` 不带 `command` 的条目按 http 处理，其余视为 stdio。
 - stdio 的 `cwd`：项目层行的空 `cwd` 解析为项目根；用户层行
-  （`~/.dsh/mcp.yml` 与 `~/.claude.json`）解析为 dsh 宿主的工作目录——
-  用户层 MCP 是一份共享服务器，不是每个项目根各一份。
-- 未知 CC 键容忍忽略；`enabled: false` 静默跳过该条目（不记诊断，也不占名）。
+  （`~/.dsh/mcp.yml` 与 `~/.claude.json`）解析为 dsh 宿主的工作目录。
+  注意"用户层"不等于共享进程：用户层行仍**按每个已知项目各装一个进程**
+  （两个项目各开会话就是两个 fiber，按生效名规则改名为 `p<hash>_…`）——
+  共享的只是 `cwd`，不是连接。
+- 未知 CC 键容忍忽略；`enabled: false`（以及作为别名的 `disabled: true`）
+  静默跳过该条目（不记诊断，也不占名）。
 - 原生 yml 里 `disabled: true` 的行仍**占名遮蔽**下层同名行：下层副本一并
   不装载——禁用意味着"这个名字不许跑"，而不是"让位给 CC 副本"。CC 侧的
-  `enabled: false` 没有占位效果。
+  `enabled: false` 没有占位效果。推论：不删除、只在 `.mcp.json` 里关掉一条，
+  同名的**用户层行会在该项目浮上来**装载；要把名字在所有层压住，请在
+  `.dsh/mcp.yml` 留一条 `disabled: true` 占位行。
 - 坏文件/坏条目不影响其他服务器，且**按源隔离**：`.mcp.json` 坏了不会卸掉
   同项目的 yml 行（反之亦然）；条目错误写入 `.dsh/.mcp-diag.json` 与宿主
   日志（诊断从不带文件内容）。只有 `.mcp.json`、没用过原生 yml 的项目，
@@ -143,15 +148,18 @@ process.env.GITHUB_TOKEN }`）在项目文件里**不支持**——受管块内�
 
 ## `${VAR}` 展开
 
-以上任一来源中，`command`、`args[*]`、`env[*]`、`url`、`headers[*]` 里的
+以上任一来源中，`command`、`args[*]`、`env[*]`、`cwd`、`url`、`headers[*]` 里的
 `${VAR}` 引用（正则 `\$\{[A-Za-z_][A-Za-z0-9_]*\}`，允许出现在字符串任意
 位置）在装载时刻从 dsh 宿主进程环境做**串内插值**——与 Claude Code 同语义，
 `"Authorization": "Bearer ${TOKEN}"` 这类写法可用。变量未设置**或为空串**时
 该行跳过装载，诊断记 `env-missing` 并只带变量名（绝不带值）；需要保留字面
-`${NAME}` 的写法目前不可表达。展开后的输入会再过一遍装载 schema 复验，产出
-非法配置（如 `${GATEWAY}/mcp` 拼出非 URL）时以 `env-invalid` 跳过，不把坏值
-递给装载后端。快照/行视图里装载失败的行显示具体跳过原因（`env-missing` /
-`env-invalid` 等），不再是恒 `pending`。插件任何写路径都不落盘展开后的值；
+`${NAME}` 的写法目前不可表达。含引用的 `url` 在装载前的 schema 校验里任意
+位置都放行（包括 host 段，如 `https://${HOST}/mcp`）——合法性只在展开后判定：
+展开结果会再过一遍装载 schema 复验，产出非法配置（如 `${GATEWAY}/mcp` 拼出
+非 URL）时以 `env-invalid` 跳过，不把坏值递给装载后端。快照/行视图里
+`fiberPhase` 保持装载生命周期枚举（未挂上的行是 `pending`），跳过原因走独立
+的 `skipReason` 字段（`env-missing` / `env-invalid` / `config-invalid` /
+`plugin-throw`）。插件任何写路径都不落盘展开后的值；
 CLI 写入时 `${VAR}` 原样保留——配置可以进 git，凭据留在环境里。
 
 ## CLI：`dsh-mcp`
@@ -184,10 +192,13 @@ dsh-mcp remove gitlab # 只动原生 yml；命中只读层时给出编辑指引
   `@deepseek-ai/dsh-mcp-client` 实例（`ctx.plugin`），注册进全局工具层。
   同一项目内多会话共享同一连接。
 - **热重载**：chokidar 监听各项目根（depth 2，忽略 node_modules/.git/.hg/
-  .svn），`.dsh/mcp.yml` 或 `.mcp.json` 的增删改经 150ms 防抖触发全量对账：
-  新增行装载、删除行卸载、配置变化重装。另有独立 watcher 监听用户层：
-  `~/.dsh` 目录（新建的 `~/.dsh/mcp.yml` 也能被发现）与 `~/.claude.json`
-  单文件——不监听家目录整体——事件先过文件 stat 快路径，再走上文哈希门。
+  .svn），但只有**已知项目根的精确配置文件**（`<projectRoot>/.dsh/mcp.yml`
+  与 `<projectRoot>/.mcp.json`）的改动经 150ms 防抖触发全量对账：新增行
+  装载、删除行卸载、配置变化重装。另有独立 watcher 以**两个精确文件路径**
+  监听用户层：`~/.dsh/mcp.yml` 与 `~/.claude.json`（chokidar v5 对被监听的
+  缺失文件能在其创建时补发事件，前提是父目录已存在）——不监听家目录整体。
+  `~/.claude.json` 事件只由规范化内容哈希门裁决（没有 size/mtime 快路径：
+  同刻、同体积而内容不同的重写不能被吞掉）。
 - **生效名**：原始 `serverName` 在整个目录（全局行 + 全部项目行；每个项目的
   行集合含遮蔽后幸存的用户层行）中唯一时
   保持原名；冲突时双方都改为 `p<sha256(项目根)前6位>_<原名>`（截断 32 字符，

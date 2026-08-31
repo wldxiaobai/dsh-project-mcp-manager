@@ -33,7 +33,7 @@ dsh plugin --profile web add dsh-project-mcp-manager@latest
 
 # Install a specific version (check available versions with
 # npm view dsh-project-mcp-manager versions)
-dsh plugin --profile web add dsh-project-mcp-manager@0.1.0
+dsh plugin --profile web add dsh-project-mcp-manager@0.2.0
 ```
 
 **Option 2: install directly with pnpm** (equivalent to option 1):
@@ -53,7 +53,7 @@ pnpm add link:<path-to-your-dsh-mcp-project-source>   # e.g. D:\dev\dsh-mcp-proj
 ```
 
 **Upgrading / pinning versions**: re-run the `add` command from option 1 with
-the desired version suffix — `@latest` upgrades to the newest release, `@0.1.0`
+the desired version suffix — `@latest` upgrades to the newest release, `@0.2.0`
 pins to a specific version.
 
 ## Build & test
@@ -131,14 +131,20 @@ Notes and limits:
   `command`) is treated as http, everything else as stdio.
 - stdio `cwd`: for project-layer rows an empty `cwd` resolves to the project
   root; for user-layer rows (both `~/.dsh/mcp.yml` and `~/.claude.json`) it
-  resolves to the dsh host's working directory — a user MCP is one shared
-  server, not one per-project-root copy.
-- Unknown CC keys are ignored per entry. `enabled: false` skips the row
-  silently (no diagnostic, and no shadowing — see below).
+  resolves to the dsh host's working directory. Note what "user layer" does
+  *not* mean: user rows still mount **one process per known project** (a
+  session in two projects gets two fibers, renamed `p<hash>_…` per the
+  effective-name rules) — only their `cwd` is shared, not the connection.
+- Unknown CC keys are ignored per entry. `enabled: false` — and, as an alias,
+  `disabled: true` — skips the row silently (no diagnostic, and no name
+  occupancy — see below).
 - A `disabled: true` row in a **native yml** still occupies its name in the
   shadow chain: same-name rows in lower layers are shadowed too and stay
   unmounted — disabled means "this name must not run", not "let the CC copy
-  through". CC-side `enabled: false` has no placeholder effect.
+  through". CC-side `enabled: false` has no placeholder effect. Consequence:
+  switching off a `.mcp.json` entry without deleting it lets a **same-named
+  user-layer row surface** in that project; to suppress the name across all
+  layers, keep a `disabled: true` placeholder row in `.dsh/mcp.yml`.
 - Broken files/entries never take down the valid ones; each source fails
   independently, so an unreadable `.mcp.json` cannot unmount the project's
   yml rows (and vice versa). Entry errors land in `.dsh/.mcp-diag.json` and
@@ -167,17 +173,21 @@ effective-name conflict renaming (see How it works).
 ## `${VAR}` expansion
 
 `${VAR}` references (matching `\$\{[A-Za-z_][A-Za-z0-9_]*\}` anywhere in the
-string) in `command`, `args[*]`, `env[*]`, `url` and `headers[*]` — from **any**
-of the four sources above — are **interpolated** from the dsh host process
-environment at mount time (same semantics as Claude Code, so
+string) in `command`, `args[*]`, `env[*]`, `cwd`, `url` and `headers[*]` — from
+**any** of the four sources above — are **interpolated** from the dsh host
+process environment at mount time (same semantics as Claude Code, so
 `"Authorization": "Bearer ${TOKEN}"` works). An unset or empty variable makes
 the row skip with an `env-missing` diagnostic naming the variable (never its
 value); a literal `${NAME}` that must survive unexpanded is not expressible.
-Expanded inputs are re-validated against the mount schema before spawn;
-a malformed result (e.g. a non-URL `${GATEWAY}/mcp`) skips the row with an
-`env-invalid` diagnostic instead of reaching the mount backend. In the
-snapshot/row views, a name that failed to mount shows its skip reason
-(`env-missing` / `env-invalid` / …) instead of `pending`. Values are never
+A `url` containing a reference is accepted by the pre-mount schema in any
+position — including the host part, e.g. `https://${HOST}/mcp` — because
+validity is judged only after expansion: expanded inputs are re-validated
+against the mount schema before spawn, and a malformed result (e.g. a non-URL
+`${GATEWAY}/mcp`) skips the row with an `env-invalid` diagnostic instead of
+reaching the mount backend. In the snapshot/row views, `fiberPhase` stays on
+the mount-lifecycle vocabulary (`pending` for a row that never mounted) and
+the reason rides on a separate `skipReason` field (`env-missing` /
+`env-invalid` / `config-invalid` / `plugin-throw`). Values are never
 persisted anywhere by the plugin; the CLI writes `${VAR}` through literally,
 so secrets can live in the environment while configs live in git.
 
@@ -215,13 +225,17 @@ fails with an explanation. `--transport` accepts `stdio` (default) and `http`;
   registers it into the global tool layer. Multiple sessions inside the same
   project share a single connection.
 - **Hot reload**: chokidar watches each project root (depth 2, ignoring
-  node_modules/.git/.hg/.svn); changes to `.dsh/mcp.yml` or `.mcp.json`
-  trigger a full reconciliation after a 150 ms debounce: added lines are
-  mounted, removed lines are unmounted, and config changes are remounted. A
-  second watcher covers the user layer: the `~/.dsh` directory (so a created
-  `~/.dsh/mcp.yml` is noticed) and the single file `~/.claude.json` — never
-  the home directory at large — behind a file-stat fast path plus the hash
-  gate described above.
+  node_modules/.git/.hg/.svn), but only edits to the **exact** config files of
+  known project roots — `<projectRoot>/.dsh/mcp.yml` and
+  `<projectRoot>/.mcp.json` — trigger a full reconciliation after a 150 ms
+  debounce: added lines are mounted, removed lines are unmounted, and config
+  changes are remounted. A second watcher covers the user layer as two
+  **exact file paths** — `~/.dsh/mcp.yml` and `~/.claude.json` (chokidar v5
+  notices a watched file being created as long as its parent directory
+  exists) — never the home directory at large. `~/.claude.json` events are
+  arbitrated by the canonical-JSON content hash alone (no size/mtime fast
+  path: same-instant, same-length rewrites with different content must not be
+  swallowed).
 - **Effective names**: when the original `serverName` is unique across the
   whole catalog (global lines + all project lines, where each project's
   merged rows include the user-layer rows that survived shadowing) it keeps

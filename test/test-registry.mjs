@@ -354,7 +354,7 @@ try {
     assert.ok(eta13 !== undefined, "native yml row with ${VAR} mounts expanded");
     assert.equal(eta13.env.T, "sekret");
     assert.equal(eta13.command, "node");
-    pass("registry expands whole-value ${VAR} refs from the environment for all sources");
+    pass("registry expands ${VAR} refs from the environment for all sources");
 
     // 14. 用户层 yml 热装载（watcher 事件驱动，非 reconcileNow）。fake home 已在
     // 项目树外，用户 watcher 是唯一可能的触发源；先稳定计数再写文件，断言计数
