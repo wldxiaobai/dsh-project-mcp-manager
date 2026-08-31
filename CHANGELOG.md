@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-01
+
 ### Added
 
 - Claude Code read-only compatibility layer (`src/cc-file.ts`): the plugin now
@@ -195,6 +197,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Security note: `stdio` lines in `.dsh/mcp.yml` spawn their `command` inside the dsh host
 process, so project files are executable-code carriers — add them only in trusted projects.
 
-[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.1.1...HEAD
+[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/releases/tag/v0.1.0

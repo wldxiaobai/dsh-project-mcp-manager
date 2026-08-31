@@ -2,7 +2,7 @@
 
 ## 项目概览
 
-`dsh-project-mcp-manager`（v0.1.1）是一个 **DSH 插件**（无 UI）：为每个项目自动装载 MCP 服务器。在项目根放 `<projectRoot>/.dsh/mcp.yml`，dsh 会话在该项目开启时自动经 `@deepseek-ai/dsh-mcp-client` 装载其中的 MCP 服务器，文件改动热重载，工具可见性按会话 cwd 隔离。
+`dsh-project-mcp-manager`（v0.2.0）是一个 **DSH 插件**（无 UI）：为每个项目自动装载 MCP 服务器。在项目根放 `<projectRoot>/.dsh/mcp.yml`，dsh 会话在该项目开启时自动经 `@deepseek-ai/dsh-mcp-client` 装载其中的 MCP 服务器，文件改动热重载，工具可见性按会话 cwd 隔离。另提供 Claude Code 只读兼容层（`<projectRoot>/.mcp.json` 与 `~/.claude.json` 顶层 `mcpServers` 白名单）和 `dsh-mcp` CLI（只管原生 yml）。
 
 - 语言：TypeScript（ESM，`"type": "module"`），`target ES2022` / `module NodeNext`，`strict: true`（`noImplicitAny: false`）。
 - 编译产物：`src/` → `lib/`（`main: lib/index.js`）。
@@ -12,12 +12,14 @@
 ## 目录结构
 
 - `src/index.ts`：插件入口。`apply(ctx)` 构造 `ProjectMcpRegistry`，并提供 `globalNames()`（从 loader entries 的 `config.patches` 提取全局已装载 mcp-client 行的 serverName，供冲突判定）。
-- `src/registry.ts`：核心。`ProjectMcpRegistry` 类——项目发现、chokidar 文件监听（150ms 防抖）、`reconcileAll()` 全量对账、装载/卸载（`ctx.plugin`）、按会话 `tools.restrict({ deny })`、`snapshot()`/`serverView()` 状态查询。纯函数 `planProjectChanges()` 计算 toMount/toUnmount。
-- `src/model.ts`：配置模型（纯函数 + zod schema）。`effectiveServerNames()`（全局目录内唯一则保持原名，冲突改 `p<sha256(projectKey)前6hex>_<原名>`，截 32 字符）、`denySetFor()`、`toOfficialConfig()`、`toPatchRow()`、`patchRowToView()`（脱敏）、`inputFromPatchRow()`。
+- `src/registry.ts`：核心。`ProjectMcpRegistry` 类——项目发现、chokidar 文件监听（150ms 防抖；项目 `.dsh/mcp.yml` + `.mcp.json` 精确路径 kick，用户层 watcher 盯 `~/.dsh` 目录与 `~/.claude.json`，后者带 mtime/stat 快路径 + canonical-JSON hash 门）、`reconcileAll()` 全量对账（四层 shadow 合并 `mergeSourcedRows`：project yml > project `.mcp.json` > user yml > `.claude.json` 白名单；yml `disabled: true` 占名遮蔽，CC `enabled:false` 静默跳过）、装载/卸载（`ctx.plugin`，挂载时 `expandEnvRefs` 做 `${VAR}` 串内插值，未定义/空串→`env-missing`，展开后复验失败→`env-invalid`）、按会话 `tools.restrict({ deny })`、`snapshot()`/`serverView()` 状态查询（snapshot 按 source 分区，含 skip 原因）。纯函数 `planProjectChanges()` 计算 toMount/toUnmount。
+- `src/model.ts`：配置模型（纯函数 + zod schema）。`effectiveServerNames()`（全局目录内唯一则保持原名，冲突改 `p<sha256(projectKey)前6hex>_<原名>`，截 32 字符）、`denySetFor()`、`toOfficialConfig()`、`toPatchRow()`、`patchRowToView()`（脱敏）、`inputFromPatchRow()`、`expandEnvRefs(input, env)`（`${NAME}` 串内插值，EMBEDDED_ENV_REF_RE；空串按缺失）、`ccServerEntrySchema`（looseObject，容忍 CC 未知键）。
+- `src/cc-file.ts`：CC 只读兼容读取器。`readMcpJsonFile(path, projectRoot)` 解析 `<projectRoot>/.mcp.json`（project 行 cwd=项目根），`readClaudeUserFile(path)` 只取 `~/.claude.json` 顶层 `mcpServers` 白名单（user 行 cwd=""，JSON 错误脱敏、绝不回显文件内容）；`canonicalJsonString`/`mcpServersHash` 支撑 hash 门；`McpRowSource = "yml"|"cc-project"|"user-yml"|"cc-user"`、`SourcedRow`、`CcReadResult{rows,entryErrors,fileError?,serversHash?}`。kill switch：env `DSH_MCP_IGNORE_CLAUDE_JSON=1`。
+- `src/cli.ts`：`dsh-mcp` CLI（package.json `bin`）。`add`/`list`/`get`/`remove`，`--scope project|user`，只写原生 `.dsh/mcp.yml`（走 `writeManagedRows`），`runCli(argv, io, deps)` 供进程内测试；手搓 argv 解析，不识别的 `-x` 视为服务器参数（positional），`--` 透传。
 - `src/mcp-file.ts`：`.dsh/mcp.yml` 读写。受管块 begin/end 标记（`# >>> dsh-project-mcp-manager:mcp:begin` / `# <<< ...:end`）之间的 YAML insert 列表；标记外内容逐字节保留；原子写（临时文件+rename）+ 锁文件（`<path>.mcp-project.lock`，30s 陈旧锁）。
 - `src/project-root.ts`：`findProjectRoot(cwd)` —— 向上找最近含 `.git` 的祖先目录，找不到退回 cwd（与 dsh 官方 skills 发现规则一致）。
 - `src/status.ts`：`mcpToolCount(ctx, serverName)`，按 `mcp__<serverName>__` 前缀数全局工具层里的注册数。
-- `test/`：`test-model.mjs`、`test-mcp-file.mjs`、`test-registry.mjs`（node 直接跑，无测试框架）。
+- `test/`：`test-model.mjs`、`test-mcp-file.mjs`、`test-cc-file.mjs`、`test-registry.mjs`、`test-cli.mjs`（node 直接跑，无测试框架）。
 - `README.md` / `docs/README.zh.md` / `CHANGELOG.md`：装载模型与配置格式的权威说明。
 
 ## 常用命令
@@ -25,7 +27,7 @@
 ```bash
 npm install
 npm run build        # tsc -p tsconfig.json → lib/
-npm test             # 依次 node 跑 test/ 下三个 .mjs
+npm test             # 依次 node 跑 test/ 下五个 .mjs（pretest 先 build）
 npx tsc --noEmit     # 仅类型检查
 ```
 
