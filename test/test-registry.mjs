@@ -27,7 +27,12 @@ async function readDiag(projectRoot) {
 async function waitForDiag(projectRoot, predicate, timeoutMs = 5000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
-    if (predicate(await readDiag(projectRoot))) return true;
+    try {
+      if (predicate(await readDiag(projectRoot))) return true;
+    } catch {
+      // diag 尚不存在或正被半读到截断 JSON：视为「暂不满足」，继续轮询。
+      // （writeDiag 用非原子的 writeFile，轮询方必须自己扛住中间态。）
+    }
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 150));
   }
   return false;
@@ -261,7 +266,9 @@ try {
 
   // ── 10+. Claude Code 适配层：.mcp.json / ~/.claude.json / 影子优先 / ${VAR} ──
   const dir2 = await mkdtemp(join(tmpdir(), "dsh-mcp-cc-"));
-  const home2 = join(dir2, "fakehome"); // dir2 本身即进程 cwd 项目；fakehome 只是注入的用户层目录
+  // fake home 必须落在项目树之外（与任何项目根无祖先关系）：用户层热重载只能
+  // 由用户 watcher 证明，不许借项目 watcher 的 depth 覆盖冒充。
+  const home2 = await mkdtemp(join(tmpdir(), "dsh-mcp-cc-home-"));
   await mkdir(join(home2, ".dsh"), { recursive: true });
   const savedBin = process.env.CC_TEST_BIN;
   const savedMissing = process.env.CC_TEST_MISSING;
@@ -348,10 +355,20 @@ try {
     assert.equal(eta13.command, "node");
     pass("registry expands whole-value ${VAR} refs from the environment for all sources");
 
-    // 14. 用户层 yml 热装载（watcher 事件驱动，非 reconcileNow）
+    // 14. 用户层 yml 热装载（watcher 事件驱动，非 reconcileNow）。fake home 已在
+    // 项目树外，用户 watcher 是唯一可能的触发源；先稳定计数再写文件，断言计数
+    // 增长才不会被上一节残留的 debounce 定时器假绿。
+    let count14 = registry2.debugReconcileCount;
+    for (let waited = 0; waited < 6000; waited += 300) {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
+      const next = registry2.debugReconcileCount;
+      if (next === count14) break;
+      count14 = next;
+    }
     await writeManagedRows(join(home2, ".dsh", "mcp.yml"), [stdioRow("epsilon")], { createIfMissing: true });
     const epsilonActive = await registry2.waitForState(dir2, "epsilon", (state) => state?.phase === "active", 5000);
     assert.ok(epsilonActive, "user ~/.dsh/mcp.yml row hot-mounts via the user watcher");
+    assert.ok(registry2.debugReconcileCount > count14, "the user yml write itself must have driven the reconcile");
     pass("registry watches and hot-mounts the user ~/.dsh/mcp.yml");
 
     // 15. ~/.claude.json 哈希门：CC 重写无关状态位不触发 reconcile
@@ -520,6 +537,22 @@ try {
     assert.equal(userNoCwd22.cwd, "", "empty cwd at the user layer stays host-inherit");
     pass("empty stdio cwd resolves to the project root for project sources and stays host-inherit for user sources");
 
+    // 23. P1 回归：项目 watcher 只认「已知项目根下的精确配置文件」。修复前：
+    // kick 按「以 .dsh/mcp.yml 结尾」的后缀匹配，项目树里任何嵌套层的同名文件
+    // 都算命中。这里钉住精确语义：stray 目录下的 .dsh/mcp.yml 不得惊动管线。
+    let count23 = registry2.debugReconcileCount;
+    for (let waited = 0; waited < 6000; waited += 300) {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
+      const next = registry2.debugReconcileCount;
+      if (next === count23) break;
+      count23 = next;
+    }
+    await mkdir(join(dir2, "stray", ".dsh"), { recursive: true });
+    await writeFile(join(dir2, "stray", ".dsh", "mcp.yml"), "- insert:\n", "utf8");
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 900));
+    assert.equal(registry2.debugReconcileCount, count23, "a stray nested .dsh/mcp.yml must not drive reconciles");
+    pass("project watcher kicks only on the exact config files of known project roots");
+
     for (const disposer of ctx2.disposers) {
       const cleanup = disposer();
       if (typeof cleanup === "function") cleanup();
@@ -531,6 +564,7 @@ try {
     else process.env.CC_TEST_MISSING = savedMissing;
     process.chdir(dir);
     await rmRetry(dir2);
+    await rmRetry(home2);
   }
 } finally {
   process.chdir(originalCwd);

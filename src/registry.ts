@@ -252,9 +252,9 @@ export class ProjectMcpRegistry {
 
   private watcher?: ReturnType<typeof chokidar.watch>;
   private watchedFiles: string[] = [];
-  /** 用户层具体文件的独立 watcher（.claude.json 走 stat 快路径 + 哈希门）。 */
+  /** 用户层 watcher 当前盯的精确文件路径集合。 */
   private userWatcher?: ReturnType<typeof chokidar.watch>;
-  private userWatchedDirs: string[] = [];
+  private userWatchedPaths: string[] = [];
   /** 最近一次读到的 ~/.claude.json mcpServers 子树规范化哈希（watcher 门控用）。 */
   private claudeServersHash: string | undefined;
   /** 上次事件门控看到的 ~/.claude.json size/mtime（幂等重写快路径）。 */
@@ -406,17 +406,13 @@ export class ProjectMcpRegistry {
         return parts.some((part) => part === "node_modules" || part === ".git" || part === ".hg" || part === ".svn");
       }
     });
-    // .mcp.json 与 .dsh/mcp.yml 平级热重载：按「已知项目根下的精确文件」比对，
-    // 嵌套目录里的同名文件不误触发。
+    // .mcp.json 与 .dsh/mcp.yml 平级热重载：都按「已知项目根下的精确文件」比对，
+    // 项目树里其它位置的同名文件（嵌套子目录的 .dsh/mcp.yml 等）不误触发。
     const ccFiles = new Set(roots.map((root) => normalizePathKey(projectMcpJsonFile(root))));
+    const ymlFiles = new Set(roots.map((root) => normalizePathKey(projectMcpFile(root))));
     const kick = (path: string) => {
-      const parts = String(path ?? "").split(/[/\\]/).filter(Boolean);
-      const name = parts[parts.length - 1];
-      if (name === PROJECT_MCP_FILE && parts.length >= 2 && parts[parts.length - 2] === ".dsh") {
-        this.kick();
-        return;
-      }
-      if (name === CC_PROJECT_FILE && ccFiles.has(normalizePathKey(path))) this.kick();
+      const key = normalizePathKey(path);
+      if (ymlFiles.has(key) || ccFiles.has(key)) this.kick();
     };
     watcher.on("add", kick);
     watcher.on("change", kick);
@@ -480,23 +476,23 @@ export class ProjectMcpRegistry {
   }
 
   /**
-   * 监听用户层两个具体文件（不监视整个家目录：chokidar 支持等待不存在的路径
-   * 出现）。~/.claude.json 事件先过 stat 快路径 + serversHash 门：CC 每次会话
-   * 都重写整个状态文件，先比 size/mtime，未变连读都不读；变了再解析并比对
-   * mcpServers 子树哈希，未变不触发 reconcile。
+   * 监听用户层两个具体文件（与项目层的精确路径过滤同构；不监视家目录递归：
+   * 探针实测 chokidar v5 盯「父目录已存在的缺失文件」能在创建时补发 add，而盯
+   * 不存在的目录则永久瞎——具体文件路径是更稳的监听形态）。~/.claude.json 事件
+   * 先过 stat 快路径 + serversHash 门：CC 每次会话都重写整个状态文件，先比
+   * size/mtime，未变连读都不读；变了再解析并比对 mcpServers 子树哈希，未变不触发 reconcile。
    */
   private async syncUserWatcher(): Promise<void> {
     const paths = this.resolveUserLayerPaths();
-    // ~/.dsh 以目录形态监听（可能不存在，chokidar 会等待其出现；非递归、代价小）；
-    // ~/.claude.json 只监听这一个具体文件，家目录其余内容一概不碰。
-    const targets = process.env[IGNORE_CLAUDE_JSON_ENV] === "1" ? [dirname(paths.mcpYml)] : [dirname(paths.mcpYml), paths.claudeJson];
+    // 只监听这两个具体文件本身；被 kill switch 关掉的 ~/.claude.json 连监听都不建。
+    const targets = process.env[IGNORE_CLAUDE_JSON_ENV] === "1" ? [paths.mcpYml] : [paths.mcpYml, paths.claudeJson];
     const keys = targets.map((target) => normalizePathKey(target)).sort();
-    const same = this.userWatchedDirs.length === keys.length && keys.every((key, index) => key === this.userWatchedDirs[index]);
+    const same = this.userWatchedPaths.length === keys.length && keys.every((key, index) => key === this.userWatchedPaths[index]);
     if (same) return;
     const old = this.userWatcher;
     this.userWatcher = undefined;
     if (old !== undefined) await old.close().catch(() => {});
-    this.userWatchedDirs = keys;
+    this.userWatchedPaths = keys;
     if (keys.length === 0 || this.disposed) return;
     const watcher = chokidar.watch(targets, {
       ignoreInitial: true,
