@@ -132,6 +132,20 @@ try {
     assert.ok(cap2.lines.join("\n").includes("dsh-mcp add <name>"));
     pass("cli stores --cwd relative to project and prints help");
   }
+
+  // 9. 缺省 cwd 按 scope 分化：project="."，user=""（继承宿主 cwd，对齐 CC user 行）
+  {
+    const cap = io();
+    assert.equal(await runCli(["add", "usrv", "node", "u.js", "--scope", "user"], cap.io, deps), 0, cap.errs.join("\n"));
+    const userRaw = await readFile(userYml, "utf8");
+    assert.match(userRaw, /cwd:\s*(""|'')/, "user-scope row stores empty cwd");
+    const cap2 = io();
+    assert.equal(await runCli(["add", "psrv", "node", "p.js"], cap2.io, deps), 0, cap2.errs.join("\n"));
+    const projRaw = await readFile(projectYml, "utf8");
+    assert.match(projRaw, /cwd:\s*\.?\s*$/m, "project-scope row defaults to .");
+    assert.ok(projRaw.includes("cwd: ."), "project-scope cwd is the dot literal");
+    pass("cli default cwd is '.' for project scope and '' for user scope");
+  }
 } finally {
   await rm(dir, { recursive: true, force: true });
 }

@@ -1,7 +1,7 @@
 {
   "name": "dsh-project-mcp-manager",
   "version": "0.1.1",
-  "description": "dsh-project-mcp-manager: per-project MCP server loading for DSH. Reads <projectRoot>/.dsh/mcp.yml, mounts each server as an @deepseek-ai/dsh-mcp-client instance, hot-reloads on file change, and scopes tool visibility per session.",
+  "description": "dsh-project-mcp-manager: per-project MCP server loading for DSH. Reads <projectRoot>/.dsh/mcp.yml (plus read-only Claude Code compat via .mcp.json and ~/.claude.json), mounts each server as an @deepseek-ai/dsh-mcp-client instance with ${VAR} env expansion at mount time, hot-reloads on file change, scopes tool visibility per session, and ships a dsh-mcp CLI for native config management.",
   "type": "module",
   "main": "lib/index.js",
   "bin": {
@@ -35,6 +35,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepack": "npm run build",
+    "pretest": "npm run build",
     "test": "node test/test-model.mjs && node test/test-mcp-file.mjs && node test/test-cc-file.mjs && node test/test-registry.mjs && node test/test-cli.mjs"
   },
   "files": [

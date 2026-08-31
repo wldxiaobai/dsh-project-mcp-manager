@@ -58,9 +58,10 @@ const HELP = `dsh-mcp —— 项目/用户级 MCP 服务器管理（写入原生
 
 说明：
   --scope 缺省 project（写 <项目根>/.dsh/mcp.yml）；user 写 ~/.dsh/mcp.yml。
+  -c 缺省：project 为 "."（相对项目根）；user 为空（继承会话宿主 cwd，与 CC user 行一致）。
   本项目没有 CC 的 local 作用域；CC 的 ` + "`claude mcp add`" + ` 默认落 local，
   迁移时请显式用 --scope user（或把条目写进 .mcp.json，插件只读兼容）。
-  值里的 \${VAR} 原样写入，装载时由插件从宿主环境整值展开（凭据不落盘）。
+  值里的 \${VAR} 原样写入，装载时由插件从宿主环境展开（支持串内插值，凭据不落盘）。
   sse 传输不受支持（后端只支持 stdio 与 streamable-http）。
   list/get 同时展示只读兼容层 .mcp.json 与 ~/.claude.json（不显示任何密钥值）。`
 
@@ -143,12 +144,9 @@ export function parseArgs(argv: string[]): ParsedArgs | { error: string } {
       continue;
     }
     if (token.startsWith("-") && token !== "-" && !KNOWN_FLAGS.has(token)) {
-      // 服务器自身的命令行参数（如 -y、--verbose）：按位置收集
+      // 非已知选项的 dash 词元按位置参数收集（服务器自身的 -y/--verbose 等）。
+      // 未知「选项」因此不再单独报错——这是刻意策略：宁可透传也不误伤 spawn 参数。
       parsed.positional.push(token);
-      continue;
-    }
-    if (token.startsWith("-") && !KNOWN_FLAGS.has(token)) {
-      parseError = `未知选项：${token}（dsh-mcp --help 查看用法）`;
       continue;
     }
     parsed.positional.push(token);
@@ -252,7 +250,9 @@ export async function runCli(argv: string[], io: CliIo, deps: CliDeps = {}): Pro
     if (name === undefined || target === undefined) return fail(io, "用法：dsh-mcp add <name> <command|url> [args...]");
     let input: unknown;
     if (parsed.transport === "stdio") {
-      input = { serverName: name, transport: "stdio", command: target, args, env: parsed.env, cwd: parsed.cwd ?? "." };
+      // user scope 缺省 cwd 空串 = 继承宿主 cwd（对齐 CC 的 user 行语义）；
+      // project scope 缺省 "." = 项目根。同一用户层不应被 CLI 行绑死在某个项目根。
+      input = { serverName: name, transport: "stdio", command: target, args, env: parsed.env, cwd: parsed.cwd ?? (parsed.scope === "user" ? "" : ".") };
     } else {
       if (args.length > 0) return fail(io, "http 传输只接受一个 URL 参数");
       input = { serverName: name, transport: "streamable-http", url: target, headers: parsed.headers };
