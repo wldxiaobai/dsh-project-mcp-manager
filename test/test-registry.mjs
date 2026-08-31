@@ -386,6 +386,25 @@ try {
     assert.deepEqual(remount17.args, ["x2.js"], "remounted with the repaired .mcp.json config");
     pass("a broken project mcp.yml does not block .mcp.json rows");
 
+    // 18. P1 回归：写 .mcp.json 本身要触发热对账（README 承诺的 150ms 路径）。
+    // 修复前：kick 过滤器只认 .dsh/mcp.yml，CC 文件增删改要等别的巧合才生效。
+    // 先等计数稳定：16/17 的文件写入各留下过 debounce 定时器，不安抚就测不准。
+    let count18 = registry2.debugReconcileCount;
+    for (let waited = 0; waited < 6000; waited += 300) {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
+      const next = registry2.debugReconcileCount;
+      if (next === count18) break;
+      count18 = next;
+    }
+    const ccFile18 = join(dir2, ".mcp.json");
+    const parsed18 = JSON.parse(await readFile(ccFile18, "utf8"));
+    parsed18.mcpServers["hot-cc"] = { command: "node", args: [] };
+    await writeFile(ccFile18, JSON.stringify(parsed18), "utf8");
+    const hotActive18 = await registry2.waitForState(dir2, "hot-cc", (state) => state?.phase === "active", 5000);
+    assert.ok(hotActive18, "editing .mcp.json hot-mounts without an explicit reconcile");
+    assert.ok(registry2.debugReconcileCount > count18, "the .mcp.json write itself must have driven the reconcile");
+    pass("registry hot-reloads project .mcp.json edits via the watcher");
+
     for (const disposer of ctx2.disposers) {
       const cleanup = disposer();
       if (typeof cleanup === "function") cleanup();

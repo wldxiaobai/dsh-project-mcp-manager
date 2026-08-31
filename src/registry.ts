@@ -395,10 +395,17 @@ export class ProjectMcpRegistry {
         return parts.some((part) => part === "node_modules" || part === ".git" || part === ".hg" || part === ".svn");
       }
     });
+    // .mcp.json 与 .dsh/mcp.yml 平级热重载：按「已知项目根下的精确文件」比对，
+    // 嵌套目录里的同名文件不误触发。
+    const ccFiles = new Set(roots.map((root) => normalizePathKey(projectMcpJsonFile(root))));
     const kick = (path: string) => {
       const parts = String(path ?? "").split(/[/\\]/).filter(Boolean);
-      if (parts.length < 2 || parts[parts.length - 1] !== PROJECT_MCP_FILE || parts[parts.length - 2] !== ".dsh") return;
-      this.kick();
+      const name = parts[parts.length - 1];
+      if (name === PROJECT_MCP_FILE && parts.length >= 2 && parts[parts.length - 2] === ".dsh") {
+        this.kick();
+        return;
+      }
+      if (name === CC_PROJECT_FILE && ccFiles.has(normalizePathKey(path))) this.kick();
     };
     watcher.on("add", kick);
     watcher.on("change", kick);
