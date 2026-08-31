@@ -101,8 +101,8 @@ expression evaluated by the profile loader, e.g. the official README's
 project files — an unresolved tag inside the managed block makes the whole
 file fail with an explicit error (logged and written to `.dsh/.mcp-diag.json`)
 instead of silently mounting the expression text as a literal string. Values
-in `env`/`headers` are otherwise literal, except for whole-value `${VAR}`
-references which are expanded at mount time (see `${VAR}` expansion below);
+in `env`/`headers` are otherwise literal, except for `${VAR}` references
+which are interpolated at mount time (see `${VAR}` expansion below);
 `disabled` must be `true`/`false`. The project file is otherwise a superset
 grammar: `env`/`headers` accept `KEY: null` to delete a key (stripped at
 mount), which the official mcp-client schema rejects — such lines would fail
@@ -126,12 +126,25 @@ Notes and limits:
   does not read it. Use `dsh-mcp add --scope user` or the project files.
 - `type: "sse"` entries are rejected with a per-entry diagnostic — the mount
   backend (`dsh-mcp-client`) only speaks `stdio` and `streamable-http`.
-  CC's `type: "http"` maps to `streamable-http`; omitted `type` means stdio.
-- stdio `cwd` defaults to the project root (`~` for user-scope rows: each
-  mount resolves relative to its own project root).
-- Unknown CC keys are ignored per entry. `enabled: false` skips the row.
-- Broken files/entries never take down the valid ones; entry errors land in
-  `.dsh/.mcp-diag.json` and the host log (file content is never echoed).
+  CC's `type: "http"` and an explicit `type: "streamable-http"` both map to
+  `streamable-http`; with `type` omitted, an entry that has only `url` (no
+  `command`) is treated as http, everything else as stdio.
+- stdio `cwd`: for project-layer rows an empty `cwd` resolves to the project
+  root; for user-layer rows (both `~/.dsh/mcp.yml` and `~/.claude.json`) it
+  resolves to the dsh host's working directory — a user MCP is one shared
+  server, not one per-project-root copy.
+- Unknown CC keys are ignored per entry. `enabled: false` skips the row
+  silently (no diagnostic, and no shadowing — see below).
+- A `disabled: true` row in a **native yml** still occupies its name in the
+  shadow chain: same-name rows in lower layers are shadowed too and stay
+  unmounted — disabled means "this name must not run", not "let the CC copy
+  through". CC-side `enabled: false` has no placeholder effect.
+- Broken files/entries never take down the valid ones; each source fails
+  independently, so an unreadable `.mcp.json` cannot unmount the project's
+  yml rows (and vice versa). Entry errors land in `.dsh/.mcp-diag.json` and
+  the host log (file content is never echoed). A project whose only MCP
+  config is `.mcp.json` still gets a `.dsh/` directory as soon as there is
+  anything worth reporting there.
 - `~/.claude.json` is rewritten by CC on every session; the watcher re-reads
   it but only triggers reconciliation when the `mcpServers` subtree actually
   changed (canonical-JSON hash gate).
@@ -153,14 +166,20 @@ effective-name conflict renaming (see How it works).
 
 ## `${VAR}` expansion
 
-Whole-value `${VAR}` references (matching `^\$\{[A-Za-z_][A-Za-z0-9_]*\}$`)
-in `command`, `args[*]`, `env[*]`, `url` and `headers[*]` — from **any** of
-the four sources above — are expanded from the dsh host process environment
-at mount time. Mixed forms like `http://host/${PART}` stay literal. If the
-variable is unset the row is skipped with an `env-missing` diagnostic naming
-the variable (never its value). Values are never persisted anywhere by the
-plugin; the CLI writes `${VAR}` through literally, so secrets can live in the
-environment while configs live in git.
+`${VAR}` references (matching `\$\{[A-Za-z_][A-Za-z0-9_]*\}` anywhere in the
+string) in `command`, `args[*]`, `env[*]`, `url` and `headers[*]` — from **any**
+of the four sources above — are **interpolated** from the dsh host process
+environment at mount time (same semantics as Claude Code, so
+`"Authorization": "Bearer ${TOKEN}"` works). An unset or empty variable makes
+the row skip with an `env-missing` diagnostic naming the variable (never its
+value); a literal `${NAME}` that must survive unexpanded is not expressible.
+Expanded inputs are re-validated against the mount schema before spawn;
+a malformed result (e.g. a non-URL `${GATEWAY}/mcp`) skips the row with an
+`env-invalid` diagnostic instead of reaching the mount backend. In the
+snapshot/row views, a name that failed to mount shows its skip reason
+(`env-missing` / `env-invalid` / …) instead of `pending`. Values are never
+persisted anywhere by the plugin; the CLI writes `${VAR}` through literally,
+so secrets can live in the environment while configs live in git.
 
 ## CLI: `dsh-mcp`
 
@@ -179,7 +198,9 @@ dsh-mcp remove gitlab # native yml only; read-only layers get guidance
 
 Scopes: `--scope project` (default; writes `<projectRoot>/.dsh/mcp.yml` under
 the nearest `.git` ancestor) and `--scope user` (writes `~/.dsh/mcp.yml`,
-mounted into every project). There is no `local` scope — `--scope local`
+mounted into every project). `add` defaults `cwd` to `"."` (project root) for
+project scope and `""` (host directory) for user scope; `-c` overrides.
+There is no `local` scope — `--scope local`
 fails with an explanation. `--transport` accepts `stdio` (default) and `http`;
 `sse` is refused (unsupported by the backend).
 
@@ -197,8 +218,10 @@ fails with an explanation. `--transport` accepts `stdio` (default) and `http`;
   node_modules/.git/.hg/.svn); changes to `.dsh/mcp.yml` or `.mcp.json`
   trigger a full reconciliation after a 150 ms debounce: added lines are
   mounted, removed lines are unmounted, and config changes are remounted. A
-  second watcher covers the user-layer files' directories
-  (`~/.dsh/mcp.yml` directly, `~/.claude.json` behind the hash gate).
+  second watcher covers the user layer: the `~/.dsh` directory (so a created
+  `~/.dsh/mcp.yml` is noticed) and the single file `~/.claude.json` — never
+  the home directory at large — behind a file-stat fast path plus the hash
+  gate described above.
 - **Effective names**: when the original `serverName` is unique across the
   whole catalog (global lines + all project lines, where each project's
   merged rows include the user-layer rows that survived shadowing) it keeps
@@ -209,8 +232,8 @@ fails with an explanation. `--transport` accepts `stdio` (default) and `http`;
   root. Global lines (profile `cordis.patch.yml` / mcp-client lines already
   mounted at the bundle level) participate in occupancy determination but are
   never renamed. Model-visible tool names are built from the **effective**
-  name (`mcp__<effectiveServerName>__<rawName>`), which may differ from the
-  `serverName` written in the file.
+  server name and the MCP tool's own name (`mcp__<effectiveServerName>__<toolName>`),
+  which may differ from the `serverName` written in the file.
 - **Session visibility**: when an agent is created, its session cwd resolves
   to a project, and `tools.restrict({ deny })` is applied to that agent to deny
   every project server except those of the session's own project; a session

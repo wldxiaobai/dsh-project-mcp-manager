@@ -16,17 +16,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `~/.dsh/mcp.yml` > `~/.claude.json`, with shadowed names recorded in
   `.dsh/.mcp-diag.json` (`shadowedByYml` / `shadowedByProject`). `type: "sse"` entries
   are rejected per entry (the mount backend only speaks stdio and streamable-http);
-  unknown CC keys are tolerated; `type: "http"` maps to `streamable-http`; stdio `cwd`
-  defaults to the project root. The `~/.claude.json` watcher gates on a canonical-JSON
+  unknown CC keys are tolerated; `enabled: false` skips an entry silently;
+  `type: "http"` and explicit `"streamable-http"` map to `streamable-http`, and a
+  url-only entry (no `type`/`command`) is inferred as http; project-layer stdio `cwd`
+  defaults to the project root while user-layer rows resolve against the host working
+  directory. The `~/.claude.json` watcher gates on a canonical-JSON
   hash of the `mcpServers` subtree, so CC's routine state rewrites do not trigger
   reconciles; `DSH_MCP_IGNORE_CLAUDE_JSON=1` disables reading and watching the file
   entirely. There is deliberately no `local` scope (CC's `claude mcp add` default
   location is explained wherever a user would expect it).
-- `${VAR}` runtime expansion (`src/model.ts` `expandEnvRefs`): whole-value references
-  (`^\$\{[A-Za-z_][A-Za-z0-9_]*\}$`) in `command`, `args[*]`, `env[*]`, `url`, and
-  `headers[*]` expand against the dsh host environment at mount time for every
-  configuration source. A missing variable skips the row with an `env-missing`
-  diagnostic naming the variable only — values are never persisted by the plugin, so
+- `${VAR}` runtime expansion (`src/model.ts` `expandEnvRefs`): `${NAME}` references
+  (`\$\{[A-Za-z_][A-Za-z0-9_]*\}`, allowed anywhere in the string — same semantics as
+  Claude Code, so `"Bearer ${TOKEN}"` works) in `command`, `args[*]`, `env[*]`, `url`,
+  and `headers[*]` are interpolated against the dsh host environment at mount time for
+  every configuration source. An unset **or empty** variable skips the row with an
+  `env-missing` diagnostic naming the variable only; expanded inputs are re-validated
+  against the mount schema and a malformed result is skipped with `env-invalid`.
+  Values are never persisted by the plugin, so
   configs can live in git while secrets stay in the environment.
 - `dsh-mcp` CLI (`src/cli.ts`, new `bin` entry): `add` / `list` / `get` / `remove` with
   `--scope project|user` (default project) and `--transport stdio|http`, mirroring CC
@@ -64,12 +70,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `source`. Absent a project `.dsh/mcp.yml`, the yml partition is skipped when no
   yml-sourced server is mounted (user-layer mounts no longer look like "file deleted
   under a live mount").
-- Whole-value `${VAR}` references now expand at mount time for **all** sources,
-  including native `.dsh/mcp.yml` rows — previously documented as literal-only. The
-  expansion never rewrites files; mixed-form strings (e.g. `http://h/${PART}`) and
-  anything not matching the reference grammar keep their literal behavior.
+- `${VAR}` references now interpolate inside strings at mount time for **all**
+  sources, including native `.dsh/mcp.yml` rows — previously documented as
+  literal-only. The expansion never rewrites files; nothing matches "mixed
+  forms" anymore because any embedded `${NAME}` interpolates (unset or empty →
+  `env-missing` skip).
 - The reconcile pipeline additionally reads the user layer (`~/.dsh/mcp.yml` and,
-  unless disabled, `~/.claude.json`) and watches both files' directories; the
+  unless disabled, `~/.claude.json`), watching the `~/.dsh` directory and the
+  `~/.claude.json` file itself (never the home directory at large); the
   zero-config "leave no trace" rule still holds — user-layer rows falling into a
   project never create that project's diag file by themselves.
 - A project whose managed block fails to parse no longer takes down the whole snapshot: the
