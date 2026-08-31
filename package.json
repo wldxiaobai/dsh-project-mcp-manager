@@ -4,6 +4,9 @@
   "description": "dsh-project-mcp-manager: per-project MCP server loading for DSH. Reads <projectRoot>/.dsh/mcp.yml, mounts each server as an @deepseek-ai/dsh-mcp-client instance, hot-reloads on file change, and scopes tool visibility per session.",
   "type": "module",
   "main": "lib/index.js",
+  "bin": {
+    "dsh-mcp": "lib/cli.js"
+  },
   "exports": {
     ".": "./lib/index.js",
     "./package.json": "./package.json"
@@ -32,7 +35,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepack": "npm run build",
-    "test": "node test/test-model.mjs && node test/test-mcp-file.mjs && node test/test-cc-file.mjs && node test/test-registry.mjs"
+    "test": "node test/test-model.mjs && node test/test-mcp-file.mjs && node test/test-cc-file.mjs && node test/test-registry.mjs && node test/test-cli.mjs"
   },
   "files": [
     "lib",

@@ -622,16 +622,15 @@ export class ProjectMcpRegistry {
     let config: Record<string, unknown>;
     try {
       let input = inputFromPatchRow(item.row);
-      if (item.source === "cc-project" || item.source === "cc-user") {
-        // ${VAR} 整值展开只对 Claude Code 方言来源生效；原生 yml 行保持字面值语义。
-        const expanded = expandEnvRefs(input, process.env);
-        if (!expanded.ok) {
-          await this.writeDiag(project.projectRoot, { kind: "env-missing", rawName: item.rawName, effectiveName, missingVar: expanded.missingVar });
-          this.ctx.logger.warn(`项目 MCP "${item.rawName}"（${project.projectRoot}）未装载：环境变量 \${${expanded.missingVar}} 未设置`);
-          return;
-        }
-        input = expanded.input;
+      // ${VAR} 整值展开对所有来源统一（CLI 按 CC 习惯写进原生 yml 的引用也要生效）；
+      // 值不含 ${NAME} 整值形态的行行为不变。
+      const expanded = expandEnvRefs(input, process.env);
+      if (!expanded.ok) {
+        await this.writeDiag(project.projectRoot, { kind: "env-missing", rawName: item.rawName, effectiveName, missingVar: expanded.missingVar });
+        this.ctx.logger.warn(`项目 MCP "${item.rawName}"（${project.projectRoot}）未装载：环境变量 \${${expanded.missingVar}} 未设置`);
+        return;
       }
+      input = expanded.input;
       const configInput: any = { ...input, serverName: effectiveName };
       if (input.transport === "stdio" && typeof input.cwd === "string" && input.cwd !== "") {
         configInput.cwd = resolve(project.projectRoot, input.cwd);

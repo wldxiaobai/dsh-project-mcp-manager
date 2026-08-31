@@ -310,14 +310,22 @@ try {
     assert.equal(alphaCc12.fiberPhase, null, "shadowed CC row shows no phase while yml owns the name");
     pass("project yml shadows same-named .mcp.json rows with diagnostics");
 
-    // 13. 变量补齐 → 行可装载（env 展开进装载配置）
+    // 13. 变量补齐 → 行可装载（env 展开进装载配置）；原生 yml 行同样享受展开（全来源统一）
     process.env.CC_TEST_MISSING = "sekret";
+    await writeManagedRows(projectMcpFile(dir2), [
+      { ...stdioRow("alpha"), config: { ...stdioRow("alpha").config, args: ["a-yml.js"] } },
+      { ...stdioRow("eta"), config: { ...stdioRow("eta").config, command: "${CC_TEST_BIN}", env: { T: "${CC_TEST_MISSING}" } } }
+    ]);
     await registry2.reconcileNow();
     const beta13 = ctx2.mounts.filter((config) => config.serverName === "beta").at(-1);
     assert.ok(beta13 !== undefined, "beta mounts once its env var exists");
     assert.equal(beta13.env.T, "sekret", "${VAR} expanded from process.env at mount time");
     assert.equal(beta13.command, "node", "${VAR} expanded in command too");
-    pass("registry expands whole-value ${VAR} refs from the environment");
+    const eta13 = ctx2.mounts.filter((config) => config.serverName === "eta").at(-1);
+    assert.ok(eta13 !== undefined, "native yml row with ${VAR} mounts expanded");
+    assert.equal(eta13.env.T, "sekret");
+    assert.equal(eta13.command, "node");
+    pass("registry expands whole-value ${VAR} refs from the environment for all sources");
 
     // 14. 用户层 yml 热装载（watcher 事件驱动，非 reconcileNow）
     await writeManagedRows(join(home2, ".dsh", "mcp.yml"), [stdioRow("epsilon")], { createIfMissing: true });
