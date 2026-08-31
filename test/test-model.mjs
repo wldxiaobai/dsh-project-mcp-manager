@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import {
-  ENV_REF_RE,
   MAX_TIMER_DELAY_MS,
   SERVER_NAME_RE,
   ccServerEntrySchema,
@@ -149,10 +148,6 @@ assert.equal(mcpServerInputSchema.parse({ serverName: "x", transport: "stdio", c
 pass("reconnect delays clamped to the official MAX_TIMER_DELAY_MS");
 
 // 13. ${VAR} 运行时展开：串内插值、缺失变量整体失败且消息只含变量名
-assert.equal(ENV_REF_RE.test("${A_1}"), true);
-assert.equal(ENV_REF_RE.test("${A}x"), false);
-assert.equal(ENV_REF_RE.test("$A"), false);
-assert.equal(ENV_REF_RE.test("${9bad}"), false);
 const refInput = mcpServerInputSchema.parse({
   serverName: "cc",
   transport: "stdio",
@@ -176,8 +171,20 @@ const emptyVar = expandEnvRefs(refInput, { BIN: "node", TOK: "", K: "v", X: "hy"
 assert.deepEqual(emptyVar, { ok: false, missingVar: "TOK" }, "empty-string env value counts as missing");
 pass("expandEnvRefs refuses to interpolate empty credentials");
 
+// 13b. cwd 同样参与展开（评审 P3：`${VAR}` 覆盖面）
+const cwdInput = mcpServerInputSchema.parse({
+  serverName: "cw", transport: "stdio", command: "node", cwd: "${ROOT}/sub"
+});
+const cwdExpanded = expandEnvRefs(cwdInput, { ROOT: "/srv/app" });
+assert.equal(cwdExpanded.ok, true);
+assert.equal(cwdExpanded.input.cwd, "/srv/app/sub", "${VAR} interpolates inside cwd");
+assert.deepEqual(expandEnvRefs(cwdInput, {}), { ok: false, missingVar: "ROOT" });
+pass("expandEnvRefs interpolates cwd and reports missing vars from it");
+
 // 14. http 行：url 占位在展开前必须过 schema，headers 串内插值
 assert.equal(isUrlOrEnvRef("${URL}"), true);
+assert.equal(isUrlOrEnvRef("https://${HOST}/mcp"), true, "串内占位（host 段）装载前放行，展开后复验兜底");
+assert.equal(isUrlOrEnvRef("${GATEWAY}/mcp"), true, "README 的网关前缀占位写法不得在装载前被拒");
 assert.equal(isUrlOrEnvRef("http://localhost:3000/mcp"), true);
 assert.equal(isUrlOrEnvRef("not-url"), false);
 const mixedUrl = mcpServerInputSchema.parse({ serverName: "h", transport: "streamable-http", url: "http://x/${PART}" });

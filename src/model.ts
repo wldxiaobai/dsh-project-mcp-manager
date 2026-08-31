@@ -12,19 +12,17 @@ import { MANAGED_ROW_ID_PREFIX, MCP_PLUGIN_NAME, type PatchRow } from "./mcp-fil
 
 export const SERVER_NAME_RE = /^[A-Za-z0-9_-]{1,32}$/;
 /**
- * `${VAR}` 整值引用形态（url 占位判定用）：值恰好是 `${VAR}`。
- * 展开本身支持串内插值（见 expandEnvRefs）；`$VAR` 裸形、`${9bad}`
- * 非法名一律按字面量处理。只在 mount 时运行时展开，展开结果绝不回写
- * 文件、不进诊断明文。
+ * 串内 `${VAR}` 引用扫描/替换（展开与 url 占位判定共用）：`$VAR` 裸形、
+ * `${9bad}` 非法名一律按字面量处理。只在 mount 时运行时展开，展开结果
+ * 绝不回写文件、不进诊断明文。
  */
-export const ENV_REF_RE = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
-
-/** 串内 `${VAR}` 引用扫描/替换（全局态独立于 ENV_REF_RE，勿共享 lastIndex 陷阱）。 */
 const EMBEDDED_ENV_REF_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
-/** url 字段允许合法 URL 或整值 `${VAR}` 占位（占位必须在 mount 展开前过 schema）。 */
+/** url 字段允许合法 URL 或含 `${VAR}` 占位的串（整值与串内插值同待）：装载前
+ * 一律放行占位串，展开后的真实合法性由 mount 复验兜底（env-invalid 诊断）。 */
 export function isUrlOrEnvRef(value: string): boolean {
-  if (ENV_REF_RE.test(value)) return true;
+  EMBEDDED_ENV_REF_RE.lastIndex = 0;
+  if (EMBEDDED_ENV_REF_RE.test(value)) return true;
   try {
     new URL(value);
     return true;
@@ -71,7 +69,7 @@ export const stdioServerSchema = z.object({
 export const httpServerSchema = z.object({
   serverName: serverNameSchema,
   transport: z.literal("streamable-http"),
-  url: z.string().refine(isUrlOrEnvRef, "url 必须是合法 URL 或整值 ${VAR} 引用"),
+  url: z.string().refine(isUrlOrEnvRef, "url 必须是合法 URL 或含 ${VAR} 占位的串"),
   headers: secretMapSchema,
   toolCallTimeoutMs: z.number().int().min(1).default(DEFAULT_TOOL_CALL_TIMEOUT_MS),
   failOnStartupError: z.boolean().default(false),
@@ -225,7 +223,7 @@ function expandSecretMap(
 }
 
 /**
- * 运行时展开 command、args[*]、env/headers 值、url 中的 `${VAR}` 引用，
+ * 运行时展开 command、args[*]、env/headers 值、url、cwd 中的 `${VAR}` 引用，
  * 支持串内插值（`Bearer ${TOKEN}` 与整值 `${TOKEN}` 都会展开），对齐 CC 的
  * 写法习惯。纯函数：环境经参数注入（宿主传 process.env），便于测试。
  * 任一被引用的变量缺失或为空串即整体失败（ok:false + 变量名，调用方据此
@@ -237,7 +235,7 @@ export function expandEnvRefs(input: McpServerInput, env: NodeJS.ProcessEnv): Ex
   const secretValues = (map: Record<string, string | null> | undefined): string[] =>
     Object.values(map ?? {}).filter((value): value is string => typeof value === "string");
   if (input.transport === "stdio") {
-    strings.push(input.command, ...input.args, ...secretValues(input.env));
+    strings.push(input.command, ...input.args, input.cwd, ...secretValues(input.env));
   } else {
     strings.push(input.url, ...secretValues(input.headers));
   }
@@ -259,7 +257,8 @@ export function expandEnvRefs(input: McpServerInput, env: NodeJS.ProcessEnv): Ex
         ...input,
         command: expand(input.command),
         args: input.args.map(expand),
-        env: expandSecretMap(input.env, expand)
+        env: expandSecretMap(input.env, expand),
+        cwd: expand(input.cwd)
       }
     };
   }
