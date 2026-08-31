@@ -121,8 +121,9 @@ function parseMcpServersValue(mcpServers: unknown, source: McpRowSource, project
     return { rows, entryErrors };
   }
   for (const [name, raw] of Object.entries(mcpServers)) {
-    // enabled:false（README 承诺的跳过语义）：静默不装载、不报错、不占名。
-    if (isPlainObject(raw) && raw.enabled === false) continue;
+    // enabled:false / disabled:true 同等对待（后者在社区与 CC 讨论里同样常见，
+    // 写错键名却照样装载比不装载危险）：静默不装载、不报错、不占名。
+    if (isPlainObject(raw) && (raw.enabled === false || raw.disabled === true)) continue;
     if (!SERVER_NAME_RE.test(name)) {
       entryErrors.push(`"${name}": serverName 非法（允许 1-32 位字母、数字、下划线或连字符）`);
       continue;
