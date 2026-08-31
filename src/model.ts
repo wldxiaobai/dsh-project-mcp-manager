@@ -11,6 +11,23 @@ import { resolve } from "node:path";
 import { MANAGED_ROW_ID_PREFIX, MCP_PLUGIN_NAME, type PatchRow } from "./mcp-file.js";
 
 export const SERVER_NAME_RE = /^[A-Za-z0-9_-]{1,32}$/;
+/**
+ * `${VAR}` 整值引用（对齐 CC 展开行为与 dsh-mcp-mgr 的 ENV_REF）：仅当整个
+ * 值恰好是 `${VAR}` 时展开；`${A}x`、`$A`、`${9bad}` 等一律按字面量处理。
+ * 只在 mount 时运行时展开，展开结果绝不回写文件、不进诊断明文。
+ */
+export const ENV_REF_RE = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
+
+/** url 字段允许合法 URL 或整值 `${VAR}` 占位（占位必须在 mount 展开前过 schema）。 */
+export function isUrlOrEnvRef(value: string): boolean {
+  if (ENV_REF_RE.test(value)) return true;
+  try {
+    new URL(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
 export const DEFAULT_TOOL_CALL_TIMEOUT_MS = 60000;
 export const DEFAULT_RECONNECT = {
   enabled: true,
@@ -50,7 +67,7 @@ export const stdioServerSchema = z.object({
 export const httpServerSchema = z.object({
   serverName: serverNameSchema,
   transport: z.literal("streamable-http"),
-  url: z.string().url(),
+  url: z.string().refine(isUrlOrEnvRef, "url 必须是合法 URL 或整值 ${VAR} 引用"),
   headers: secretMapSchema,
   toolCallTimeoutMs: z.number().int().min(1).default(DEFAULT_TOOL_CALL_TIMEOUT_MS),
   failOnStartupError: z.boolean().default(false),
@@ -61,6 +78,23 @@ export const mcpServerInputSchema = z.discriminatedUnion("transport", [stdioServ
 
 export type McpServerInput = z.infer<typeof mcpServerInputSchema>;
 export type McpTransport = McpServerInput["transport"];
+
+/**
+ * Claude Code `.mcp.json` / `~/.claude.json` 单条目宽松 schema：未知字段
+ * （timeout/scope 等 CC 附加键）容忍并忽略；`type` 缺省视为 stdio，
+ * `type:"http"` 对应 streamable-http，`type:"sse"` 在归一层显式拒绝
+ * （dsh-mcp-client 仅支持 stdio | streamable-http，见 lib/types/index.d.ts）。
+ */
+export const ccServerEntrySchema = z.looseObject({
+  type: z.enum(["stdio", "http", "sse"]).optional(),
+  command: z.string().optional(),
+  args: z.array(z.string()).optional(),
+  env: z.record(z.string(), z.string()).optional(),
+  url: z.string().optional(),
+  headers: z.record(z.string(), z.string()).optional(),
+});
+
+export type CcServerEntry = z.infer<typeof ccServerEntrySchema>;
 export interface ReconnectConfig {
   enabled: boolean;
   initialDelayMs: number;
@@ -159,6 +193,69 @@ export function mergeSecretPatch(previous: Record<string, string> | undefined, p
     else merged[key] = value;
   }
   return merged;
+}
+
+function envRefName(value: string): string | undefined {
+  const match = ENV_REF_RE.exec(value);
+  return match === null ? undefined : match[1];
+}
+
+export type ExpandEnvRefsResult =
+  | { ok: true; input: McpServerInput }
+  | { ok: false; missingVar: string };
+
+function expandSecretMap(
+  map: Record<string, string | null> | undefined,
+  expand: (value: string) => string
+): Record<string, string | null> | undefined {
+  if (map === undefined) return undefined;
+  const out: Record<string, string | null> = {};
+  for (const [key, value] of Object.entries(map)) out[key] = typeof value === "string" ? expand(value) : value;
+  return out;
+}
+
+/**
+ * 运行时展开 env/headers 值、url、command、args[*] 中的 `${VAR}` 引用。
+ * 纯函数：环境经参数注入（宿主传 process.env），便于测试。任一被引用的
+ * 变量缺失即整体失败（ok:false + 变量名，调用方据此跳过该条目装载）——
+ * 带空凭据 spawn 比不 spawn 更危险，诊断消息只含变量名不含值。
+ */
+export function expandEnvRefs(input: McpServerInput, env: NodeJS.ProcessEnv): ExpandEnvRefsResult {
+  const strings: string[] = [];
+  const secretValues = (map: Record<string, string | null> | undefined): string[] =>
+    Object.values(map ?? {}).filter((value): value is string => typeof value === "string");
+  if (input.transport === "stdio") {
+    strings.push(input.command, ...input.args, ...secretValues(input.env));
+  } else {
+    strings.push(input.url, ...secretValues(input.headers));
+  }
+  for (const value of strings) {
+    const name = envRefName(value);
+    if (name !== undefined && env[name] === undefined) return { ok: false, missingVar: name };
+  }
+  const expand = (value: string): string => {
+    const name = envRefName(value);
+    return name === undefined ? value : env[name]!;
+  };
+  if (input.transport === "stdio") {
+    return {
+      ok: true,
+      input: {
+        ...input,
+        command: expand(input.command),
+        args: input.args.map(expand),
+        env: expandSecretMap(input.env, expand)
+      }
+    };
+  }
+  return {
+    ok: true,
+    input: {
+      ...input,
+      url: expand(input.url),
+      headers: expandSecretMap(input.headers, expand)
+    }
+  };
 }
 
 function normalizeReconnect(input: McpServerInput): ReconnectConfig {

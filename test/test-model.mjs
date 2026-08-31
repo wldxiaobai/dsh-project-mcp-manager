@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import {
+  ENV_REF_RE,
   MAX_TIMER_DELAY_MS,
   SERVER_NAME_RE,
+  ccServerEntrySchema,
   denySetFor,
   effectiveServerNames,
+  expandEnvRefs,
   inputFromPatchRow,
+  isUrlOrEnvRef,
   mcpServerInputSchema,
   mergeSecretPatch,
   namespacedServerName,
@@ -143,6 +147,55 @@ expectThrow("initialDelayMs above MAX_TIMER_DELAY_MS rejected", () => mcpServerI
 assert.equal(MAX_TIMER_DELAY_MS, 2147483647);
 assert.equal(mcpServerInputSchema.parse({ serverName: "x", transport: "stdio", command: "n", reconnect: { maxDelayMs: MAX_TIMER_DELAY_MS } }).reconnect.maxDelayMs, MAX_TIMER_DELAY_MS);
 pass("reconnect delays clamped to the official MAX_TIMER_DELAY_MS");
+
+// 13. ${VAR} 运行时展开：整值匹配、缺失变量整体失败且消息只含变量名
+assert.equal(ENV_REF_RE.test("${A_1}"), true);
+assert.equal(ENV_REF_RE.test("${A}x"), false);
+assert.equal(ENV_REF_RE.test("$A"), false);
+assert.equal(ENV_REF_RE.test("${9bad}"), false);
+const refInput = mcpServerInputSchema.parse({
+  serverName: "cc",
+  transport: "stdio",
+  command: "${BIN}",
+  args: ["--token", "${TOK}", "literal${X}y", "$Y", "${9bad}"],
+  env: { KEY: "${K}", KEEP: "plain", DROP: null }
+});
+const expanded = expandEnvRefs(refInput, { BIN: "node", TOK: "abc", K: "v" });
+assert.equal(expanded.ok, true);
+assert.equal(expanded.input.command, "node");
+assert.deepEqual(expanded.input.args, ["--token", "abc", "literal${X}y", "$Y", "${9bad}"]);
+assert.deepEqual(expanded.input.env, { KEY: "v", KEEP: "plain", DROP: null });
+assert.notEqual(refInput.command, "node"); // 纯函数：不改动输入
+pass("expandEnvRefs expands whole-value ${VAR} in command/args/env, nulls preserved, input untouched");
+
+const missing = expandEnvRefs(refInput, { BIN: "node" });
+assert.deepEqual(missing, { ok: false, missingVar: "TOK" });
+pass("expandEnvRefs reports only the variable name when a reference is missing");
+
+// 14. http 行：url 占位在展开前必须过 schema，headers 同样展开
+assert.equal(isUrlOrEnvRef("${URL}"), true);
+assert.equal(isUrlOrEnvRef("http://localhost:3000/mcp"), true);
+assert.equal(isUrlOrEnvRef("not-url"), false);
+// 混合形态 URL 合法但**不展开**（整值语义）：${PART} 留在路径里按字面量装载
+const mixedUrl = mcpServerInputSchema.parse({ serverName: "h", transport: "streamable-http", url: "http://x/${PART}" });
+assert.equal(expandEnvRefs(mixedUrl, {}).ok, true);
+assert.equal(expandEnvRefs(mixedUrl, {}).input.url, "http://x/${PART}");
+const httpRef = mcpServerInputSchema.parse({
+  serverName: "h", transport: "streamable-http", url: "${URL}", headers: { Authorization: "Bearer ${TOK}", X: "${TOK}" }
+});
+assert.deepEqual(expandEnvRefs(httpRef, { TOK: "t" }), { ok: false, missingVar: "URL" });
+const httpOk = expandEnvRefs(httpRef, { URL: "http://localhost:3000/mcp", TOK: "t" });
+assert.equal(httpOk.ok, true);
+assert.equal(httpOk.input.url, "http://localhost:3000/mcp");
+assert.equal(httpOk.input.headers.Authorization, "Bearer ${TOK}"); // 部分串不展开
+assert.equal(httpOk.input.headers.X, "t");
+pass("http url/headers expand; partial-string refs stay literal");
+
+// 15. ccServerEntrySchema 容忍 CC 附加字段
+assert.equal(ccServerEntrySchema.safeParse({ command: "npx", args: ["-y", "pkg"], timeout: 5000, scope: "project" }).success, true);
+assert.equal(ccServerEntrySchema.safeParse({ command: "npx", env: { A: 1 } }).success, false); // 非字符串 env 值拒绝
+assert.equal(ccServerEntrySchema.safeParse({}).success, true); // 空条目先容忍，缺 command/url 由归一层报错
+pass("ccServerEntrySchema tolerates unknown CC keys, rejects non-string secrets");
 
 console.log("\n" + passed + " passed, 0 failed");
 console.log("ALL MCP MODEL TESTS PASSED");
