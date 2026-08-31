@@ -111,7 +111,9 @@ try {
 
   const ctx = fakeCtx();
   const registry = new ProjectMcpRegistry(ctx, {
-    globalNames: async () => ["gitlab"] // 全局已占用 gitlab → 项目行必须改名
+    globalNames: async () => ["gitlab"], // 全局已占用 gitlab → 项目行必须改名
+    // 用户层注入到不存在的目录：真实 home 的 ~/.dsh/mcp.yml、~/.claude.json 不得进入本套断言。
+    userLayerPaths: { mcpYml: join(dir, "nohome", ".dsh", "mcp.yml"), claudeJson: join(dir, "nohome", ".claude.json") }
   });
   const agentA = fakeAgent("session-a", projectA);
   const agentB = fakeAgent("session-b", projectB);
@@ -235,6 +237,121 @@ try {
   }
   assert.deepEqual(ctx.disposals, disposedBeforeCleanup, "cleanup does not re-dispose already-unmounted fibers");
   pass("registry cleanup disposes watcher and mounted fibers");
+
+  // ── 10+. Claude Code 适配层：.mcp.json / ~/.claude.json / 影子优先 / ${VAR} ──
+  const dir2 = await mkdtemp(join(tmpdir(), "dsh-mcp-cc-"));
+  const home2 = join(dir2, "fakehome"); // dir2 本身即进程 cwd 项目；fakehome 只是注入的用户层目录
+  await mkdir(join(home2, ".dsh"), { recursive: true });
+  const savedBin = process.env.CC_TEST_BIN;
+  const savedMissing = process.env.CC_TEST_MISSING;
+  try {
+    delete process.env.CC_TEST_MISSING;
+    process.env.CC_TEST_BIN = "node";
+    process.chdir(dir2);
+    await writeFile(join(dir2, ".mcp.json"), JSON.stringify({
+      mcpServers: {
+        alpha: { command: "node", args: ["a-cc.js"] },
+        beta: { command: "${CC_TEST_BIN}", args: [], env: { T: "${CC_TEST_MISSING}" } },
+        bad: { type: "sse", url: "http://example/" }
+      }
+    }), "utf8");
+    await writeFile(join(home2, ".claude.json"), JSON.stringify({
+      oauth: { secret: "never-read" },
+      mcpServers: { gamma: { command: "node", args: ["g.js"] } },
+      projects: { "C:/somewhere": { mcpServers: { localonly: { command: "node", args: [] } } } }
+    }), "utf8");
+
+    const ctx2 = fakeCtx();
+    const registry2 = new ProjectMcpRegistry(ctx2, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(home2, ".dsh", "mcp.yml"), claudeJson: join(home2, ".claude.json") }
+    });
+    ctx2.agentsList.push(fakeAgent("session-e", dir2));
+    await registry2.reconcileNow();
+
+    // 10. 装载集合：cc-project(alpha)+cc-user(gamma) 生效；beta 因缺变量跳过、bad(sse) 拒载、localonly 不读
+    const names10 = ctx2.mounts.map((config) => config.serverName).sort();
+    assert.deepEqual(names10, ["alpha", "gamma"], "CC project+user rows mount; sse and missing-env rows do not; local scope excluded");
+    const alpha10 = ctx2.mounts.find((config) => config.serverName === "alpha");
+    assert.equal(alpha10.cwd, dir2, "CC stdio cwd defaults to project root");
+    const diagE10 = await readDiag(dir2);
+    assert.ok(diagE10.some((row) => row.kind === "scan" && Array.isArray(row.ccEntryErrors) && row.ccEntryErrors.some((note) => note.includes("bad"))), "sse entry error recorded in scan diag");
+    assert.ok(diagE10.some((row) => row.kind === "env-missing" && row.rawName === "beta" && row.missingVar === "CC_TEST_MISSING"), "env-missing diag names the variable, not the value");
+    pass("registry mounts CC-dialect rows and reports per-entry/env failures");
+
+    // 11. 快照分区：yml 缺失不出分区；cc-project 分区带行与 entryErrors；两个 global 用户层分区
+    const snap11 = await registry2.snapshot();
+    assert.equal(snap11.find((file) => file.path === projectMcpFile(dir2)), undefined, "absent project yml yields no partition");
+    const ccPart11 = snap11.find((file) => file.source === "cc-project");
+    assert.ok(ccPart11 !== undefined && ccPart11.project === dir2);
+    assert.deepEqual(ccPart11.servers.map((server) => server.serverName).sort(), ["alpha", "beta"]);
+    assert.ok(Array.isArray(ccPart11.entryErrors) && ccPart11.entryErrors.some((note) => note.includes("bad")));
+    const betaView11 = ccPart11.servers.find((server) => server.serverName === "beta");
+    assert.equal(betaView11.fiberPhase, "pending", "env-skipped row shows pending, not active");
+    const userYml11 = snap11.find((file) => file.source === "user-yml");
+    assert.ok(userYml11 === undefined, "no user yml yet");
+    const ccUser11 = snap11.find((file) => file.source === "cc-user");
+    assert.ok(ccUser11 !== undefined && ccUser11.kind === "global");
+    assert.deepEqual(ccUser11.servers.map((server) => server.serverName), ["gamma"]);
+    pass("snapshot partitions CC project file and user layers");
+
+    // 12. 影子优先：项目 yml 同名行压过 .mcp.json，diag 记 shadowedByYml
+    await writeManagedRows(projectMcpFile(dir2), [{ ...stdioRow("alpha"), config: { ...stdioRow("alpha").config, args: ["a-yml.js"] } }], { createIfMissing: true });
+    await registry2.reconcileNow();
+    const alphaMounts12 = ctx2.mounts.filter((config) => config.serverName === "alpha");
+    assert.ok(alphaMounts12.length >= 2, "shadowed row was remounted from the yml layer");
+    assert.deepEqual(alphaMounts12.at(-1).args, ["a-yml.js"], "yml row wins over .mcp.json row of the same name");
+    const diag12 = await readDiag(dir2);
+    assert.ok(diag12.some((row) => row.kind === "scan" && Array.isArray(row.shadowedByYml) && row.shadowedByYml.includes("alpha")), "shadowing recorded in diag");
+    const snap12 = await registry2.snapshot();
+    const alphaYml12 = snap12.find((file) => file.path === projectMcpFile(dir2)).servers.find((server) => server.serverName === "alpha");
+    assert.equal(alphaYml12.fiberPhase, "active");
+    const alphaCc12 = snap12.find((file) => file.source === "cc-project").servers.find((server) => server.serverName === "alpha");
+    assert.equal(alphaCc12.fiberPhase, null, "shadowed CC row shows no phase while yml owns the name");
+    pass("project yml shadows same-named .mcp.json rows with diagnostics");
+
+    // 13. 变量补齐 → 行可装载（env 展开进装载配置）
+    process.env.CC_TEST_MISSING = "sekret";
+    await registry2.reconcileNow();
+    const beta13 = ctx2.mounts.filter((config) => config.serverName === "beta").at(-1);
+    assert.ok(beta13 !== undefined, "beta mounts once its env var exists");
+    assert.equal(beta13.env.T, "sekret", "${VAR} expanded from process.env at mount time");
+    assert.equal(beta13.command, "node", "${VAR} expanded in command too");
+    pass("registry expands whole-value ${VAR} refs from the environment");
+
+    // 14. 用户层 yml 热装载（watcher 事件驱动，非 reconcileNow）
+    await writeManagedRows(join(home2, ".dsh", "mcp.yml"), [stdioRow("epsilon")], { createIfMissing: true });
+    const epsilonActive = await registry2.waitForState(dir2, "epsilon", (state) => state?.phase === "active", 5000);
+    assert.ok(epsilonActive, "user ~/.dsh/mcp.yml row hot-mounts via the user watcher");
+    pass("registry watches and hot-mounts the user ~/.dsh/mcp.yml");
+
+    // 15. ~/.claude.json 哈希门：CC 重写无关状态位不触发 reconcile
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 600)); // 让 14 的防抖彻底落定
+    const count15 = registry2.debugReconcileCount;
+    const claude15 = JSON.parse(await readFile(join(home2, ".claude.json"), "utf8"));
+    claude15.telemetry = { ping: 9 };
+    await writeFile(join(home2, ".claude.json"), JSON.stringify(claude15), "utf8");
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 900));
+    assert.equal(registry2.debugReconcileCount, count15, "mcpServers-unchanged rewrite must not reconcile");
+    const gate15 = JSON.parse(await readFile(join(home2, ".claude.json"), "utf8"));
+    gate15.mcpServers.zeta = { command: "node", args: [] };
+    await writeFile(join(home2, ".claude.json"), JSON.stringify(gate15), "utf8");
+    const zetaActive = await registry2.waitForState(dir2, "zeta", (state) => state?.phase === "active", 5000);
+    assert.ok(zetaActive, "changed mcpServers subtree passes the hash gate and mounts");
+    pass("claude.json watcher gates on the mcpServers subtree hash");
+
+    for (const disposer of ctx2.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+  } finally {
+    if (savedBin === undefined) delete process.env.CC_TEST_BIN;
+    else process.env.CC_TEST_BIN = savedBin;
+    if (savedMissing === undefined) delete process.env.CC_TEST_MISSING;
+    else process.env.CC_TEST_MISSING = savedMissing;
+    process.chdir(dir);
+    await rm(dir2, { recursive: true, force: true });
+  }
 } finally {
   process.chdir(originalCwd);
   await rm(dir, { recursive: true, force: true });

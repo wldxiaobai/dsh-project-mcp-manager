@@ -19,16 +19,37 @@
  * agent（含子代理）都按各自会话 cwd 应用同样的 deny 规则，因此行为一致。
  * 会话无 cwd 且无 owner 时回退 dsh 进程 cwd 所在项目（“在该项目开启 dsh
  * 会话”场景）。
+ *
+ * 配置来源（同一项目内合并=遮蔽优先序，先到先得；跨项目撞名仍走生效名改名）：
+ *   1. <projectRoot>/.dsh/mcp.yml —— 原生受管块（主格式）
+ *   2. <projectRoot>/.mcp.json    —— CC project scope（严格只读兼容层）
+ *   3. ~/.dsh/mcp.yml             —— 用户层原生（dsh-mcp CLI --scope user 的落点）
+ *   4. ~/.claude.json             —— CC user scope（allowlist 只读顶层 mcpServers）
+ * 用户层行进入每个项目的合并集，即每个项目各挂一条用户服务器连接（与项目行
+ * 同模型）；被同名项目行遮蔽的项目不再见到用户层副本。${VAR} 占位在 mount
+ * 时经 model.expandEnvRefs 用宿主进程环境运行时展开，缺失即跳过该条目。
  */
 import chokidar from "chokidar";
 import { dirname, join, resolve } from "node:path";
+import { homedir } from "node:os";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as mcpClient from "@deepseek-ai/dsh-mcp-client";
 import { extractManagedRows, readPatchFile, type PatchRow } from "./mcp-file.js";
+import {
+  CC_PROJECT_FILE,
+  CLAUDE_USER_FILE,
+  IGNORE_CLAUDE_JSON_ENV,
+  readClaudeUserFile,
+  readMcpJsonFile,
+  type CcReadResult,
+  type McpRowSource,
+  type SourcedRow
+} from "./cc-file.js";
 import { findProjectRoot } from "./project-root.js";
 import {
   denySetFor,
   effectiveServerNames,
+  expandEnvRefs,
   inputFromPatchRow,
   patchRowToView,
   projectKeyOf,
@@ -60,6 +81,8 @@ export interface ProjectServerState {
   rawName: string;
   effectiveName: string;
   row: PatchRow;
+  /** 行来源（遮蔽优先序见模块注释）；旧调用方可缺省。 */
+  source?: McpRowSource;
   fiber?: any;
   phase: ProjectServerPhase;
   error?: string;
@@ -72,11 +95,17 @@ export interface ProjectFileState {
   ok: boolean;
   error: string | null;
   servers: any[];
+  /** 分区作用域：workspace=项目层文件，global=用户层文件。缺省 workspace。 */
+  kind?: "workspace" | "global";
+  /** 该分区的配置来源方言。 */
+  source?: McpRowSource;
 }
 
 export interface ProjectMcpRegistryOptions {
-  /** 全局（profile patch / bundle 层）已装载 mcp-client 行的 serverName，用于生效名冲突判定。 */
+  /** 全局（profile patch）已装载 mcp-client 行的 serverName，用于生效名冲突判定。 */
   globalNames: () => Promise<string[]>;
+  /** 用户层文件路径注入点（测试用）；缺省 <home>/.dsh/mcp.yml 与 <home>/.claude.json。 */
+  userLayerPaths?: { mcpYml: string; claudeJson: string };
 }
 
 interface ProjectEntry {
@@ -88,6 +117,7 @@ interface ProjectEntry {
 export interface DesiredProjectRow {
   rawName: string;
   row: PatchRow;
+  source?: McpRowSource;
 }
 
 export interface ProjectChangePlan {
@@ -154,9 +184,47 @@ export function planProjectChanges(
   return { toUnmount, toMount };
 }
 
-/** 项目文件绝对路径。 */
+/** 项目根下原生受管块文件路径。 */
 export function projectMcpFile(projectRoot: string): string {
   return join(projectRoot, ".dsh", PROJECT_MCP_FILE);
+}
+
+/** 项目根下 CC project scope 兼容文件路径（只读）。 */
+export function projectMcpJsonFile(projectRoot: string): string {
+  return join(projectRoot, CC_PROJECT_FILE);
+}
+
+function normalizePathKey(path: string): string {
+  const resolved = resolve(path);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+const SOURCE_RANK: Record<McpRowSource, number> = { yml: 0, "cc-project": 1, "user-yml": 2, "cc-user": 3 };
+
+/**
+ * 多来源行按优先序合并（数组顺序=优先序，先到先得；后到同名行为被遮蔽）。
+ * shadowedOwnCc：被项目 yml 遮蔽的项目 .mcp.json 行；shadowedUser：被任一项目
+ * 自身行遮蔽的用户层行。纯函数，供测试。
+ */
+export function mergeSourcedRows(candidates: SourcedRow[][]): { rows: DesiredProjectRow[]; shadowedOwnCc: string[]; shadowedUser: string[] } {
+  const byName = new Map<string, SourcedRow>();
+  const shadowedOwnCc: string[] = [];
+  const shadowedUser: string[] = [];
+  for (const list of candidates) {
+    for (const item of list) {
+      const winner = byName.get(item.rawName);
+      if (winner !== undefined) {
+        if (item.source === "cc-project" && winner.source === "yml") {
+          if (!shadowedOwnCc.includes(item.rawName)) shadowedOwnCc.push(item.rawName);
+        } else if (SOURCE_RANK[item.source] >= 2 && SOURCE_RANK[winner.source] <= 1) {
+          if (!shadowedUser.includes(item.rawName)) shadowedUser.push(item.rawName);
+        }
+        continue;
+      }
+      byName.set(item.rawName, item);
+    }
+  }
+  return { rows: [...byName.values()].map((item) => ({ rawName: item.rawName, row: item.row, source: item.source })), shadowedOwnCc, shadowedUser };
 }
 
 /**
@@ -177,6 +245,20 @@ export class ProjectMcpRegistry {
 
   private watcher?: ReturnType<typeof chokidar.watch>;
   private watchedFiles: string[] = [];
+  /** 用户层文件所在目录的独立 watcher（.claude.json 走哈希门）。 */
+  private userWatcher?: ReturnType<typeof chokidar.watch>;
+  private userWatchedDirs: string[] = [];
+  /** 最近一次读到的 ~/.claude.json mcpServers 子树规范化哈希（watcher 门控用）。 */
+  private claudeServersHash: string | undefined;
+  /** 最近一次用户层读取结果（reconcile 与 snapshot 共享；首轮 reconcile 前为空）。 */
+  private userLayer: {
+    mcpYml: string;
+    claudeJson: string;
+    ymlRows: SourcedRow[];
+    ymlError: string | null;
+    cc: CcReadResult | null;
+  } = { mcpYml: "", claudeJson: "", ymlRows: [], ymlError: null, cc: null };
+  private reconcileCount = 0;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private chain: Promise<void> = Promise.resolve();
   private disposed = false;
@@ -217,6 +299,7 @@ export class ProjectMcpRegistry {
       this.disposed = true;
       if (this.timer !== undefined) clearTimeout(this.timer);
       if (this.watcher !== undefined) void this.watcher.close().catch(() => {});
+      if (this.userWatcher !== undefined) void this.userWatcher.close().catch(() => {});
       for (const disposer of this.restrictions.values()) {
         try {
           disposer();
@@ -326,6 +409,117 @@ export class ProjectMcpRegistry {
     this.watcher = watcher;
   }
 
+  // ── 用户层（~/.dsh/mcp.yml + ~/.claude.json allowlist）────────────────
+
+  private resolveUserLayerPaths(): { mcpYml: string; claudeJson: string } {
+    const home = homedir();
+    return this.providers.userLayerPaths ?? {
+      mcpYml: join(home, ".dsh", PROJECT_MCP_FILE),
+      claudeJson: join(home, CLAUDE_USER_FILE)
+    };
+  }
+
+  /** 原生受管块文件通用读取（项目 yml 与用户层 yml 共用）。 */
+  private async readNativeRows(path: string, source: McpRowSource, liveMounts: number): Promise<{ rows: SourcedRow[]; ok: boolean; error: string | null }> {
+    let rows: SourcedRow[] = [];
+    let ok = true;
+    let error: string | null = null;
+    try {
+      const raw = await readPatchFile(path);
+      for (const row of extractManagedRows(raw)) {
+        const rawName = rowNameOf(row);
+        if (rawName === undefined || row.disabled === true) continue;
+        rows.push({ rawName, row, source });
+      }
+    } catch (catchError) {
+      const message = catchError instanceof Error ? catchError.message : String(catchError);
+      // 「配置文件不存在」(ENOENT) 只有在该项目确实有活着的装载时才算异常——
+      // 意味着文件在装载之后被删/移走。零配置项目缺文件是常态：不能用
+      // projects.has(key) 当判据，空项目条目也会让它恒真（误报根因）。
+      if (liveMounts > 0 || !message.includes("ENOENT")) {
+        ok = false;
+        error = message;
+      }
+      rows = [];
+    }
+    return { rows, ok, error };
+  }
+
+  /** 读用户层两来源并刷新 userLayer 缓存；坏条目只告警（无项目归属，不进逐项目 diag）。 */
+  private async readUserLayer(): Promise<void> {
+    const paths = this.resolveUserLayerPaths();
+    const yml = await this.readNativeRows(paths.mcpYml, "user-yml", 0);
+    let cc: CcReadResult | null = null;
+    if (process.env[IGNORE_CLAUDE_JSON_ENV] !== "1") {
+      cc = await readClaudeUserFile(paths.claudeJson);
+      if (cc.serversHash !== undefined) this.claudeServersHash = cc.serversHash;
+    }
+    this.userLayer = { mcpYml: paths.mcpYml, claudeJson: paths.claudeJson, ymlRows: yml.rows, ymlError: yml.error, cc };
+    for (const note of cc?.entryErrors ?? []) this.ctx.logger.warn(`用户层 MCP（${CLAUDE_USER_FILE}）：${note}`);
+    if (cc?.fileError !== undefined) this.ctx.logger.warn(`用户层 MCP：${cc.fileError}`);
+    if (yml.error !== null) this.ctx.logger.warn(`用户层 MCP（${paths.mcpYml}）：${yml.error}`);
+  }
+
+  /**
+   * 监听用户层文件所在目录（默认 ~ 与 ~/.dsh 各一个非递归 watcher）。
+   * ~/.claude.json 事件先过 serversHash 门：CC 每次会话都重写整个状态文件，
+   * mcpServers 子树未变就不触发 reconcile。
+   */
+  private async syncUserWatcher(): Promise<void> {
+    const paths = this.resolveUserLayerPaths();
+    const dirs = [...new Set([dirname(paths.mcpYml), dirname(paths.claudeJson)])];
+    const keys = dirs.map((dir) => normalizePathKey(dir)).sort();
+    const same = this.userWatchedDirs.length === keys.length && keys.every((key, index) => key === this.userWatchedDirs[index]);
+    if (same) return;
+    const old = this.userWatcher;
+    this.userWatcher = undefined;
+    if (old !== undefined) await old.close().catch(() => {});
+    this.userWatchedDirs = keys;
+    if (keys.length === 0 || this.disposed) return;
+    const watcher = chokidar.watch(dirs, {
+      ignoreInitial: true,
+      depth: 1,
+      ignored: (candidate: string) => {
+        const parts = candidate.split(/[/\\]/);
+        return parts.some((part) => part === "node_modules" || part === ".git" || part === ".hg" || part === ".svn");
+      }
+    });
+    const onEvent = (path: string) => {
+      const target = normalizePathKey(path);
+      if (target === normalizePathKey(paths.claudeJson)) {
+        if (process.env[IGNORE_CLAUDE_JSON_ENV] === "1") return;
+        void this.claudeGateThenKick();
+        return;
+      }
+      if (target === normalizePathKey(paths.mcpYml)) this.kick();
+    };
+    watcher.on("add", onEvent);
+    watcher.on("change", onEvent);
+    watcher.on("unlink", onEvent);
+    watcher.on("error", () => {
+      // 保持监听；错误不炸宿主
+    });
+    this.userWatcher = watcher;
+  }
+
+  private async claudeGateThenKick(): Promise<void> {
+    if (this.disposed) return;
+    const { claudeJson } = this.resolveUserLayerPaths();
+    let hash: string | undefined;
+    try {
+      hash = (await readClaudeUserFile(claudeJson)).serversHash;
+    } catch {
+      hash = undefined;
+    }
+    if (hash === undefined) {
+      this.kick(); // 读不动也要走一次 reconcile，让正式读取路径产出诊断
+      return;
+    }
+    if (hash === this.claudeServersHash) return; // 仅 CC 状态位变化：不惊动管线
+    this.claudeServersHash = hash;
+    this.kick();
+  }
+
   // ── 核心 reconcile ───────────────────────────────────────────────────
 
   /**
@@ -334,42 +528,37 @@ export class ProjectMcpRegistry {
    */
   async reconcileAll(): Promise<void> {
     if (this.disposed) return;
+    this.reconcileCount++;
     await this.syncWatcher();
+    await this.syncUserWatcher();
+    await this.readUserLayer();
 
     const roots = await this.knownProjects();
     const desiredByProject = new Map<string, { projectRoot: string; rows: DesiredProjectRow[]; ok: boolean; error: string | null }>();
     for (const projectRoot of roots) {
       const key = projectKeyOf(projectRoot);
-      const path = projectMcpFile(projectRoot);
-      let rows: DesiredProjectRow[] = [];
-      let ok = true;
-      let error: string | null = null;
-      try {
-        const raw = await readPatchFile(path);
-        for (const row of extractManagedRows(raw)) {
-          const rawName = rowNameOf(row);
-          if (rawName === undefined) continue;
-          if (row.disabled === true) continue;
-          rows.push({ rawName, row });
-        }
-      } catch (catchError) {
-        const message = catchError instanceof Error ? catchError.message : String(catchError);
-        // 「配置文件不存在」(ENOENT) 只有在该项目确实有活着的装载时才算异常——
-        // 意味着文件在装载之后被删/移走。零配置项目缺文件是常态：不能用
-        // projects.has(key) 当判据，空项目条目也会让它恒真（误报根因）。
-        const liveServers = this.projects.get(key)?.servers.size ?? 0;
-        if (liveServers > 0 || !message.includes("ENOENT")) {
-          ok = false;
-          error = message;
-        }
-        rows = [];
+      const liveServers = this.projects.get(key)?.servers.size ?? 0;
+      const yml = await this.readNativeRows(projectMcpFile(projectRoot), "yml", liveServers);
+      const cc = await readMcpJsonFile(projectMcpJsonFile(projectRoot), projectRoot);
+      // 影子优先级：项目 mcp.yml > 项目 .mcp.json > 用户 ~/.dsh/mcp.yml > 用户 ~/.claude.json。
+      const merged = mergeSourcedRows([yml.rows, cc.rows, this.userLayer.ymlRows, this.userLayer.cc?.rows ?? []]);
+      const ownRows = merged.rows.filter((row) => row.source === "yml" || row.source === "cc-project");
+      desiredByProject.set(key, { projectRoot, rows: merged.rows, ok: yml.ok && cc.fileError === undefined, error: yml.error ?? cc.fileError ?? null });
+      // 诊断只记有信息量的扫描：异常，或确实解析出了项目自身配置行。干净且无配置的
+      // 项目不写任何记录——用户层行落到每个项目不算该项目的事件。
+      if (!yml.ok || ownRows.length > 0 || cc.fileError !== undefined || cc.entryErrors.length > 0 || merged.shadowedOwnCc.length > 0 || merged.shadowedUser.length > 0) {
+        await this.writeDiag(projectRoot, {
+          kind: "scan",
+          ok: yml.ok && cc.fileError === undefined,
+          error: yml.error ?? cc.fileError ?? null,
+          rows: ownRows.map((row) => row.rawName),
+          ...(merged.shadowedOwnCc.length > 0 ? { shadowedByYml: merged.shadowedOwnCc } : {}),
+          ...(merged.shadowedUser.length > 0 ? { shadowedByProject: merged.shadowedUser } : {}),
+          ...(cc.entryErrors.length > 0 ? { ccEntryErrors: cc.entryErrors } : {})
+        });
       }
-      desiredByProject.set(key, { projectRoot, rows, ok, error });
-      // 诊断只记有信息量的扫描：异常，或确实解析出了配置行。干净且无配置的
-      // 项目不写任何记录——否则每个被访问过的目录都会凭空多出 .dsh/.mcp-diag.json。
-      if (!ok || rows.length > 0) {
-        await this.writeDiag(projectRoot, { kind: "scan", ok, error, rows: rows.map((row) => row.rawName) });
-      }
+      for (const note of cc.entryErrors) this.ctx.logger.warn(`项目 MCP（${CC_PROJECT_FILE}，${projectRoot}）：${note}`);
+      if (cc.fileError !== undefined) this.ctx.logger.warn(`项目 MCP（${CC_PROJECT_FILE}，${projectRoot}）：${cc.fileError}`);
     }
 
     const catalogProjects = [...desiredByProject.values()]
@@ -432,7 +621,17 @@ export class ProjectMcpRegistry {
     await this.writeDiag(project.projectRoot, { kind: "attempt", rawName: item.rawName, effectiveName });
     let config: Record<string, unknown>;
     try {
-      const input = inputFromPatchRow(item.row);
+      let input = inputFromPatchRow(item.row);
+      if (item.source === "cc-project" || item.source === "cc-user") {
+        // ${VAR} 整值展开只对 Claude Code 方言来源生效；原生 yml 行保持字面值语义。
+        const expanded = expandEnvRefs(input, process.env);
+        if (!expanded.ok) {
+          await this.writeDiag(project.projectRoot, { kind: "env-missing", rawName: item.rawName, effectiveName, missingVar: expanded.missingVar });
+          this.ctx.logger.warn(`项目 MCP "${item.rawName}"（${project.projectRoot}）未装载：环境变量 \${${expanded.missingVar}} 未设置`);
+          return;
+        }
+        input = expanded.input;
+      }
       const configInput: any = { ...input, serverName: effectiveName };
       if (input.transport === "stdio" && typeof input.cwd === "string" && input.cwd !== "") {
         configInput.cwd = resolve(project.projectRoot, input.cwd);
@@ -458,6 +657,7 @@ export class ProjectMcpRegistry {
       rawName: item.rawName,
       effectiveName,
       row: item.row,
+      source: item.source,
       fiber,
       phase: "mounting"
     };
@@ -614,6 +814,11 @@ export class ProjectMcpRegistry {
     });
   }
 
+  /** 已执行的 reconcile 次数（测试用：验证 .claude.json 哈希门是否惊动管线）。 */
+  get debugReconcileCount(): number {
+    return this.reconcileCount;
+  }
+
   /** 等待某项目某行的装载状态满足 predicate（写入后 reconciliation 用）。 */
   async waitForState(projectRoot: string, rawName: string, predicate: (state: ProjectServerState | undefined) => boolean, timeoutMs = 3000): Promise<boolean> {
     const key = projectKeyOf(projectRoot);
@@ -626,19 +831,42 @@ export class ProjectMcpRegistry {
     return false;
   }
 
-  /** 行级 view；未装载时 phase 按行状态推导。 */
+  /** 行级 view；未装载时 phase 按行状态推导。行查找按影子优先序逐层进行。 */
   async serverView(projectRoot: string, rawName: string): Promise<any | undefined> {
     const key = projectKeyOf(projectRoot);
     const entry = this.projects.get(key);
-    if (entry === undefined) return undefined;
-    const state = entry.servers.get(rawName);
-    const path = projectMcpFile(projectRoot);
+    const state = entry?.servers.get(rawName);
     let row: PatchRow | undefined;
+    let source: McpRowSource | undefined;
     try {
-      const raw = await readPatchFile(path);
+      const raw = await readPatchFile(projectMcpFile(projectRoot));
       row = extractManagedRows(raw).find((candidate) => rowNameOf(candidate) === rawName);
+      if (row !== undefined) source = "yml";
     } catch {
+      // 落到后续层
+    }
+    if (row === undefined) {
+      const cc = await readMcpJsonFile(projectMcpJsonFile(projectRoot), projectRoot);
+      const found = cc.rows.find((candidate) => candidate.rawName === rawName);
+      if (found !== undefined) {
+        row = found.row;
+        source = "cc-project";
+      }
+    }
+    if (row === undefined) {
+      const uy = this.userLayer.ymlRows.find((candidate) => candidate.rawName === rawName);
+      const uc = this.userLayer.cc?.rows.find((candidate) => candidate.rawName === rawName);
+      if (uy !== undefined) {
+        row = uy.row;
+        source = "user-yml";
+      } else if (uc !== undefined) {
+        row = uc.row;
+        source = "cc-user";
+      }
+    }
+    if (row === undefined) {
       row = state?.row;
+      source = state?.source;
     }
     if (row === undefined) return undefined;
     const view = patchRowToView(row, { kind: "workspace", path: projectRoot });
@@ -646,13 +874,14 @@ export class ProjectMcpRegistry {
     const effectiveName = this.effective.get(key + "\u0000" + rawName);
     return {
       ...view,
+      ...(source === undefined ? {} : { source }),
       ...(effectiveName === undefined ? {} : { effectiveServerName: effectiveName }),
       fiberPhase: state === undefined ? (row.disabled === true ? null : "pending") : phaseToFiberPhase(state.phase),
       toolCount: state !== undefined && state.phase === "active" ? mcpToolCount(this.ctx, state.effectiveName) : 0
     };
   }
 
-  /** 全量快照：每个已知项目一个文件分区。 */
+  /** 全量快照：每个已知项目一个 yml 分区 + 一个 .mcp.json 分区（有内容才出），外加两个用户层分区。 */
   async snapshot(): Promise<ProjectFileState[]> {
     await this.enqueue(async () => {
       await this.reconcileAll();
@@ -660,42 +889,103 @@ export class ProjectMcpRegistry {
     const out: ProjectFileState[] = [];
     for (const [key, entry] of this.projects) {
       const path = projectMcpFile(entry.projectRoot);
-      const file: ProjectFileState = { project: entry.projectRoot, path, ok: true, error: null, servers: [] };
-      let raw: string | undefined;
+      const file: ProjectFileState = { project: entry.projectRoot, path, ok: true, error: null, source: "yml", servers: [] };
+      let rows: PatchRow[] = [];
+      let usable = true;
+      let skipYmlPartition = false;
       try {
-        raw = await readPatchFile(path);
+        rows = extractManagedRows(await readPatchFile(path));
       } catch (error) {
-        if (entry.servers.size === 0) continue; // 无配置文件且无装载：不展示
-        file.ok = false;
-        file.error = error instanceof Error ? error.message : String(error);
+        const message = error instanceof Error ? error.message : String(error);
+        // yml 缺失且没有 yml 来源的装载：文件本就不存在，不出 yml 分区——
+        // 用户层行也能让项目有装载实例，servers.size>0 不再等价「装载后文件被删」。
+        const ymlLive = [...entry.servers.values()].some((state) => state.source === "yml" || state.source === undefined);
+        if (message.includes("ENOENT") && !ymlLive) {
+          skipYmlPartition = true;
+        } else {
+          usable = false;
+          file.ok = false;
+          file.error = message;
+        }
+      }
+      if (!skipYmlPartition) {
+        if (usable) file.servers = this.partitionServers(entry, key, rows, "yml");
         out.push(file);
-        continue;
       }
-      let rows: PatchRow[];
-      try {
-        rows = extractManagedRows(raw);
-      } catch (error) {
-        // 受管块损坏 / 不支持的标签（如 !!js）：只标该文件失败，不炸全局快照。
-        file.ok = false;
-        file.error = error instanceof Error ? error.message : String(error);
-        out.push(file);
-        continue;
+      // ── 项目 .mcp.json 分区 ──
+      const ccPath = projectMcpJsonFile(entry.projectRoot);
+      const cc = await readMcpJsonFile(ccPath, entry.projectRoot);
+      const ccLive = [...entry.servers.values()].some((state) => state.source === "cc-project");
+      if (cc.rows.length > 0 || cc.fileError !== undefined || cc.entryErrors.length > 0 || ccLive) {
+        const ccFile: ProjectFileState = {
+          project: entry.projectRoot,
+          path: ccPath,
+          ok: cc.fileError === undefined,
+          error: cc.fileError ?? null,
+          source: "cc-project",
+          servers: this.partitionServers(entry, key, cc.rows.map((r) => r.row), "cc-project")
+        };
+        if (cc.entryErrors.length > 0) (ccFile as any).entryErrors = cc.entryErrors;
+        out.push(ccFile);
       }
-      for (const row of rows) {
-        const rawName = rowNameOf(row);
-        if (rawName === undefined) continue;
-        const view = patchRowToView(row, { kind: "workspace", path: entry.projectRoot });
-        if (view === undefined) continue;
-        const state = entry.servers.get(rawName);
-        const effectiveName = this.effective.get(key + "\u0000" + rawName);
-        file.servers.push({
-          ...view,
-          ...(effectiveName === undefined ? {} : { effectiveServerName: effectiveName }),
-          fiberPhase: state === undefined ? (row.disabled === true ? null : "pending") : phaseToFiberPhase(state.phase),
-          toolCount: state !== undefined && state.phase === "active" ? mcpToolCount(this.ctx, state.effectiveName) : 0
-        });
-      }
+    }
+    // ── 用户层两个分区（无 fiberPhase：装载实例按项目分布，见各项目的 servers.state.source）──
+    if (this.userLayer.mcpYml !== "" && (this.userLayer.ymlRows.length > 0 || this.userLayer.ymlError !== null)) {
+      out.push({
+        project: dirname(dirname(this.userLayer.mcpYml)),
+        path: this.userLayer.mcpYml,
+        kind: "global",
+        source: "user-yml",
+        ok: this.userLayer.ymlError === null,
+        error: this.userLayer.ymlError,
+        servers: this.userLayer.ymlRows
+          .map((r) => patchRowToView(r.row, { kind: "global", path: this.userLayer.mcpYml, label: "user" }))
+          .filter((v): v is NonNullable<typeof v> => v !== undefined)
+          .map((v) => ({ ...v, source: "user-yml" as const }))
+      });
+    }
+    const ccUser = this.userLayer.cc;
+    if (ccUser !== null && ccUser !== undefined && (ccUser.rows.length > 0 || ccUser.fileError !== undefined || ccUser.entryErrors.length > 0)) {
+      const file: ProjectFileState = {
+        project: dirname(this.userLayer.claudeJson),
+        path: this.userLayer.claudeJson,
+        kind: "global",
+        source: "cc-user",
+        ok: ccUser.fileError === undefined,
+        error: ccUser.fileError ?? null,
+        servers: ccUser.rows
+          .map((r) => patchRowToView(r.row, { kind: "global", path: this.userLayer.claudeJson, label: "user" }))
+          .filter((v): v is NonNullable<typeof v> => v !== undefined)
+          .map((v) => ({ ...v, source: "cc-user" as const }))
+      };
+      if (ccUser.entryErrors.length > 0) (file as any).entryErrors = ccUser.entryErrors;
       out.push(file);
+    }
+    return out;
+  }
+
+  /** 一个来源分区的服务器 view 列表；state 只认同来源装载实例（异来源=被遮蔽）。 */
+  private partitionServers(entry: ProjectEntry, key: string, rows: PatchRow[], source: McpRowSource): any[] {
+    const out: any[] = [];
+    for (const row of rows) {
+      const rawName = rowNameOf(row);
+      if (rawName === undefined) continue;
+      const view = patchRowToView(row, { kind: "workspace", path: entry.projectRoot });
+      if (view === undefined) continue;
+      const state = entry.servers.get(rawName);
+      const owned = state !== undefined && state.source === source;
+      const effectiveName = this.effective.get(key + "\u0000" + rawName);
+      out.push({
+        ...view,
+        source,
+        ...(effectiveName === undefined ? {} : { effectiveServerName: effectiveName }),
+        fiberPhase: state === undefined
+          ? (row.disabled === true ? null : "pending")
+          : owned
+            ? phaseToFiberPhase(state.phase)
+            : null, // 该名字由更高优先层装载：本分区行只作展示
+        toolCount: owned && state !== undefined && state.phase === "active" ? mcpToolCount(this.ctx, state.effectiveName) : 0
+      });
     }
     return out;
   }
