@@ -499,6 +499,27 @@ try {
     }
     pass("DSH_MCP_IGNORE_CLAUDE_JSON=1 gates reading and watching of ~/.claude.json");
 
+    // 22. P1 回归：项目层空 cwd 按文档解析为项目根；用户层空 cwd 保持继承宿主目录。
+    // 修复前：mountServer 只处理非空 cwd，省略 cwd 的手写 yml 行拿宿主进程 cwd，
+    // 与 README「空 cwd = 项目根」的说法对不上。
+    const dir4 = join(dir2, "proj4");
+    await mkdir(join(dir4, ".dsh"), { recursive: true });
+    await writeManagedRows(projectMcpFile(dir4), [
+      { id: "panel-mcp-nocwd", name: "@deepseek-ai/dsh-mcp-client", config: { ...stdioRow("nocwd").config, cwd: "" } }
+    ], { createIfMissing: true });
+    await writeManagedRows(join(home2, ".dsh", "mcp.yml"), [
+      { id: "panel-mcp-user-nocwd", name: "@deepseek-ai/dsh-mcp-client", config: { ...stdioRow("user-nocwd").config, cwd: "" } }
+    ]);
+    ctx2.agentsList.push(fakeAgent("session-g", dir4));
+    await registry2.reconcileNow();
+    const nocwd22 = ctx2.mounts.filter((config) => config.serverName === "nocwd").at(-1);
+    assert.ok(nocwd22 !== undefined, "project row with empty cwd mounts");
+    assert.equal(nocwd22.cwd, dir4, "empty cwd at the project layer resolves to the project root");
+    const userNoCwd22 = ctx2.mounts.filter((config) => /(^|_)user-nocwd$/.test(config.serverName)).at(-1);
+    assert.ok(userNoCwd22 !== undefined, "user row with empty cwd mounts");
+    assert.equal(userNoCwd22.cwd, "", "empty cwd at the user layer stays host-inherit");
+    pass("empty stdio cwd resolves to the project root for project sources and stays host-inherit for user sources");
+
     for (const disposer of ctx2.disposers) {
       const cleanup = disposer();
       if (typeof cleanup === "function") cleanup();

@@ -681,8 +681,14 @@ export class ProjectMcpRegistry {
       }
       input = revalidated.data;
       const configInput: any = { ...input, serverName: effectiveName };
-      if (input.transport === "stdio" && typeof input.cwd === "string" && input.cwd !== "") {
-        configInput.cwd = resolve(project.projectRoot, input.cwd);
+      if (input.transport === "stdio") {
+        if (typeof input.cwd === "string" && input.cwd !== "") {
+          configInput.cwd = resolve(project.projectRoot, input.cwd);
+        } else if (item.source === undefined || item.source === "yml" || item.source === "cc-project") {
+          // 文档语义：项目层空 cwd = 项目根（手写 yml 行可整个省略 cwd）；
+          // 用户层（user-yml / cc-user）空 cwd 保持继承宿主工作目录，不改写。
+          configInput.cwd = project.projectRoot;
+        }
       }
       config = toOfficialConfig(configInput);
     } catch (error) {
