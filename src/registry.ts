@@ -432,7 +432,7 @@ export class ProjectMcpRegistry {
   }
 
   /** 原生受管块文件通用读取（项目 yml 与用户层 yml 共用）。 */
-  private async readNativeRows(path: string, source: McpRowSource, liveMounts: number): Promise<{ rows: SourcedRow[]; ok: boolean; error: string | null }> {
+  private async readNativeRows(path: string, source: McpRowSource, hasYmlMounts: boolean): Promise<{ rows: SourcedRow[]; ok: boolean; error: string | null }> {
     let rows: SourcedRow[] = [];
     let ok = true;
     let error: string | null = null;
@@ -446,10 +446,12 @@ export class ProjectMcpRegistry {
       }
     } catch (catchError) {
       const message = catchError instanceof Error ? catchError.message : String(catchError);
-      // 「配置文件不存在」(ENOENT) 只有在该项目确实有活着的装载时才算异常——
+      // 「配置文件不存在」(ENOENT) 只有在该项目确实有活着的 yml 来源装载时才算异常——
       // 意味着文件在装载之后被删/移走。零配置项目缺文件是常态：不能用
       // projects.has(key) 当判据，空项目条目也会让它恒真（误报根因）。
-      if (liveMounts > 0 || !message.includes("ENOENT")) {
+      // hasYmlMounts 同样不能拿 servers.size 充数——用户层行也占装载实例，
+      // 纯用户层挂载的项目缺 yml 依旧常态（与 snapshot 的 ymlLive 同一判据）。
+      if (hasYmlMounts || !message.includes("ENOENT")) {
         ok = false;
         error = message;
       }
@@ -461,7 +463,7 @@ export class ProjectMcpRegistry {
   /** 读用户层两来源并刷新 userLayer 缓存；坏条目只告警（无项目归属，不进逐项目 diag）。 */
   private async readUserLayer(): Promise<void> {
     const paths = this.resolveUserLayerPaths();
-    const yml = await this.readNativeRows(paths.mcpYml, "user-yml", 0);
+    const yml = await this.readNativeRows(paths.mcpYml, "user-yml", false);
     let cc: CcReadResult | null = null;
     if (process.env[IGNORE_CLAUDE_JSON_ENV] !== "1") {
       cc = await readClaudeUserFile(paths.claudeJson);
@@ -552,8 +554,10 @@ export class ProjectMcpRegistry {
     const desiredByProject = new Map<string, { projectRoot: string; rows: DesiredProjectRow[] }>();
     for (const projectRoot of roots) {
       const key = projectKeyOf(projectRoot);
-      const liveServers = this.projects.get(key)?.servers.size ?? 0;
-      const yml = await this.readNativeRows(projectMcpFile(projectRoot), "yml", liveServers);
+      // 只数 yml 来源的装载实例：用户层行同样落在 entry.servers 里，拿总数
+      // 会把「纯用户层挂载」误判成「yml 装载后文件被删」，产生假 ENOENT 诊断。
+      const hasYmlMounts = [...(this.projects.get(key)?.servers.values() ?? [])].some((state) => state.source === "yml" || state.source === undefined);
+      const yml = await this.readNativeRows(projectMcpFile(projectRoot), "yml", hasYmlMounts);
       const cc = await readMcpJsonFile(projectMcpJsonFile(projectRoot), projectRoot);
       // 影子优先级：项目 mcp.yml > 项目 .mcp.json > 用户 ~/.dsh/mcp.yml > 用户 ~/.claude.json。
       const merged = mergeSourcedRows([yml.rows, cc.rows, this.userLayer.ymlRows, this.userLayer.cc?.rows ?? []]);

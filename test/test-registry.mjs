@@ -554,6 +554,36 @@ try {
     assert.equal(registry2.debugReconcileCount, count23, "a stray nested .dsh/mcp.yml must not drive reconciles");
     pass("project watcher kicks only on the exact config files of known project roots");
 
+    // 24. P1 回归（边界）：纯用户层挂载的项目缺 .dsh/mcp.yml 不留痕。修复前：
+    // reconcileAll 拿 servers.size 当「本项目有活装载」，把用户层行也数进去，
+    // 文件缺失的 ENOENT 被记成 scan 错误——零配置项目被假诊断刷屏。
+    const dir5 = join(dir2, "proj5");
+    await mkdir(join(dir5, ".dsh"), { recursive: true });
+    ctx2.agentsList.push(fakeAgent("session-h", dir5));
+    await registry2.reconcileNow();
+    // 用户层活行：场景 22 重写过用户 yml，epsilon 已不在，用 user-nocwd（user-yml 源）。
+    const eps24 = await registry2.waitForState(dir5, "user-nocwd", (state) => state?.phase === "active", 5000);
+    assert.ok(eps24, "user-layer rows mount in the new project");
+    await registry2.reconcileNow();
+    // attempt 行允许存在（任何装载都写），但不得出现 scan/ENOENT 假错误。
+    if (await pathExists(diagFile(dir5))) {
+      const diag24a = await readDiag(dir5);
+      assert.ok(diag24a.every((row) => !(row.kind === "scan" && String(row.error ?? "").includes("ENOENT"))), "no false ENOENT scan error for user-layer-only mounts");
+    }
+    // 对照：真实 yml 行装载后文件被删 → 记 scan 错仍是正确行为
+    await writeManagedRows(projectMcpFile(dir5), [stdioRow("real-yml")], { createIfMissing: true });
+    await registry2.reconcileNow();
+    assert.ok(await registry2.waitForState(dir5, "real-yml", (state) => state?.phase === "active", 5000), "project yml row mounts");
+    await rm(projectMcpFile(dir5));
+    await registry2.reconcileNow();
+    const diag24 = await readDiag(dir5);
+    assert.ok(diag24.some((row) => row.kind === "scan" && row.ok === false && String(row.error).includes("ENOENT")), "deleting a live yml file still records a scan error");
+    pass("absent project yml stays silent for user-layer-only mounts and stays loud for removed live yml files");
+
+    // 场景 24 的 unlink 会留下防抖后的迟到 reconcile 与 chokidar 内部重扫：
+    // 先让队列落空再关 watcher，否则 close 与临时目录删除赛跑、句柄不释放。
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 800));
+
     for (const disposer of ctx2.disposers) {
       const cleanup = disposer();
       if (typeof cleanup === "function") cleanup();
