@@ -705,7 +705,7 @@ export class ProjectMcpRegistry {
       else this.identityShadowSigs.set(key, shadowSig);
       if (shadowChanged) {
         for (const shadow of merged.shadowedIdentity) {
-          this.ctx.logger.warn(`项目 MCP（${projectRoot}）：跳过重复服务定义 "${shadow.name}"（与 "${shadow.winner}" 为同一服务，${shadow.reason === "normname" ? "归一化名称相同" : "命令与参数相同"}，按层优先级保留高优先级定义）`);
+          this.ctx.logger.warn(`项目 MCP（${projectRoot}）：跳过重复服务定义 "${shadow.name}"（与 "${shadow.winner}" 为同一服务，${shadow.reason === "normname" ? "归一化名称相同" : "命令与参数相同"}，按层优先级保留高优先级定义）；确属不同服务器请改名或调整命令与参数`);
         }
       }
       const ownRows = merged.rows.filter((row) => row.source === "yml" || row.source === "cc-project");

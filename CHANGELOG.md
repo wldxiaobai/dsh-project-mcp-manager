@@ -23,6 +23,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   name), by running `mergeSourcedRows` over the same four layers — the CLI
   view and what actually mounts no longer disagree.
 
+### Changed
+
+- The identity-dedup warning now carries the remedy ("确属不同服务器请改名或
+  调整命令与参数"), and both READMEs document the two identity-key caveats
+  that used to be implicit: comparison runs on raw config strings **before**
+  `${VAR}` expansion, and `env`/`headers`/`cwd` are not part of the key.
+- Legacy `DSH_MCP_IGNORE_CLAUDE_JSON` now has an explicit removal anchor
+  (`TODO(v0.4)` at its definition site).
+
 ## [0.3.0] - 2026-09-03
 
 ### Changed

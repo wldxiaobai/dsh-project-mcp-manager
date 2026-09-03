@@ -178,7 +178,13 @@ written two ways); or the *service identity* (`stdio`: command + args,
 path-case-insensitive on Windows; `streamable-http`: the url). Rows without a
 command/url register no identity key — `node a.js` and `node b.js` stay
 different services — while `disabled` placeholder rows hold all three keys
-without mounting anything. Losers are reported in `.dsh/.mcp-diag.json`
+without mounting anything. Identity is compared on the **raw strings as
+written in the file, before `${VAR}` expansion**, and `env`, `headers`, `cwd`
+are *not* part of the key: two genuinely different servers sharing one command
+line (but e.g. different env) still collapse to the winner, while the same
+server written once with a `${VAR}` and once as a literal does not match. If a
+drop was unintended, rename the loser (past normalization) or adjust its
+command line. Losers are reported in `.dsh/.mcp-diag.json`
 (`shadowedByYml` / `shadowedByProject` / `shadowedIdentity`) and every
 identity/normalized-name drop warns in the host log:
 

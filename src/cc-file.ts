@@ -31,7 +31,9 @@ export const CC_PROJECT_FILE = ".mcp.json";
 /** CC user scope 单体状态文件名（位于家目录，allowlist 只读其顶层 mcpServers）。 */
 export const CLAUDE_USER_FILE = ".claude.json";
 /** 旧开关（保留一个版本）：置为 "1" 时强制停用 ~/.claude.json 的读取与监听，
- * 优先于 DSH_MCP_READ_CLAUDE_USER（两者同时设置时本开关胜出并告警一次）。 */
+ * 优先于 DSH_MCP_READ_CLAUDE_USER（两者同时设置时本开关胜出并告警一次）。
+ * TODO(v0.4)：删除本开关——连同 claudeUserLayerConflict 的胜出分支、
+ * readUserLayer 的冲突告警闩、CLI 提示与文档中的旧开关说明。 */
 export const IGNORE_CLAUDE_JSON_ENV = "DSH_MCP_IGNORE_CLAUDE_JSON";
 /** 置为 "1" 才选择启用对 ~/.claude.json 顶层 mcpServers 的读取与监听。
  * cc-user 层默认关闭：CC 用户级配置属于机器环境级外部状态，不应隐式挂进每个项目。 */
