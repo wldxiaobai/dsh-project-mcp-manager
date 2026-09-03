@@ -301,7 +301,7 @@ try {
   assert.equal(await pathExists(diagFile(projectC)), true, "configured project gets a diag file");
   await rm(projectMcpFile(projectC), { force: true });
   await registry.reconcileNow();
-  const vanished = (await readDiag(projectC)).filter((row) => row.kind === "scan").at(-1);
+  const vanished = (await readDiag(projectC)).findLast((row) => row.kind === "scan");
   assert.equal(vanished.ok, false, "losing mcp.yml under a live mount is reported as an error");
   assert.match(String(vanished.error), /ENOENT/);
   assert.ok(ctx.disposals.includes("echo-c"), "server unmounted after its config file vanished");
