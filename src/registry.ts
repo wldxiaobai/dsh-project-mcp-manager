@@ -219,7 +219,7 @@ function serviceIdentityKey(item: SourcedRow): string | undefined {
   if (config.transport === "stdio") {
     if (typeof config.command !== "string" || config.command === "") return undefined;
     const command = process.platform === "win32" ? config.command.toLowerCase() : config.command;
-    const args = Array.isArray(config.args) ? config.args.map((arg) => String(arg)).join("\0") : "";
+    const args = Array.isArray(config.args) ? config.args.map(String).join("\0") : "";
     return "s\0" + command + "\0" + args;
   }
   return undefined;
@@ -327,7 +327,7 @@ export class ProjectMcpRegistry {
   /** 最近一次读到的 ~/.claude.json mcpServers 子树规范化哈希（watcher 门控用）。 */
   private claudeServersHash: string | undefined;
   /** 装载被跳过的行（key\0rawName → 原因）；快照按独立 skipReason 字段展示，fiberPhase 保持枚举。 */
-  private skipReasons = new Map<string, string>();
+  private readonly skipReasons = new Map<string, string>();
   /** 最近一次用户层读取结果（reconcile 与 snapshot 共享；首轮 reconcile 前为空）。 */
   private userLayer: {
     mcpYml: string;
@@ -1141,20 +1141,22 @@ export class ProjectMcpRegistry {
       const view = patchRowToView(row, { kind: "workspace", path: entry.projectRoot });
       if (view === undefined) continue;
       const state = entry.servers.get(rawName);
-      const owned = state !== undefined && state.source === source;
+      const owned = state?.source === source;
       const effectiveName = this.effective.get(key + "\u0000" + rawName);
       const skipReason = state === undefined && row.disabled !== true ? this.skipReasons.get(key + "\u0000" + rawName) : undefined;
+      let fiberPhase: unknown = null; // 该名字由更高优先层装载：本分区行只作展示
+      if (state === undefined) {
+        if (row.disabled !== true) fiberPhase = "pending";
+      } else if (owned) {
+        fiberPhase = phaseToFiberPhase(state.phase);
+      }
       out.push({
         ...view,
         source,
         ...(effectiveName === undefined ? {} : { effectiveServerName: effectiveName }),
-        fiberPhase: state === undefined
-          ? (row.disabled === true ? null : "pending")
-          : owned
-            ? phaseToFiberPhase(state.phase)
-            : null, // 该名字由更高优先层装载：本分区行只作展示
+        fiberPhase,
         skipReason: skipReason ?? null, // env-missing / env-invalid / config-invalid / plugin-throw；fiberPhase 保持生命周期枚举
-        toolCount: owned && state !== undefined && state.phase === "active" ? mcpToolCount(this.ctx, state.effectiveName) : 0
+        toolCount: owned && state?.phase === "active" ? mcpToolCount(this.ctx, state.effectiveName) : 0
       });
     }
     return out;

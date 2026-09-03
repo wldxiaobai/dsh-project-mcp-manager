@@ -152,7 +152,8 @@ function parseMcpServersValue(mcpServers: unknown, source: McpRowSource, project
     }
     const parsed = ccServerEntrySchema.safeParse(raw);
     if (!parsed.success) {
-      entryErrors.push(`"${name}": 条目字段无效：${parsed.error.issues.map((issue) => `${String(issue.path.join("."))}: ${issue.message}`).join("；")}`);
+      const detail = parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("；");
+      entryErrors.push(`"${name}": 条目字段无效：${detail}`);
       continue;
     }
     const mapped = ccEntryToInput(name, parsed.data, projectRoot);
