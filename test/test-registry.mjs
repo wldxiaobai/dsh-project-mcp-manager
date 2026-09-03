@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ProjectMcpRegistry, projectMcpFile } from "../lib/registry.js";
+import { ProjectMcpRegistry, projectMcpFile, mergeSourcedRows } from "../lib/registry.js";
 import { MCP_BLOCK_BEGIN, MCP_BLOCK_END, writeManagedRows } from "../lib/mcp-file.js";
 
 let passed = 0;
@@ -23,11 +23,37 @@ async function pathExists(path) {
 async function readDiag(projectRoot) {
   return JSON.parse(await readFile(diagFile(projectRoot), "utf8"));
 }
+/** 轮询 diag 直到谓词成立：事件驱动用例里对账链可能仍在落盘（不能用固定 sleep）。 */
+async function waitForDiag(projectRoot, predicate, timeoutMs = 5000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    try {
+      if (predicate(await readDiag(projectRoot))) return true;
+    } catch {
+      // diag 尚不存在或正被半读到截断 JSON：视为「暂不满足」，继续轮询。
+      // （writeDiag 用非原子的 writeFile，轮询方必须自己扛住中间态。）
+    }
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 150));
+  }
+  return false;
+}
+/** Windows 上 chokidar 关闭后目录句柄可能仍短暂占用：rm 带退避重试。 */
+async function rmRetry(path) {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    try {
+      await rm(path, { recursive: true, force: true });
+      return;
+    } catch {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+    }
+  }
+  await rm(path, { recursive: true, force: true });
+}
 
 const stdioRow = (name, command = "node") => ({
   id: "panel-mcp-" + name,
   name: "@deepseek-ai/dsh-mcp-client",
-  config: { serverName: name, transport: "stdio", command, args: [], env: {}, cwd: "sub", toolCallTimeoutMs: 60000, failOnStartupError: false, reconnect: { enabled: true, initialDelayMs: 500, maxDelayMs: 30000, maxAttempts: 10 } }
+  config: { serverName: name, transport: "stdio", command, args: ["srv-" + name + ".js"], env: {}, cwd: "sub", toolCallTimeoutMs: 60000, failOnStartupError: false, reconnect: { enabled: true, initialDelayMs: 500, maxDelayMs: 30000, maxAttempts: 10 } }
 });
 
 /** 最小假宿主 ctx：记录 plugin 装载与 restrict 调用；effect 收集清理器。 */
@@ -99,6 +125,93 @@ function fakeAgent(id, cwd) {
 }
 
 const dir = await mkdtemp(join(tmpdir(), "dsh-project-mcp-manager-registry-"));
+
+// ── 0. mergeSourcedRows 跨来源同服务去重（纯函数）──────────────────────────
+{
+  const srow = (rawName, source, config, disabled = false) => ({
+    rawName,
+    source,
+    ...(disabled ? { disabled: true } : {}),
+    row: { id: "panel-mcp-" + rawName, name: "@deepseek-ai/dsh-mcp-client", ...(disabled ? { disabled: true } : {}), ...(config === undefined ? {} : { config }) }
+  });
+  const stdioCfg = (serverName, command, args) => ({ serverName, transport: "stdio", command, args, env: {}, cwd: "" });
+  const httpCfg = (serverName, url) => ({ serverName, transport: "streamable-http", url, headers: {} });
+
+  // 0.1 事故对：同名服务两种写法（args 差 --offline）→ 归一名键命中，高层胜出
+  {
+    const m = mergeSourcedRows([
+      [srow("unityMCP", "yml", stdioCfg("unityMCP", "C:\\uvx.exe", ["--from", "mcpforunityserver==10.1.0", "mcp-for-unity", "--transport", "stdio"]))],
+      [],
+      [],
+      [srow("unity-mcp", "cc-user", stdioCfg("unity-mcp", "C:\\uvx.exe", ["--offline", "--from", "mcpforunityserver==10.1.0", "mcp-for-unity", "--transport", "stdio"]))]
+    ]);
+    assert.deepEqual(m.rows.map((r) => r.rawName), ["unityMCP"], "normname dup drops the low-priority twin");
+    assert.deepEqual(m.shadowedIdentity, [{ name: "unity-mcp", winner: "unityMCP", reason: "normname" }], "identity shadow reports the incident pair");
+    assert.deepEqual(m.shadowedUser, ["unity-mcp"], "the dropped cc-user row also counts as project-shadowed user row");
+  }
+  // 0.2 完全相同的 command+args（名字归一后不同）→ 身份键命中
+  {
+    const m = mergeSourcedRows([
+      [srow("pencilA", "yml", stdioCfg("pencilA", "C:\\pencil\\mcp-server.exe", ["--agent", "cli"]))],
+      [],
+      [srow("pencil-user", "user-yml", stdioCfg("pencil-user", "C:\\pencil\\mcp-server.exe", ["--agent", "cli"]))]
+    ]);
+    assert.deepEqual(m.rows.map((r) => r.rawName), ["pencilA"], "identity dup keeps the yml row");
+    assert.deepEqual(m.shadowedIdentity, [{ name: "pencil-user", winner: "pencilA", reason: "identity" }]);
+  }
+  // 0.3 同 command 不同 args 是不同服务：node a.js 与 node b.js 不许互杀
+  {
+    const m = mergeSourcedRows([
+      [srow("aa", "yml", stdioCfg("aa", "node", ["a.js"])), srow("bb", "yml", stdioCfg("bb", "node", ["b.js"]))]
+    ]);
+    assert.equal(m.rows.length, 2, "same command, different args are different services");
+    assert.equal(m.shadowedIdentity.length, 0);
+  }
+  // 0.4 http 用 url 做身份键
+  {
+    const m = mergeSourcedRows([
+      [srow("remote", "yml", httpCfg("remote", "https://mcp.example/api"))],
+      [],
+      [],
+      [srow("remote2", "cc-user", httpCfg("remote2", "https://mcp.example/api"))]
+    ]);
+    assert.deepEqual(m.rows.map((r) => r.rawName), ["remote"]);
+    assert.deepEqual(m.shadowedIdentity, [{ name: "remote2", winner: "remote", reason: "identity" }]);
+  }
+  // 0.5 disabled 占名行注册归一名键：给用户层行提供占名退出手段
+  {
+    const m = mergeSourcedRows([
+      [srow("gamma", "yml", undefined, true)],
+      [],
+      [],
+      [srow("Gamma", "cc-user", stdioCfg("Gamma", "node", ["g.js"]))]
+    ]);
+    assert.equal(m.rows.length, 0, "disabled placeholder mounts nothing and its normname twin stays shadowed");
+    assert.deepEqual(m.shadowedIdentity, [{ name: "Gamma", winner: "gamma", reason: "normname" }]);
+  }
+  // 0.6 空 command 的行不注册身份键（两行都无 config 时不得互杀）
+  {
+    const m = mergeSourcedRows([
+      [],
+      [],
+      [srow("uc-a", "user-yml", stdioCfg("uc-a", "", []))],
+      [srow("uc-b", "cc-user", stdioCfg("uc-b", "", []))]
+    ]);
+    assert.equal(m.rows.length, 2, "rows without a command never claim the identity key");
+    assert.equal(m.shadowedIdentity.length, 0);
+  }
+  // 0.7 精确同名遮蔽仍先到先得，且不重复记入 shadowedIdentity
+  {
+    const m = mergeSourcedRows([
+      [srow("dup", "yml", stdioCfg("dup", "node", ["x.js"]))],
+      [srow("dup", "cc-project", stdioCfg("dup", "node", ["other.js"]))]
+    ]);
+    assert.deepEqual(m.shadowedOwnCc, ["dup"]);
+    assert.equal(m.shadowedIdentity.length, 0, "exact-name shadow is not an identity shadow");
+  }
+  pass("mergeSourcedRows dedups same service across layers by normalized name and identity, disabled rows hold the name");
+}
+
 const originalCwd = process.cwd();
 try {
   process.chdir(dir); // 进程 cwd 兜底指向 temp 目录，避免污染断言
@@ -111,7 +224,9 @@ try {
 
   const ctx = fakeCtx();
   const registry = new ProjectMcpRegistry(ctx, {
-    globalNames: async () => ["gitlab"] // 全局已占用 gitlab → 项目行必须改名
+    globalNames: async () => ["gitlab"], // 全局已占用 gitlab → 项目行必须改名
+    // 用户层注入到不存在的目录：真实 home 的 ~/.dsh/mcp.yml、~/.claude.json 不得进入本套断言。
+    userLayerPaths: { mcpYml: join(dir, "nohome", ".dsh", "mcp.yml"), claudeJson: join(dir, "nohome", ".claude.json") }
   });
   const agentA = fakeAgent("session-a", projectA);
   const agentB = fakeAgent("session-b", projectB);
@@ -235,9 +350,475 @@ try {
   }
   assert.deepEqual(ctx.disposals, disposedBeforeCleanup, "cleanup does not re-dispose already-unmounted fibers");
   pass("registry cleanup disposes watcher and mounted fibers");
+
+  // ── 10+. Claude Code 适配层：.mcp.json / ~/.claude.json / 影子优先 / ${VAR} ──
+  const dir2 = await mkdtemp(join(tmpdir(), "dsh-mcp-cc-"));
+  // fake home 必须落在项目树之外（与任何项目根无祖先关系）：用户层热重载只能
+  // 由用户 watcher 证明，不许借项目 watcher 的 depth 覆盖冒充。
+  const home2 = await mkdtemp(join(tmpdir(), "dsh-mcp-cc-home-"));
+  await mkdir(join(home2, ".dsh"), { recursive: true });
+  const savedBin = process.env.CC_TEST_BIN;
+  const savedMissing = process.env.CC_TEST_MISSING;
+  try {
+    delete process.env.CC_TEST_MISSING;
+    process.env.CC_TEST_BIN = "node";
+    // 场景 10+ 的基线假定 cc-user 装载：新默认是关闭，显式 opt-in 进入基线。
+    process.env.DSH_MCP_READ_CLAUDE_USER = "1";
+    process.chdir(dir2);
+    await writeFile(join(dir2, ".mcp.json"), JSON.stringify({
+      mcpServers: {
+        alpha: { command: "node", args: ["a-cc.js"] },
+        beta: { command: "${CC_TEST_BIN}", args: [], env: { T: "${CC_TEST_MISSING}" } },
+        bad: { type: "sse", url: "http://example/" }
+      }
+    }), "utf8");
+    await writeFile(join(home2, ".claude.json"), JSON.stringify({
+      oauth: { secret: "never-read" },
+      mcpServers: { gamma: { command: "node", args: ["g.js"] } },
+      projects: { "C:/somewhere": { mcpServers: { localonly: { command: "node", args: [] } } } }
+    }), "utf8");
+
+    const ctx2 = fakeCtx();
+    const registry2 = new ProjectMcpRegistry(ctx2, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(home2, ".dsh", "mcp.yml"), claudeJson: join(home2, ".claude.json") }
+    });
+    ctx2.agentsList.push(fakeAgent("session-e", dir2));
+    await registry2.reconcileNow();
+
+    // 10. 装载集合：cc-project(alpha)+cc-user(gamma) 生效；beta 因缺变量跳过、bad(sse) 拒载、localonly 不读
+    const names10 = ctx2.mounts.map((config) => config.serverName).sort();
+    assert.deepEqual(names10, ["alpha", "gamma"], "CC project+user rows mount; sse and missing-env rows do not; local scope excluded");
+    const alpha10 = ctx2.mounts.find((config) => config.serverName === "alpha");
+    assert.equal(alpha10.cwd, dir2, "CC stdio cwd defaults to project root");
+    const diagE10 = await readDiag(dir2);
+    assert.ok(diagE10.some((row) => row.kind === "scan" && Array.isArray(row.ccEntryErrors) && row.ccEntryErrors.some((note) => note.includes("bad"))), "sse entry error recorded in scan diag");
+    assert.ok(diagE10.some((row) => row.kind === "env-missing" && row.rawName === "beta" && row.missingVar === "CC_TEST_MISSING"), "env-missing diag names the variable, not the value");
+    pass("registry mounts CC-dialect rows and reports per-entry/env failures");
+
+    // 11. 快照分区：yml 缺失不出分区；cc-project 分区带行与 entryErrors；两个 global 用户层分区
+    const snap11 = await registry2.snapshot();
+    assert.equal(snap11.find((file) => file.path === projectMcpFile(dir2)), undefined, "absent project yml yields no partition");
+    const ccPart11 = snap11.find((file) => file.source === "cc-project");
+    assert.ok(ccPart11 !== undefined && ccPart11.project === dir2);
+    assert.deepEqual(ccPart11.servers.map((server) => server.serverName).sort(), ["alpha", "beta"]);
+    assert.ok(Array.isArray(ccPart11.entryErrors) && ccPart11.entryErrors.some((note) => note.includes("bad")));
+    const betaView11 = ccPart11.servers.find((server) => server.serverName === "beta");
+    assert.equal(betaView11.fiberPhase, "pending", "fiberPhase stays on the lifecycle vocabulary");
+    assert.equal(betaView11.skipReason, "env-missing", "the skip reason rides on its own field");
+    const userYml11 = snap11.find((file) => file.source === "user-yml");
+    assert.ok(userYml11 === undefined, "no user yml yet");
+    const ccUser11 = snap11.find((file) => file.source === "cc-user");
+    assert.ok(ccUser11 !== undefined && ccUser11.kind === "global");
+    assert.deepEqual(ccUser11.servers.map((server) => server.serverName), ["gamma"]);
+    pass("snapshot partitions CC project file and user layers");
+
+    // 12. 影子优先：项目 yml 同名行压过 .mcp.json，diag 记 shadowedByYml
+    await writeManagedRows(projectMcpFile(dir2), [{ ...stdioRow("alpha"), config: { ...stdioRow("alpha").config, args: ["a-yml.js"] } }], { createIfMissing: true });
+    await registry2.reconcileNow();
+    const alphaMounts12 = ctx2.mounts.filter((config) => config.serverName === "alpha");
+    assert.ok(alphaMounts12.length >= 2, "shadowed row was remounted from the yml layer");
+    assert.deepEqual(alphaMounts12.at(-1).args, ["a-yml.js"], "yml row wins over .mcp.json row of the same name");
+    const diag12 = await readDiag(dir2);
+    assert.ok(diag12.some((row) => row.kind === "scan" && Array.isArray(row.shadowedByYml) && row.shadowedByYml.includes("alpha")), "shadowing recorded in diag");
+    const snap12 = await registry2.snapshot();
+    const alphaYml12 = snap12.find((file) => file.path === projectMcpFile(dir2)).servers.find((server) => server.serverName === "alpha");
+    assert.equal(alphaYml12.fiberPhase, "active");
+    const alphaCc12 = snap12.find((file) => file.source === "cc-project").servers.find((server) => server.serverName === "alpha");
+    assert.equal(alphaCc12.fiberPhase, null, "shadowed CC row shows no phase while yml owns the name");
+    pass("project yml shadows same-named .mcp.json rows with diagnostics");
+
+    // 13. 变量补齐 → 行可装载（env 展开进装载配置）；原生 yml 行同样享受展开（全来源统一）
+    process.env.CC_TEST_MISSING = "sekret";
+    await writeManagedRows(projectMcpFile(dir2), [
+      { ...stdioRow("alpha"), config: { ...stdioRow("alpha").config, args: ["a-yml.js"] } },
+      { ...stdioRow("eta"), config: { ...stdioRow("eta").config, args: ["eta-yml.js"], command: "${CC_TEST_BIN}", env: { T: "${CC_TEST_MISSING}" } } }
+    ]);
+    await registry2.reconcileNow();
+    const beta13 = ctx2.mounts.filter((config) => config.serverName === "beta").at(-1);
+    assert.ok(beta13 !== undefined, "beta mounts once its env var exists");
+    assert.equal(beta13.env.T, "sekret", "${VAR} expanded from process.env at mount time");
+    assert.equal(beta13.command, "node", "${VAR} expanded in command too");
+    const eta13 = ctx2.mounts.filter((config) => config.serverName === "eta").at(-1);
+    assert.ok(eta13 !== undefined, "native yml row with ${VAR} mounts expanded");
+    assert.equal(eta13.env.T, "sekret");
+    assert.equal(eta13.command, "node");
+    pass("registry expands ${VAR} refs from the environment for all sources");
+
+    // 14. 用户层 yml 热装载（watcher 事件驱动，非 reconcileNow）。fake home 已在
+    // 项目树外，用户 watcher 是唯一可能的触发源；先稳定计数再写文件，断言计数
+    // 增长才不会被上一节残留的 debounce 定时器假绿。
+    let count14 = registry2.debugReconcileCount;
+    for (let waited = 0; waited < 6000; waited += 300) {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
+      const next = registry2.debugReconcileCount;
+      if (next === count14) break;
+      count14 = next;
+    }
+    await writeManagedRows(join(home2, ".dsh", "mcp.yml"), [stdioRow("epsilon")], { createIfMissing: true });
+    const epsilonActive = await registry2.waitForState(dir2, "epsilon", (state) => state?.phase === "active", 5000);
+    assert.ok(epsilonActive, "user ~/.dsh/mcp.yml row hot-mounts via the user watcher");
+    assert.ok(registry2.debugReconcileCount > count14, "the user yml write itself must have driven the reconcile");
+    pass("registry watches and hot-mounts the user ~/.dsh/mcp.yml");
+
+    // 15. ~/.claude.json 哈希门：CC 重写无关状态位不触发 reconcile
+    // 先等对账计数稳定（14 的热事件可能还有余波），基线才可信。
+    let count15 = registry2.debugReconcileCount;
+    for (let waited = 0; waited < 6000; waited += 300) {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
+      const next = registry2.debugReconcileCount;
+      if (next === count15) break;
+      count15 = next;
+    }
+    const claude15 = JSON.parse(await readFile(join(home2, ".claude.json"), "utf8"));
+    claude15.telemetry = { ping: 9 };
+    await writeFile(join(home2, ".claude.json"), JSON.stringify(claude15), "utf8");
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 900));
+    assert.equal(registry2.debugReconcileCount, count15, "mcpServers-unchanged rewrite must not reconcile");
+    const gate15 = JSON.parse(await readFile(join(home2, ".claude.json"), "utf8"));
+    gate15.mcpServers.zeta = { command: "node", args: ["z.js"] };
+    await writeFile(join(home2, ".claude.json"), JSON.stringify(gate15), "utf8");
+    const zetaActive = await registry2.waitForState(dir2, "zeta", (state) => state?.phase === "active", 5000);
+    assert.ok(zetaActive, "changed mcpServers subtree passes the hash gate and mounts");
+    pass("claude.json watcher gates on the mcpServers subtree hash");
+
+    // 16. P0 回归：坏 .mcp.json 不得卸掉同项目的原生 yml 服务器（源级隔离）。
+    // 修复前：项目级 ok = yml.ok && cc 无 fileError，整项目被踢出生效名目录，
+    // yml 行连同好配置一起被卸载且装不回去。
+    const dir3 = join(dir2, "proj3");
+    await mkdir(join(dir3, ".dsh"), { recursive: true });
+    await writeManagedRows(projectMcpFile(dir3), [stdioRow("keep-yml")], { createIfMissing: true });
+    await writeFile(join(dir3, ".mcp.json"), JSON.stringify({ mcpServers: { "cc-x": { command: "node", args: ["x.js"] } } }), "utf8");
+    ctx2.agentsList.push(fakeAgent("session-f", dir3));
+    await registry2.reconcileNow();
+    assert.ok(
+      ctx2.mounts.some((config) => config.serverName === "keep-yml") && ctx2.mounts.some((config) => config.serverName === "cc-x"),
+      "both project sources mounted in baseline");
+    const dispBefore16 = ctx2.disposals.length;
+    await writeFile(join(dir3, ".mcp.json"), "{ invalid json", "utf8");
+    await registry2.reconcileNow();
+    assert.deepEqual(ctx2.disposals.slice(dispBefore16), ["cc-x"], "only the broken source's rows unmount; the yml server stays");
+    assert.ok(await registry2.waitForState(dir3, "keep-yml", (state) => state?.phase === "active", 500), "yml row stayed active through the bad .mcp.json");
+    const snap16 = await registry2.snapshot();
+    const ccPart16 = snap16.find((file) => file.source === "cc-project" && file.project === dir3);
+    assert.ok(ccPart16 !== undefined && ccPart16.ok === false && /json/i.test(String(ccPart16.error)), "cc partition reports the file error");
+    pass("a broken .mcp.json does not unmount native yml servers of the same project");
+
+    // 17. 反向：yml 坏时，同项目 .mcp.json 行照常装载/重装载
+    await writeFile(join(dir3, ".mcp.json"), JSON.stringify({ mcpServers: { "cc-x": { command: "node", args: ["x2.js"] } } }), "utf8");
+    await writeFile(projectMcpFile(dir3), "data: [unclosed\n", "utf8");
+    await registry2.reconcileNow();
+    assert.ok(ctx2.disposals.includes("keep-yml"), "yml row unmounts while its file is unparseable");
+    const remount17 = ctx2.mounts.filter((config) => config.serverName === "cc-x").at(-1);
+    assert.ok(remount17 !== undefined && ctx2.mounts.filter((config) => config.serverName === "cc-x").length >= 2, ".mcp.json row remounts despite the broken yml");
+    assert.deepEqual(remount17.args, ["x2.js"], "remounted with the repaired .mcp.json config");
+    pass("a broken project mcp.yml does not block .mcp.json rows");
+
+    // 18. P1 回归：写 .mcp.json 本身要触发热对账（README 承诺的 150ms 路径）。
+    // 修复前：kick 过滤器只认 .dsh/mcp.yml，CC 文件增删改要等别的巧合才生效。
+    // 先等计数稳定：16/17 的文件写入各留下过 debounce 定时器，不安抚就测不准。
+    let count18 = registry2.debugReconcileCount;
+    for (let waited = 0; waited < 6000; waited += 300) {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
+      const next = registry2.debugReconcileCount;
+      if (next === count18) break;
+      count18 = next;
+    }
+    const ccFile18 = join(dir2, ".mcp.json");
+    const parsed18 = JSON.parse(await readFile(ccFile18, "utf8"));
+    parsed18.mcpServers["hot-cc"] = { command: "node", args: ["hot-cc.js"] };
+    await writeFile(ccFile18, JSON.stringify(parsed18), "utf8");
+    const hotActive18 = await registry2.waitForState(dir2, "hot-cc", (state) => state?.phase === "active", 5000);
+    assert.ok(hotActive18, "editing .mcp.json hot-mounts without an explicit reconcile");
+    assert.ok(registry2.debugReconcileCount > count18, "the .mcp.json write itself must have driven the reconcile");
+    pass("registry hot-reloads project .mcp.json edits via the watcher");
+
+    // 19. http 行端到端：Bearer 串内插值进装载配置；展开后非法 url 以 env-invalid 拒载
+    const parsed19 = JSON.parse(await readFile(ccFile18, "utf8"));
+    parsed19.mcpServers["http-ok"] = { type: "http", url: "http://127.0.0.1:9/mcp", headers: { Authorization: "Bearer ${CC_TEST_MISSING}" } };
+    parsed19.mcpServers["http-bad"] = { type: "http", url: "${CC_TEST_NOTURL}" };
+    process.env.CC_TEST_NOTURL = "not a url";
+    try {
+      await writeFile(ccFile18, JSON.stringify(parsed19), "utf8");
+      assert.ok(await registry2.waitForState(dir2, "http-ok", (state) => state?.phase === "active", 5000), "http row with interpolated Bearer header mounts");
+      const httpOk19 = ctx2.mounts.filter((config) => config.serverName === "http-ok").at(-1);
+      assert.equal(httpOk19.headers.Authorization, "Bearer sekret", "in-string interpolation reaches the mount config");
+      assert.ok(await registry2.waitForState(dir2, "http-bad", (state) => state === undefined, 500), "invalid expanded url is never mounted");
+      const seen19 = await waitForDiag(dir2, (lines) => lines.some((row) => row.kind === "env-invalid" && row.rawName === "http-bad"), 5000);
+      assert.ok(seen19, "post-expansion schema failure lands as env-invalid diag");
+      const diag19 = await readDiag(dir2);
+      assert.equal(diag19.some((row) => row.error === "not a url"), false, "diag must not echo the offending value");
+    } finally {
+      delete process.env.CC_TEST_NOTURL;
+    }
+    pass("registry interpolates Bearer ${VAR} end-to-end and rejects invalid post-expansion urls");
+
+    // 20. P2：yml 禁用行占名遮蔽下层——关掉 yml 的 alpha 后，.mcp.json 同名行
+    // 不得「顶上」装载（修复前：disabled 在读取层直接消失，名字让位给 CC 副本）。
+    const alphaMounts20 = ctx2.mounts.filter((config) => config.serverName === "alpha").length;
+    await writeManagedRows(projectMcpFile(dir2), [
+      { ...stdioRow("alpha"), disabled: true, config: { ...stdioRow("alpha").config, args: ["a-yml.js"] } },
+      stdioRow("eta")
+    ]);
+    await registry2.reconcileNow();
+    assert.ok(ctx2.disposals.includes("alpha"), "disabled yml row unmounts");
+    assert.equal(ctx2.mounts.filter((config) => config.serverName === "alpha").length, alphaMounts20, "disabled name is not taken over by the .mcp.json row");
+    assert.ok(!(await registry2.waitForState(dir2, "alpha", (state) => state !== undefined, 400)), "no alpha state while yml keeps it disabled");
+    const eta20 = await registry2.waitForState(dir2, "eta", (state) => state?.phase === "active", 1000);
+    assert.ok(eta20, "sibling rows unaffected");
+    pass("disabled native rows shadow lower layers instead of yielding the name");
+
+    // 21. D2b 逃生门：DSH_MCP_IGNORE_CLAUDE_JSON=1 → ~/.claude.json 停读、停看，
+    // 其余来源不受牵连；开关撤掉后恢复装载。
+    process.env.DSH_MCP_IGNORE_CLAUDE_JSON = "1";
+    try {
+      const dispBefore21 = ctx2.disposals.length;
+      await registry2.reconcileNow();
+      // 用户行进入每个项目的目录 → gamma/zeta 在 dir2、dir3 下同名冲突，生效名已改 p<hash>_
+      const disposed21 = ctx2.disposals.slice(dispBefore21);
+      assert.equal(disposed21.length, 4, "both user rows unmount in both known projects");
+      assert.ok(disposed21.every((name) => /^p[0-9a-f]{6}_(gamma|zeta)$/.test(name)), "renamed user-row fibers are the ones disposed: " + disposed21.join(","));
+      assert.ok(await registry2.waitForState(dir2, "hot-cc", (state) => state?.phase === "active", 500), "project .mcp.json rows are untouched by the switch");
+      const snap21 = await registry2.snapshot();
+      assert.equal(snap21.find((file) => file.source === "cc-user"), undefined, "no cc-user partition while ignored");
+      assert.notEqual(snap21.find((file) => file.source === "cc-project"), undefined, "cc-project partition survives");
+      // 停看：改 fakehome/.claude.json（mcpServers 变化）也不得驱动 reconcile。
+      // 先安抚前面写入留下的 debounce 定时器，基线才可信。
+      let count21 = registry2.debugReconcileCount;
+      for (let waited = 0; waited < 6000; waited += 300) {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
+        const next = registry2.debugReconcileCount;
+        if (next === count21) break;
+        count21 = next;
+      }
+      const ig21 = JSON.parse(await readFile(join(home2, ".claude.json"), "utf8"));
+      ig21.mcpServers["ig-off"] = { command: "node", args: ["ig.js"] };
+      await writeFile(join(home2, ".claude.json"), JSON.stringify(ig21), "utf8");
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 900));
+      assert.equal(registry2.debugReconcileCount, count21, "claude.json edits must not drive reconciles while ignored");
+      assert.ok(!(await registry2.waitForState(dir2, "ig-off", (state) => state !== undefined, 300)), "ig-off never mounts under the switch");
+      delete process.env.DSH_MCP_IGNORE_CLAUDE_JSON;
+      await registry2.reconcileNow();
+      assert.ok(await registry2.waitForState(dir2, "zeta", (state) => state?.phase === "active", 5000), "rows remount once the switch is cleared");
+      assert.ok(ctx2.mounts.filter((config) => /_ig-off$/.test(config.serverName)).length >= 2, "claude.json is read again in every project after clearing the switch");
+    } finally {
+      delete process.env.DSH_MCP_IGNORE_CLAUDE_JSON;
+    }
+    pass("DSH_MCP_IGNORE_CLAUDE_JSON=1 gates reading and watching of ~/.claude.json");
+
+    // 22. P1 回归：项目层空 cwd 按文档解析为项目根；用户层空 cwd 保持继承宿主目录。
+    // 修复前：mountServer 只处理非空 cwd，省略 cwd 的手写 yml 行拿宿主进程 cwd，
+    // 与 README「空 cwd = 项目根」的说法对不上。
+    const dir4 = join(dir2, "proj4");
+    await mkdir(join(dir4, ".dsh"), { recursive: true });
+    await writeManagedRows(projectMcpFile(dir4), [
+      { id: "panel-mcp-nocwd", name: "@deepseek-ai/dsh-mcp-client", config: { ...stdioRow("nocwd").config, cwd: "" } }
+    ], { createIfMissing: true });
+    await writeManagedRows(join(home2, ".dsh", "mcp.yml"), [
+      { id: "panel-mcp-user-nocwd", name: "@deepseek-ai/dsh-mcp-client", config: { ...stdioRow("user-nocwd").config, cwd: "" } }
+    ]);
+    ctx2.agentsList.push(fakeAgent("session-g", dir4));
+    await registry2.reconcileNow();
+    const nocwd22 = ctx2.mounts.filter((config) => config.serverName === "nocwd").at(-1);
+    assert.ok(nocwd22 !== undefined, "project row with empty cwd mounts");
+    assert.equal(nocwd22.cwd, dir4, "empty cwd at the project layer resolves to the project root");
+    const userNoCwd22 = ctx2.mounts.filter((config) => /(^|_)user-nocwd$/.test(config.serverName)).at(-1);
+    assert.ok(userNoCwd22 !== undefined, "user row with empty cwd mounts");
+    assert.equal(userNoCwd22.cwd, "", "empty cwd at the user layer stays host-inherit");
+    pass("empty stdio cwd resolves to the project root for project sources and stays host-inherit for user sources");
+
+    // 23. P1 回归：项目 watcher 只认「已知项目根下的精确配置文件」。修复前：
+    // kick 按「以 .dsh/mcp.yml 结尾」的后缀匹配，项目树里任何嵌套层的同名文件
+    // 都算命中。这里钉住精确语义：stray 目录下的 .dsh/mcp.yml 不得惊动管线。
+    let count23 = registry2.debugReconcileCount;
+    for (let waited = 0; waited < 6000; waited += 300) {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
+      const next = registry2.debugReconcileCount;
+      if (next === count23) break;
+      count23 = next;
+    }
+    await mkdir(join(dir2, "stray", ".dsh"), { recursive: true });
+    await writeFile(join(dir2, "stray", ".dsh", "mcp.yml"), "- insert:\n", "utf8");
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 900));
+    assert.equal(registry2.debugReconcileCount, count23, "a stray nested .dsh/mcp.yml must not drive reconciles");
+    pass("project watcher kicks only on the exact config files of known project roots");
+
+    // 24. P1 回归（边界）：纯用户层挂载的项目缺 .dsh/mcp.yml 不留痕。修复前：
+    // reconcileAll 拿 servers.size 当「本项目有活装载」，把用户层行也数进去，
+    // 文件缺失的 ENOENT 被记成 scan 错误——零配置项目被假诊断刷屏。
+    const dir5 = join(dir2, "proj5");
+    await mkdir(join(dir5, ".dsh"), { recursive: true });
+    ctx2.agentsList.push(fakeAgent("session-h", dir5));
+    await registry2.reconcileNow();
+    // 用户层活行：场景 22 重写过用户 yml，epsilon 已不在，用 user-nocwd（user-yml 源）。
+    const eps24 = await registry2.waitForState(dir5, "user-nocwd", (state) => state?.phase === "active", 5000);
+    assert.ok(eps24, "user-layer rows mount in the new project");
+    await registry2.reconcileNow();
+    // attempt 行允许存在（任何装载都写），但不得出现 scan/ENOENT 假错误。
+    if (await pathExists(diagFile(dir5))) {
+      const diag24a = await readDiag(dir5);
+      assert.ok(diag24a.every((row) => !(row.kind === "scan" && String(row.error ?? "").includes("ENOENT"))), "no false ENOENT scan error for user-layer-only mounts");
+    }
+    // 对照：真实 yml 行装载后文件被删 → 记 scan 错仍是正确行为
+    await writeManagedRows(projectMcpFile(dir5), [stdioRow("real-yml")], { createIfMissing: true });
+    await registry2.reconcileNow();
+    assert.ok(await registry2.waitForState(dir5, "real-yml", (state) => state?.phase === "active", 5000), "project yml row mounts");
+    await rm(projectMcpFile(dir5));
+    await registry2.reconcileNow();
+    const diag24 = await readDiag(dir5);
+    assert.ok(diag24.some((row) => row.kind === "scan" && row.ok === false && String(row.error).includes("ENOENT")), "deleting a live yml file still records a scan error");
+    pass("absent project yml stays silent for user-layer-only mounts and stays loud for removed live yml files");
+
+    // 25. cc-user 默认关闭：不设 DSH_MCP_READ_CLAUDE_USER 时 ~/.claude.json 不读、
+    // 不看、无分区（修复前无条件读取并静默挂进每个项目——无关项目被 FastMCP 桥
+    // 反复 spawn 的根因）。opt-in 恢复装载并一次性提示扇出规模。
+    delete process.env.DSH_MCP_READ_CLAUDE_USER;
+    try {
+      const dispBefore25 = ctx2.disposals.length;
+      await registry2.reconcileNow();
+      assert.ok(ctx2.disposals.slice(dispBefore25).length >= 4, "cc-user rows unmount in every known project once the layer defaults off");
+      const snap25 = await registry2.snapshot();
+      assert.equal(snap25.find((file) => file.source === "cc-user"), undefined, "no cc-user partition by default");
+      assert.ok(await registry2.waitForState(dir2, "beta", (state) => state?.phase === "active", 500), "cc-project rows untouched by the cc-user default");
+      let count25 = registry2.debugReconcileCount;
+      for (let waited = 0; waited < 6000; waited += 300) {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
+        const next = registry2.debugReconcileCount;
+        if (next === count25) break;
+        count25 = next;
+      }
+      const cu25 = JSON.parse(await readFile(join(home2, ".claude.json"), "utf8"));
+      cu25.mcpServers["never-25"] = { command: "node", args: ["n25.js"] };
+      await writeFile(join(home2, ".claude.json"), JSON.stringify(cu25), "utf8");
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 900));
+      assert.equal(registry2.debugReconcileCount, count25, "claude.json edits must not drive reconciles while cc-user is off");
+      assert.ok(!(await registry2.waitForState(dir2, "never-25", (state) => state !== undefined, 300)), "never-25 stays unmounted while off");
+      // opt-in：恢复装载 + 扇出警示恰好一次。
+      const warns25 = [];
+      const origWarn25 = ctx2.logger.warn;
+      ctx2.logger.warn = (msg) => { warns25.push(String(msg)); };
+      process.env.DSH_MCP_READ_CLAUDE_USER = "1";
+      await registry2.reconcileNow();
+      assert.ok(await registry2.waitForState(dir2, "never-25", (state) => state?.phase === "active", 5000), "rows mount after explicit opt-in");
+      await registry2.reconcileNow();
+      const fanout25 = warns25.filter((w) => w.includes("并入"));
+      assert.equal(fanout25.length, 1, "fan-out size warned exactly once: " + JSON.stringify(fanout25));
+      ctx2.logger.warn = origWarn25;
+    } finally {
+      process.env.DSH_MCP_READ_CLAUDE_USER = "1";
+    }
+    pass("cc-user layer defaults off and hot-returns on opt-in with a one-time fan-out warning");
+
+    // 26. .mcp.json 可关：IGNORE_MCP_JSON=1 → 该层不读不看、分区消失、已装
+    // cc-project fiber 被卸；yml 源不受牵连。撤开关后恢复。
+    process.env.DSH_MCP_IGNORE_MCP_JSON = "1";
+    try {
+      const dispBefore26 = ctx2.disposals.length;
+      await registry2.reconcileNow();
+      assert.ok(ctx2.disposals.slice(dispBefore26).includes("hot-cc"), "cc-project fiber unmounts when the layer is switched off");
+      assert.ok(await registry2.waitForState(dir2, "eta", (state) => state?.phase === "active", 500), "native yml rows stay mounted");
+      const snap26 = await registry2.snapshot();
+      assert.equal(snap26.find((file) => file.source === "cc-project"), undefined, "cc-project partitions vanish with the switch");
+      let count26 = registry2.debugReconcileCount;
+      for (let waited = 0; waited < 6000; waited += 300) {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
+        const next = registry2.debugReconcileCount;
+        if (next === count26) break;
+        count26 = next;
+      }
+      const ccFile26 = JSON.parse(await readFile(join(dir2, ".mcp.json"), "utf8"));
+      ccFile26.mcpServers["hot26"] = { command: "node", args: ["hot26.js"] };
+      await writeFile(join(dir2, ".mcp.json"), JSON.stringify(ccFile26), "utf8");
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 900));
+      assert.equal(registry2.debugReconcileCount, count26, ".mcp.json edits must not drive reconciles while the layer is off");
+    } finally {
+      delete process.env.DSH_MCP_IGNORE_MCP_JSON;
+    }
+    await registry2.reconcileNow();
+    assert.ok(await registry2.waitForState(dir2, "hot26", (state) => state?.phase === "active", 5000), ".mcp.json rows return once the switch is cleared");
+    pass("DSH_MCP_IGNORE_MCP_JSON gates reading, watching, and partitions of the project .mcp.json layer");
+
+    // 27. 开关冲突裁决：READ=1 与旧 IGNORE=1 同时置位 → 强制关闭胜出、cc-user
+    // 停用，且「IGNORE 胜出」告警恰好打一次（场景 21 已消耗过一次 latch，这里
+    // 冲突解除后重新武装再次命中）。
+    process.env.DSH_MCP_IGNORE_CLAUDE_JSON = "1";
+    try {
+      const warns27 = [];
+      const origWarn27 = ctx2.logger.warn;
+      ctx2.logger.warn = (msg) => { warns27.push(String(msg)); };
+      await registry2.reconcileNow();
+      const snap27 = await registry2.snapshot();
+      assert.equal(snap27.find((file) => file.source === "cc-user"), undefined, "IGNORE wins over READ: layer off");
+      await registry2.reconcileNow();
+      const conflict27 = warns27.filter((w) => w.includes("胜出"));
+      assert.equal(conflict27.length, 1, "conflict warned exactly once: " + JSON.stringify(conflict27));
+      assert.ok(await registry2.waitForState(dir2, "beta", (state) => state?.phase === "active", 500), "cc-project layer unaffected by the cc-user conflict");
+      ctx2.logger.warn = origWarn27;
+    } finally {
+      delete process.env.DSH_MCP_IGNORE_CLAUDE_JSON;
+    }
+    await registry2.reconcileNow();
+    assert.ok(await registry2.waitForState(dir2, "gamma", (state) => state?.phase === "active", 5000), "cc-user returns after clearing the conflict");
+    pass("IGNORE_CLAUDE_JSON forces the cc-user layer off over READ_CLAUDE_USER with a one-shot conflict warning");
+
+    // 28. 跨来源同服务去重（集成）：事故复刻——proj6 的 yml unityMCP 与 cc-user
+    // unity-mcp 是同一 uvx 服务器的两种写法（args 差 --offline），proj6 只装一条，
+    // 被剔除者进 diag 并告警；其它没有 yml  twin 的项目照常挂 unity-mcp。
+    {
+      const dir6 = join(dir2, "proj6");
+      await mkdir(dir6, { recursive: true });
+      await writeManagedRows(projectMcpFile(dir6), [{
+        id: "panel-mcp-unityMCP",
+        name: "@deepseek-ai/dsh-mcp-client",
+        config: { serverName: "unityMCP", transport: "stdio", command: "node", args: ["u-server.js"], env: {}, cwd: "", toolCallTimeoutMs: 60000, failOnStartupError: false, reconnect: { enabled: true, initialDelayMs: 500, maxDelayMs: 30000, maxAttempts: 10 } }
+      }], { createIfMissing: true });
+      await writeFile(join(home2, ".claude.json"), JSON.stringify({
+        mcpServers: { "unity-mcp": { command: "node", args: ["--offline", "u-server.js"] } }
+      }), "utf8");
+      const warns28 = [];
+      const origWarn28 = ctx2.logger.warn;
+      ctx2.logger.warn = (msg) => { warns28.push(String(msg)); };
+      try {
+        ctx2.agentsList.push(fakeAgent("session-j", dir6));
+        await registry2.reconcileNow();
+        assert.ok(
+          await waitForDiag(dir6, (rows) => rows.some((r) => r.kind === "scan" && Array.isArray(r.shadowedIdentity)
+            && r.shadowedIdentity.some((s) => s.name === "unity-mcp" && s.winner === "unityMCP" && s.reason === "normname"))),
+          "scan diag reports the identity shadow with winner and reason");
+        assert.ok(warns28.some((w) => w.includes('跳过重复服务定义 "unity-mcp"')), "dup definition warned once: " + JSON.stringify(warns28.slice(-3)));
+        assert.ok(await registry2.waitForState(dir6, "unityMCP", (state) => state?.phase === "active", 5000), "the yml twin mounts in proj6");
+        const snap28 = await registry2.snapshot();
+        const part6 = snap28.find((file) => file.project === dir6 && file.source === "yml");
+        assert.ok(part6 !== undefined && part6.servers.length === 1 && part6.servers[0].serverName === "unityMCP", "proj6 serves exactly the yml definition");
+      } finally {
+        ctx2.logger.warn = origWarn28;
+      }
+      pass("registry dedups the same service across layers and reports the shadowed twin");
+    }
+
+    // 场景 24 的 unlink 会留下防抖后的迟到 reconcile 与 chokidar 内部重扫：
+    // 先让队列落空再关 watcher，否则 close 与临时目录删除赛跑、句柄不释放。
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 800));
+
+    for (const disposer of ctx2.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+  } finally {
+    delete process.env.DSH_MCP_READ_CLAUDE_USER;
+    delete process.env.DSH_MCP_IGNORE_MCP_JSON;
+    delete process.env.DSH_MCP_IGNORE_CLAUDE_JSON;
+    if (savedBin === undefined) delete process.env.CC_TEST_BIN;
+    else process.env.CC_TEST_BIN = savedBin;
+    if (savedMissing === undefined) delete process.env.CC_TEST_MISSING;
+    else process.env.CC_TEST_MISSING = savedMissing;
+    process.chdir(dir);
+    await rmRetry(dir2);
+    await rmRetry(home2);
+  }
 } finally {
   process.chdir(originalCwd);
-  await rm(dir, { recursive: true, force: true });
+  await rmRetry(dir);
 }
 
 console.log("\n" + passed + " passed, 0 failed");

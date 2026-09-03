@@ -28,7 +28,7 @@ npm install -g deepseek-ai/dsh         # 或从 GitHub 源码安装
 dsh plugin --profile web add dsh-project-mcp-manager@latest
 
 # 安装指定版本（版本号可先 npm view dsh-project-mcp-manager versions 查看）
-dsh plugin --profile web add dsh-project-mcp-manager@0.1.0
+dsh plugin --profile web add dsh-project-mcp-manager@0.2.0
 ```
 
 **方式二：直接 pnpm 安装**（与方式一等价）：
@@ -47,15 +47,14 @@ pnpm add link:<你的 dsh-mcp-project 源码目录>   # 例如 D:\dev\dsh-mcp-pr
 ```
 
 **升级/锁定版本**：重跑方式一的 `add` 命令并带上目标版本后缀——`@latest`
-升级到最新，`@0.1.0` 锁定到指定版本。
+升级到最新，`@0.2.0` 锁定到指定版本。
 
 ## 构建与测试
 
 ```powershell
 npm install
 npm run build     # tsc → lib/
-node test/test-model.mjs
-node test/test-registry.mjs
+npm test          # node 直跑 test/ 下五个 .mjs（model / mcp-file / cc-file / registry / cli）
 ```
 
 ## 配置格式
@@ -91,10 +90,117 @@ node test/test-registry.mjs
 Loader 求值的 js-yaml 表达式，如官方 README 示例 `env: { TOKEN: !!js
 process.env.GITHUB_TOKEN }`）在项目文件里**不支持**——受管块内出现未解析
 标签会使该文件整体报错跳过（写入 `.dsh/.mcp-diag.json` 并打日志），不会把
-表达式当字面量字符串静默装载。`env`/`headers` 请写字面值，`disabled` 只能是
+表达式当字面量字符串静默装载。`env`/`headers` 的值 otherwise 是字面量，仅
+`${VAR}` 引用会在装载时做串内插值（见下文「${VAR} 展开」）；`disabled` 只能是
 `true`/`false`。反之项目文件是超集语法：`env`/`headers` 允许 `KEY: null`
 表示删除该键（装载时被剔除），这在官方 mcp-client 校验里会被拒绝——把这类
 行原样挪回 `cordis.patch.yml` 会装载失败。
+
+## Claude Code 兼容层（只读）
+
+为顺应 CC 用户习惯，插件会**装载**以下两个 CC 配置位置，但从不写入它们。
+两者的默认姿态不同，因为风险等级不同：
+
+- `<projectRoot>/.mcp.json` —— CC 的 project 层文件（`{ "mcpServers": { … } }`）。
+  它是随仓库版本管理的项目自身声明：**默认开启**、只读。设
+  `DSH_MCP_IGNORE_MCP_JSON=1` 可整层停用。
+- `~/.claude.json` —— 只读取**顶层 `mcpServers`** 子树，且**只在显式请求时**：
+  设 `DSH_MCP_READ_CLAUDE_USER=1` 才读。这是 CC 的机器级用户状态，不属于任何
+  项目：无条件读取会把每台这样的服务器扇出到**每个已知 dsh 项目**各起一个
+  进程——这正是把它改为 opt-in 的事故根因。该文件其余内容一律不读入配置、
+  不写、不打日志、不在任何输出里回显（严格 allowlist：oauth 凭据、项目历史、
+  UI 状态对本插件不可见）。
+
+边界与限制：
+
+- **没有 local 作用域**。CC 的 `claude mcp add` 默认写进 `~/.claude.json` 的
+  `projects.<cwd>.mcpServers`（local 层），本插件不读取该层；请用
+  `dsh-mcp add --scope user` 或项目文件。
+- `type: "sse"` 条目按条目报错跳过——装载后端（`dsh-mcp-client`）只支持
+  `stdio` 与 `streamable-http`。CC 的 `type: "http"` 与显式
+  `type: "streamable-http"` 都映射为 `streamable-http`；缺省 `type` 时，
+  只带 `url` 不带 `command` 的条目按 http 处理，其余视为 stdio。
+- stdio 的 `cwd`：项目层行的空 `cwd` 解析为项目根；用户层行
+  （`~/.dsh/mcp.yml` 与 `~/.claude.json`）解析为 dsh 宿主的工作目录。
+  注意"用户层"不等于共享进程：用户层行仍**按每个已知项目各装一个进程**
+  （两个项目各开会话就是两个 fiber，按生效名规则改名为 `p<hash>_…`）——
+  共享的只是 `cwd`，不是连接。
+- 未知 CC 键容忍忽略；`enabled: false`（以及作为别名的 `disabled: true`）
+  静默跳过该条目（不记诊断，也不占名）。
+- 原生 yml 里 `disabled: true` 的行仍**占住影子键**（见下方去重规则）：下层
+  同名行一并被遮蔽不装载——禁用意味着"这个名字不许跑"，而不是"让位给 CC
+  副本"。CC 侧的 `enabled: false` 没有占位效果。推论：不删除、只在
+  `.mcp.json` 里关掉一条，同名的**用户层行会在该项目浮上来**装载；要把某台
+  服务器在所有层压住，请在 `.dsh/mcp.yml` 留一条 `disabled: true` 占位行
+  （名字或归一化名字对上即可）。
+- 坏文件/坏条目不影响其他服务器，且**按源隔离**：`.mcp.json` 坏了不会卸掉
+  同项目的 yml 行（反之亦然）；条目错误写入 `.dsh/.mcp-diag.json` 与宿主
+  日志（诊断从不带文件内容）。只有 `.mcp.json`、没用过原生 yml 的项目，
+  一旦有可报内容也会创建 `.dsh/` 目录。
+- CC 每次会话都会重写 `~/.claude.json`；watcher 会对该文件做
+  `mcpServers` 子树的规范化哈希门控——子树没变就不触发对账。
+- 共存边界开关（dsh 宿主环境变量）：`DSH_MCP_READ_CLAUDE_USER=1` 显式启用
+  `~/.claude.json` 用户层；`DSH_MCP_IGNORE_MCP_JSON=1` 停用项目 `.mcp.json`
+  层；旧开关 `DSH_MCP_IGNORE_CLAUDE_JSON=1` 为强制关闭用户层，**优先级高于
+  opt-in**（冲突时打一次「胜出」告警；旧开关将在后续版本移除）。用户层开启
+  时，宿主一次性日志提示扇出规模（「N 条服务器将并入 M 个已知项目」），
+  让多出来的 spawn 可解释、可回退。
+
+**影子优先序**——按 1→4 先到先得合并，后到行与已收录行命中**三把键中的任何
+一把**即被遮蔽：精确 `serverName`；*归一化名称*（转小写去掉非字母数字后相同
+——`unityMCP` 与 `unity-mcp` 就是一台服务器的两种写法）；*服务身份*
+（`stdio` 取 command + args，Windows 下路径大小写不敏感；`streamable-http`
+取 url）。command/url 为空的行不注册身份键——`node a.js` 与 `node b.js` 是
+不同服务、绝不互杀——而 `disabled` 占位行三键全占、自身不装载。被遮蔽方写入
+`.dsh/.mcp-diag.json`（`shadowedByYml` / `shadowedByProject` /
+`shadowedIdentity`），身份/归一名去重剔除的每行还会在宿主日志告警「跳过重复
+服务定义」：
+
+1. `<projectRoot>/.dsh/mcp.yml`（原生格式，面板/CLI 管理）
+2. `<projectRoot>/.mcp.json`（CC project 层）
+3. `~/.dsh/mcp.yml`（原生用户层，见 CLI）
+4. `~/.claude.json` 顶层 `mcpServers`（CC user 层，opt-in）
+
+用户层行适用于所有已知项目，因此「某项目与用户层同名」（或两个项目同名）
+会走常规的生效名冲突改名规则（见工作原理）。
+
+## `${VAR}` 展开
+
+以上任一来源中，`command`、`args[*]`、`env[*]`、`cwd`、`url`、`headers[*]` 里的
+`${VAR}` 引用（正则 `\$\{[A-Za-z_][A-Za-z0-9_]*\}`，允许出现在字符串任意
+位置）在装载时刻从 dsh 宿主进程环境做**串内插值**——与 Claude Code 同语义，
+`"Authorization": "Bearer ${TOKEN}"` 这类写法可用。变量未设置**或为空串**时
+该行跳过装载，诊断记 `env-missing` 并只带变量名（绝不带值）；需要保留字面
+`${NAME}` 的写法目前不可表达。含引用的 `url` 在装载前的 schema 校验里任意
+位置都放行（包括 host 段，如 `https://${HOST}/mcp`）——合法性只在展开后判定：
+展开结果会再过一遍装载 schema 复验，产出非法配置（如 `${GATEWAY}/mcp` 拼出
+非 URL）时以 `env-invalid` 跳过，不把坏值递给装载后端。快照/行视图里
+`fiberPhase` 保持装载生命周期枚举（未挂上的行是 `pending`），跳过原因走独立
+的 `skipReason` 字段（`env-missing` / `env-invalid` / `config-invalid` /
+`plugin-throw`）。插件任何写路径都不落盘展开后的值；
+CLI 写入时 `${VAR}` 原样保留——配置可以进 git，凭据留在环境里。
+
+## CLI：`dsh-mcp`
+
+CC 风格的原生文件命令行管理（**只写** `.dsh/mcp.yml`——从不写
+`.mcp.json` / `~/.claude.json`；不连接运行中的 dsh 宿主，宿主经文件监听自动
+收敛）：
+
+```powershell
+dsh-mcp add gitlab npx -y @modelcontextprotocol/server-gitlab -e GITLAB_TOKEN=${GITLAB_TOKEN}
+dsh-mcp add --transport http sentry https://mcp.sentry.dev/mcp -H "Authorization: Bearer ${SENTRY_TOKEN}"
+dsh-mcp add --scope user shared node ./tools/shared.js   # 写 ~/.dsh/mcp.yml
+dsh-mcp list          # 四个来源全展示，带遮蔽标注
+dsh-mcp get gitlab    # 优先层条目；密钥值只显示键名
+dsh-mcp remove gitlab # 只动原生 yml；命中只读层时给出编辑指引
+```
+
+作用域：`--scope project`（缺省，写最近 `.git` 祖先下的
+`.dsh/mcp.yml`）与 `--scope user`（写 `~/.dsh/mcp.yml`，装载进每个项目）。
+`add` 的 `cwd` 缺省随作用域而变：project 为 `"."`（项目根），user 为 `""`
+（宿主目录）；`-c` 显式覆盖。
+没有 `local` 作用域——`--scope local` 会报错并解释。`--transport` 接受
+`stdio`（缺省）与 `http`；`sse` 拒绝（后端不支持）。
 
 ## 工作原理
 
@@ -104,14 +210,20 @@ process.env.GITHUB_TOKEN }`）在项目文件里**不支持**——受管块内�
   `@deepseek-ai/dsh-mcp-client` 实例（`ctx.plugin`），注册进全局工具层。
   同一项目内多会话共享同一连接。
 - **热重载**：chokidar 监听各项目根（depth 2，忽略 node_modules/.git/.hg/
-  .svn），`.dsh/mcp.yml` 的增删改经 150ms 防抖触发全量对账：新增行装载、
-  删除行卸载、配置变化重装。
-- **生效名**：原始 `serverName` 在整个目录（全局行 + 全部项目行）中唯一时
+  .svn），但只有**已知项目根的精确配置文件**（`<projectRoot>/.dsh/mcp.yml`
+  与 `<projectRoot>/.mcp.json`）的改动经 150ms 防抖触发全量对账：新增行
+  装载、删除行卸载、配置变化重装。另有独立 watcher 以**两个精确文件路径**
+  监听用户层：`~/.dsh/mcp.yml` 与 `~/.claude.json`（chokidar v5 对被监听的
+  缺失文件能在其创建时补发事件，前提是父目录已存在）——不监听家目录整体。
+  `~/.claude.json` 事件只由规范化内容哈希门裁决（没有 size/mtime 快路径：
+  同刻、同体积而内容不同的重写不能被吞掉）。
+- **生效名**：原始 `serverName` 在整个目录（全局行 + 全部项目行；每个项目的
+  行集合含遮蔽后幸存的用户层行）中唯一时
   保持原名；冲突时双方都改为 `p<sha256(项目根)前6位>_<原名>`（截断 32 字符，
   确定性、与装载顺序无关），避免 `dsh-mcp-client` 按进程根的 serverName
   预留冲突。全局行（profile `cordis.patch.yml` / bundle 层已装载的
-  mcp-client 行）参与占用判定但不改名。模型可见的工具名用生效名拼
-  `mcp__<生效名>__<原工具名>`，与文件里写的 `serverName` 可能不同。
+  mcp-client 行）参与占用判定但不改名。模型可见的工具名由生效服务器名与
+     MCP 工具自身的名字拼成 `mcp__<生效名>__<工具名>`，与文件里写的 `serverName` 可能不同。
 - **会话可见性**：agent 创建时按其会话 cwd 解析项目，对该 agent 应用
   `tools.restrict({ deny })`，deny 掉除本会话项目外的全部项目服务器；会话
   无 cwd 时回退 owner 项目（子代理），再回退 dsh 进程 cwd 所在项目。会话
@@ -119,6 +231,10 @@ process.env.GITHUB_TOKEN }`）在项目文件里**不支持**——受管块内�
 
 ## 安全边界
 
-`.dsh/mcp.yml` 中的 `stdio` 行会在 dsh 宿主进程内 spawn 其 `command`——
-项目文件是**可执行代码载体**，只应在可信项目中添加。装载失败/配置无效行
-仅告警跳过，不影响其他服务器。
+`.dsh/mcp.yml` 中的 `stdio` 行（以及经兼容层装载的 `.mcp.json` 行）会在 dsh
+宿主进程内 spawn 其 `command`——项目文件是**可执行代码载体**，只应在可信项目
+中添加。装载失败/配置无效行仅告警跳过，不影响其他服务器。CC 的机器级
+`~/.claude.json` 用户层因此**默认关闭**：读取它等于把外来的环境级服务器塞进
+每个项目的 spawn 集合，必须是显式决定（`DSH_MCP_READ_CLAUDE_USER=1`）。
+`~/.claude.json` 之所以同时按严格 allowlist 只读，正是因为该文件还存放凭据：
+其中未使用的部分不会被读出、写入任何文件，也不会在 CLI 或诊断输出里出现。

@@ -11,6 +11,25 @@ import { resolve } from "node:path";
 import { MANAGED_ROW_ID_PREFIX, MCP_PLUGIN_NAME, type PatchRow } from "./mcp-file.js";
 
 export const SERVER_NAME_RE = /^[A-Za-z0-9_-]{1,32}$/;
+/**
+ * 串内 `${VAR}` 引用扫描/替换（展开与 url 占位判定共用）：`$VAR` 裸形、
+ * `${9bad}` 非法名一律按字面量处理。只在 mount 时运行时展开，展开结果
+ * 绝不回写文件、不进诊断明文。
+ */
+const EMBEDDED_ENV_REF_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+
+/** url 字段允许合法 URL 或含 `${VAR}` 占位的串（整值与串内插值同待）：装载前
+ * 一律放行占位串，展开后的真实合法性由 mount 复验兜底（env-invalid 诊断）。 */
+export function isUrlOrEnvRef(value: string): boolean {
+  EMBEDDED_ENV_REF_RE.lastIndex = 0;
+  if (EMBEDDED_ENV_REF_RE.test(value)) return true;
+  try {
+    new URL(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
 export const DEFAULT_TOOL_CALL_TIMEOUT_MS = 60000;
 export const DEFAULT_RECONNECT = {
   enabled: true,
@@ -50,7 +69,7 @@ export const stdioServerSchema = z.object({
 export const httpServerSchema = z.object({
   serverName: serverNameSchema,
   transport: z.literal("streamable-http"),
-  url: z.string().url(),
+  url: z.string().refine(isUrlOrEnvRef, "url 必须是合法 URL 或含 ${VAR} 占位的串"),
   headers: secretMapSchema,
   toolCallTimeoutMs: z.number().int().min(1).default(DEFAULT_TOOL_CALL_TIMEOUT_MS),
   failOnStartupError: z.boolean().default(false),
@@ -61,6 +80,24 @@ export const mcpServerInputSchema = z.discriminatedUnion("transport", [stdioServ
 
 export type McpServerInput = z.infer<typeof mcpServerInputSchema>;
 export type McpTransport = McpServerInput["transport"];
+
+/**
+ * Claude Code `.mcp.json` / `~/.claude.json` 单条目宽松 schema：未知字段
+ * （timeout/scope 等 CC 附加键）容忍并忽略；`enabled:false` 条目由读取层
+ * 静默跳过；`type` 缺省视为 stdio（有 url 无 command 时按 http 推断），
+ * `type:"http"`/`"streamable-http"` 对应 streamable-http，`type:"sse"` 在归一层
+ * 显式拒绝（dsh-mcp-client 仅支持 stdio | streamable-http，见 lib/types/index.d.ts）。
+ */
+export const ccServerEntrySchema = z.looseObject({
+  type: z.enum(["stdio", "http", "streamable-http", "sse"]).optional(),
+  command: z.string().optional(),
+  args: z.array(z.string()).optional(),
+  env: z.record(z.string(), z.string()).optional(),
+  url: z.string().optional(),
+  headers: z.record(z.string(), z.string()).optional(),
+});
+
+export type CcServerEntry = z.infer<typeof ccServerEntrySchema>;
 export interface ReconnectConfig {
   enabled: boolean;
   initialDelayMs: number;
@@ -159,6 +196,80 @@ export function mergeSecretPatch(previous: Record<string, string> | undefined, p
     else merged[key] = value;
   }
   return merged;
+}
+
+/** 值中引用的全部环境变量名（含串内插值形态），按出现顺序去重。 */
+function envRefNames(value: string): string[] {
+  const names: string[] = [];
+  EMBEDDED_ENV_REF_RE.lastIndex = 0;
+  for (let match = EMBEDDED_ENV_REF_RE.exec(value); match !== null; match = EMBEDDED_ENV_REF_RE.exec(value)) {
+    if (!names.includes(match[1])) names.push(match[1]);
+  }
+  return names;
+}
+
+export type ExpandEnvRefsResult =
+  | { ok: true; input: McpServerInput }
+  | { ok: false; missingVar: string };
+
+function expandSecretMap(
+  map: Record<string, string | null> | undefined,
+  expand: (value: string) => string
+): Record<string, string | null> | undefined {
+  if (map === undefined) return undefined;
+  const out: Record<string, string | null> = {};
+  for (const [key, value] of Object.entries(map)) out[key] = typeof value === "string" ? expand(value) : value;
+  return out;
+}
+
+/**
+ * 运行时展开 command、args[*]、env/headers 值、url、cwd 中的 `${VAR}` 引用，
+ * 支持串内插值（`Bearer ${TOKEN}` 与整值 `${TOKEN}` 都会展开），对齐 CC 的
+ * 写法习惯。纯函数：环境经参数注入（宿主传 process.env），便于测试。
+ * 任一被引用的变量缺失或为空串即整体失败（ok:false + 变量名，调用方据此
+ * 跳过该条目装载）——空 token 与缺失同样危险，宁可 spawn 前拒绝。诊断
+ * 消息只含变量名不含值。`$VAR` 裸形与 `${9bad}` 非法名保持字面量。
+ */
+export function expandEnvRefs(input: McpServerInput, env: NodeJS.ProcessEnv): ExpandEnvRefsResult {
+  const strings: string[] = [];
+  const secretValues = (map: Record<string, string | null> | undefined): string[] =>
+    Object.values(map ?? {}).filter((value): value is string => typeof value === "string");
+  if (input.transport === "stdio") {
+    strings.push(input.command, ...input.args, input.cwd, ...secretValues(input.env));
+  } else {
+    strings.push(input.url, ...secretValues(input.headers));
+  }
+  for (const value of strings) {
+    for (const name of envRefNames(value)) {
+      const resolved = env[name];
+      if (resolved === undefined || resolved === "") return { ok: false, missingVar: name };
+    }
+  }
+  const expand = (value: string): string => {
+    if (envRefNames(value).length === 0) return value;
+    EMBEDDED_ENV_REF_RE.lastIndex = 0;
+    return value.replace(EMBEDDED_ENV_REF_RE, (whole, name: string) => env[name]!);
+  };
+  if (input.transport === "stdio") {
+    return {
+      ok: true,
+      input: {
+        ...input,
+        command: expand(input.command),
+        args: input.args.map(expand),
+        env: expandSecretMap(input.env, expand),
+        cwd: expand(input.cwd)
+      }
+    };
+  }
+  return {
+    ok: true,
+    input: {
+      ...input,
+      url: expand(input.url),
+      headers: expandSecretMap(input.headers, expand)
+    }
+  };
 }
 
 function normalizeReconnect(input: McpServerInput): ReconnectConfig {

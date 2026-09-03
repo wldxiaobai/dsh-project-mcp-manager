@@ -7,8 +7,133 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-03
+
+### Changed
+
+- **BREAKING** — `~/.claude.json` top-level `mcpServers` (the CC user layer) is
+  no longer read by default. It is machine-wide foreign state, and mounting it
+  unconditionally fanned every such server into every known project as its own
+  process (a zero-config directory silently spawning another workspace's
+  servers). Opt in with `DSH_MCP_READ_CLAUDE_USER=1`. The legacy
+  `DSH_MCP_IGNORE_CLAUDE_JSON=1` survives one release as a force-off override:
+  when both are set the ignore switch wins, with a one-shot warning (the
+  legacy switch will be removed later).
+- `mergeSourcedRows` now dedups same-service rows across layers by priority,
+  not just by exact name: three first-come-first-served shadow keys — exact
+  `serverName`, normalized name (lowercase, non-alphanumerics stripped, so
+  `unityMCP` and `unity-mcp` are one service), and service identity (`stdio`
+  command + args, path-case-insensitive on Windows; `streamable-http` url).
+  Rows without a command/url claim no identity key (`node a.js` vs
+  `node b.js` stay distinct); `disabled` placeholder rows hold all three keys
+  without mounting. Drops are visible: `shadowedIdentity` in the scan
+  diagnostics plus a host-log warning per row.
+
 ### Added
 
+- `DSH_MCP_IGNORE_MCP_JSON=1` turns the project `.mcp.json` (CC project layer)
+  off wholesale — reading, watching, snapshot partitions and CLI views all
+  honor it. The layer itself stays on by default as an in-repo declaration.
+- When the CC user layer is on, the host logs a one-time fan-out notice
+  ("N servers will join M known projects") with the way back (unset the opt-in
+  or shadow per project with a `disabled` placeholder row).
+- Truth-table tests for the new layer predicates, `mergeSourcedRows` dedup
+  unit cases (0.1–0.7), and registry scenarios 25–28 plus CLI scenarios 12–13
+  covering the three switches, the conflict arbitration and the incident
+  replay (yml twin wins, foreign duplicate stays unmounted, others still fan).
+
+### Fixed
+
+- A project whose mounts all come from the user layer no longer writes false
+  `ENOENT` scan diagnostics when `<projectRoot>/.dsh/mcp.yml` is absent — the
+  missing-file scan error now only counts project-`yml` live mounts
+  (previously `servers.size` counted every source).
+
+## [0.2.1] - 2026-09-01
+
+### Added
+
+- CC entries with `"disabled": true` are treated exactly like `"enabled": false`
+  — skipped silently, and (unlike a native-yml `disabled: true` row) without
+  occupying the name in the shadow chain.
+- `${VAR}` references in stdio `cwd` are now expanded like every other string
+  field, and a `url` containing a reference passes the pre-mount schema in any
+  position — including the host part (`https://${HOST}/mcp`); validity is
+  judged only on the expanded value (`env-invalid` skip when it fails).
+- Registry scenarios for the post-release fixes (project-vs-user empty `cwd`,
+  exact-config-file watcher kicks) and CLI tests for the
+  `DSH_MCP_IGNORE_CLAUDE_JSON` listing gate and real project-root fallback.
+
+### Changed
+
+- The user-layer watcher watches the two exact file paths `~/.dsh/mcp.yml` and
+  `~/.claude.json` instead of the `~/.dsh` directory, and `~/.claude.json`
+  events are arbitrated by the canonical-JSON content hash alone — the
+  size/mtime fast path is gone, since same-instant, same-length rewrites with
+  different content must not be swallowed.
+- Snapshot/row views keep `fiberPhase` on the strict mount-lifecycle vocabulary
+  (`pending` for a row that never mounted) and report the concrete reason on a
+  separate `skipReason` field (`env-missing` / `env-invalid` / `config-invalid`
+  / `plugin-throw`).
+- Dead export `ENV_REF_RE` removed from `src/model.ts` (superseded by the
+  embedded-reference scan).
+
+### Fixed
+
+- An empty stdio `cwd` now resolves **per source**: project-layer rows
+  (`.dsh/mcp.yml`, `.mcp.json`) get the project root, while user-layer rows
+  (`~/.dsh/mcp.yml`, `~/.claude.json`) keep inheriting the dsh host's working
+  directory — previously every empty `cwd` was resolved against the project
+  root of whichever project mounted the row.
+- The project watcher kick now matches the exact config-file paths of known
+  project roots; a stray `<root>/**/.dsh/mcp.yml` deeper in the tree no longer
+  triggers a reconciliation.
+- `.dsh/.mcp-diag.json` is written atomically (temp file + rename), so
+  concurrent readers (snapshot tooling, tests) can no longer observe
+  half-written JSON; stale skip-reason marks for deleted unmounted rows are
+  pruned during reconciliation.
+
+## [0.2.0] - 2026-09-01
+
+### Added
+
+- Claude Code read-only compatibility layer (`src/cc-file.ts`): the plugin now
+  loads `<projectRoot>/.mcp.json` and the **top-level `mcpServers` allowlist** of
+  `~/.claude.json` (CC's monolithic state file — nothing else in it is read, written,
+  logged, or echoed). Shadow priority: project `.dsh/mcp.yml` > project `.mcp.json` >
+  `~/.dsh/mcp.yml` > `~/.claude.json`, with shadowed names recorded in
+  `.dsh/.mcp-diag.json` (`shadowedByYml` / `shadowedByProject`). `type: "sse"` entries
+  are rejected per entry (the mount backend only speaks stdio and streamable-http);
+  unknown CC keys are tolerated; `enabled: false` skips an entry silently;
+  `type: "http"` and explicit `"streamable-http"` map to `streamable-http`, and a
+  url-only entry (no `type`/`command`) is inferred as http; project-layer stdio `cwd`
+  defaults to the project root while user-layer rows resolve against the host working
+  directory. The `~/.claude.json` watcher gates on a canonical-JSON
+  hash of the `mcpServers` subtree, so CC's routine state rewrites do not trigger
+  reconciles; `DSH_MCP_IGNORE_CLAUDE_JSON=1` disables reading and watching the file
+  entirely. There is deliberately no `local` scope (CC's `claude mcp add` default
+  location is explained wherever a user would expect it).
+- `${VAR}` runtime expansion (`src/model.ts` `expandEnvRefs`): `${NAME}` references
+  (`\$\{[A-Za-z_][A-Za-z0-9_]*\}`, allowed anywhere in the string — same semantics as
+  Claude Code, so `"Bearer ${TOKEN}"` works) in `command`, `args[*]`, `env[*]`, `url`,
+  and `headers[*]` are interpolated against the dsh host environment at mount time for
+  every configuration source. An unset **or empty** variable skips the row with an
+  `env-missing` diagnostic naming the variable only; expanded inputs are re-validated
+  against the mount schema and a malformed result is skipped with `env-invalid`.
+  Values are never persisted by the plugin, so
+  configs can live in git while secrets stay in the environment.
+- `dsh-mcp` CLI (`src/cli.ts`, new `bin` entry): `add` / `list` / `get` / `remove` with
+  `--scope project|user` (default project) and `--transport stdio|http`, mirroring CC
+  ergonomics. Writes land exclusively in native `.dsh/mcp.yml` files (project root or
+  `~/.dsh/mcp.yml`) through the locked atomic writer; `.mcp.json` / `~/.claude.json`
+  stay read-only and `remove` on a name that only exists there prints editing
+  guidance. `list`/`get` show all four layers with shadow annotations; secret values
+  render as key names only. No new runtime dependencies (hand-rolled argv parsing);
+  `runCli(argv, io, deps)` is importable for tests.
+- Tests: `test/test-cc-file.mjs` (dialect mapping, allowlist, hash stability,
+  content-free errors), `test/test-cli.mjs` (add/list/get/remove incl. `--` passthrough
+  and scope routing), and registry scenarios for multi-source shadowing, user-layer hot
+  mounting, the `~/.claude.json` hash gate, and `${VAR}` skip-then-mount.
 - Managed-block reader regression tests (`test/test-mcp-file.mjs`): literal rows load;
   `!!js` in `env` or `disabled` and any other unresolved YAML tag inside the managed block
   fail the file with an explicit error; tags outside the markers do not affect reading, and
@@ -26,6 +151,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `snapshot()` partitions now carry a `source` tag (`yml` / `cc-project` / `user-yml` /
+  `cc-user`) and an optional `kind` (`workspace` projects, new `global` user-layer
+  partitions); each project additionally reports a `.mcp.json` partition (with
+  `entryErrors` for broken CC entries) when it has one, and per-server views gained
+  `source`. Absent a project `.dsh/mcp.yml`, the yml partition is skipped when no
+  yml-sourced server is mounted (user-layer mounts no longer look like "file deleted
+  under a live mount").
+- `${VAR}` references now interpolate inside strings at mount time for **all**
+  sources, including native `.dsh/mcp.yml` rows — previously documented as
+  literal-only. The expansion never rewrites files; nothing matches "mixed
+  forms" anymore because any embedded `${NAME}` interpolates (unset or empty →
+  `env-missing` skip).
+- The reconcile pipeline additionally reads the user layer (`~/.dsh/mcp.yml` and,
+  unless disabled, `~/.claude.json`), watching the `~/.dsh` directory and the
+  `~/.claude.json` file itself (never the home directory at large); the
+  zero-config "leave no trace" rule still holds — user-layer rows falling into a
+  project never create that project's diag file by themselves.
 - A project whose managed block fails to parse no longer takes down the whole snapshot: the
   error is reported per file (`ok: false` plus the message) and that project's section is
   empty, while every other project still reports its servers.
@@ -36,6 +178,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Diagnostics from async fiber callbacks (`active`/`failed` mount-phase events) are now
+  serialized through the reconcile chain instead of firing raw read-modify-write
+  appends that could clobber concurrently written scan lines out of
+  `.dsh/.mcp-diag.json`.
 - Native cordis `!!js` tags (js-yaml expressions the profile loader evaluates) inside the
   managed block no longer load silently as literal strings. An unresolved tag now fails the
   file with an explicit error naming the offending position, logged and written to
@@ -137,6 +283,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Security note: `stdio` lines in `.dsh/mcp.yml` spawn their `command` inside the dsh host
 process, so project files are executable-code carriers — add them only in trusted projects.
 
-[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.1.1...HEAD
+[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.2.1...v0.3.0
+[0.2.1]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/releases/tag/v0.1.0
