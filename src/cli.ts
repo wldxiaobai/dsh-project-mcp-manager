@@ -18,7 +18,8 @@ import { pathToFileURL } from "node:url";
 import { mkdir } from "node:fs/promises";
 import { extractManagedRows, readPatchFile, writeManagedRows, type PatchRow } from "./mcp-file.js";
 import { mcpServerInputSchema, patchRowToView, serverNameFromRowId, toPatchRow, type McpServerInput } from "./model.js";
-import { CC_PROJECT_FILE, CLAUDE_USER_FILE, IGNORE_MCP_JSON_ENV, READ_CLAUDE_USER_ENV, claudeUserLayerEnabled, mcpJsonLayerEnabled, readClaudeUserFile, readMcpJsonFile, type McpRowSource } from "./cc-file.js";
+import { CC_PROJECT_FILE, CLAUDE_USER_FILE, IGNORE_MCP_JSON_ENV, READ_CLAUDE_USER_ENV, claudeUserLayerEnabled, mcpJsonLayerEnabled, readClaudeUserFile, readMcpJsonFile, type McpRowSource, type SourcedRow } from "./cc-file.js";
+import { mergeSourcedRows, type IdentityShadow } from "./registry.js";
 import { findProjectRoot } from "./project-root.js";
 
 export interface CliIo {
@@ -252,7 +253,40 @@ function isProjectSource(source: McpRowSource): boolean {
   return source === "yml" || source === "cc-project";
 }
 
-function printLayerRows(layer: LayerRows, seen: Map<string, McpRowSource>, io: CliIo): number {
+/** 装载器 mergeSourcedRows 的同一口径：哪些行真正生效、哪些被身份/归一名去重剔除。 */
+interface ShadowView {
+  /** 将进入装载集合的行对象（按引用；disabled 占名行不在其中）。 */
+  effective: Set<PatchRow>;
+  /** 被归一名/身份键去重剔除的行：原名 → 剔除明细（同名的先到先得走 seen，不在此列）。 */
+  identityLosses: Map<string, IdentityShadow>;
+  /** 被任一项目自身行遮蔽的用户层行原名（--scope user 单独展示时的兜底标注）。 */
+  shadowedUser: Set<string>;
+}
+
+function shadowViewOf(layers: LayerRows[]): ShadowView {
+  const merged = mergeSourcedRows(layers.map((layer) => layer.rows.map(({ name, row }): SourcedRow => ({
+    rawName: name,
+    row,
+    source: layer.source,
+    disabled: row.disabled === true
+  }))));
+  const identityLosses = new Map<string, IdentityShadow>();
+  for (const shadow of merged.shadowedIdentity) {
+    if (!identityLosses.has(shadow.name)) identityLosses.set(shadow.name, shadow);
+  }
+  return {
+    effective: new Set(merged.rows.map((item) => item.row)),
+    identityLosses,
+    shadowedUser: new Set(merged.shadowedUser)
+  };
+}
+
+/** 身份去重注记（与注册表告警同措辞），提示行未装载的原因与解法。 */
+function identityShadowNote(shadow: IdentityShadow): string {
+  return `与 "${shadow.winner}" 同一服务（${shadow.reason === "normname" ? "归一化名称" : "命令与参数"}相同），去重不装载`;
+}
+
+function printLayerRows(layer: LayerRows, seen: Map<string, McpRowSource>, view: ShadowView, io: CliIo): number {
   if (layer.note !== undefined) io.out(`${layer.path}: ${layer.note}`);
   let count = 0;
   for (const { name, row } of layer.rows) {
@@ -260,7 +294,13 @@ function printLayerRows(layer: LayerRows, seen: Map<string, McpRowSource>, io: C
     const winner = seen.get(name);
     if (winner === undefined) seen.set(name, layer.source);
     const disabled = row.disabled === true ? ", disabled" : "";
-    const shadow = winner !== undefined ? `（已被 ${SOURCE_LABEL[winner]} 遮蔽）` : SOURCE_LABEL[layer.source];
+    let shadow = SOURCE_LABEL[layer.source];
+    if (winner !== undefined) shadow = `（已被 ${SOURCE_LABEL[winner]} 遮蔽）`;
+    else if (row.disabled !== true && !view.effective.has(row)) {
+      const loss = view.identityLosses.get(name);
+      if (loss !== undefined) shadow = `（${identityShadowNote(loss)}）`;
+      else if (view.shadowedUser.has(name)) shadow = "（已被项目自身配置遮蔽）";
+    }
     io.out(`  ${name}: ${describeTarget(row)} -- ${shadow}${disabled}`);
   }
   return count;
@@ -309,6 +349,7 @@ async function cmdAdd(parsed: ParsedArgs, rest: string[], io: CliIo, deps: CliDe
 
 async function cmdList(parsed: ParsedArgs, io: CliIo, deps: CliDeps): Promise<number> {
   const allLayers = await collectLayers(deps);
+  const view = shadowViewOf(allLayers);
   const cu = allLayers.find((layer) => layer.source === "cc-user");
   if (cu !== undefined && cu.rows.length > 0) io.out(`提示：cc-user 层已启用（${READ_CLAUDE_USER_ENV}=1），~/${CLAUDE_USER_FILE} 的 ${cu.rows.length} 条服务器将并入各项目的生效集合。`);
   const layers = parsed.scope === undefined
@@ -316,7 +357,7 @@ async function cmdList(parsed: ParsedArgs, io: CliIo, deps: CliDeps): Promise<nu
     : allLayers.filter((layer) => isProjectSource(layer.source) === (parsed.scope === "project"));
   const seen = new Map<string, McpRowSource>();
   let total = 0;
-  for (const layer of layers) total += printLayerRows(layer, seen, io);
+  for (const layer of layers) total += printLayerRows(layer, seen, view, io);
   if (total === 0 && layers.every((layer) => layer.note === undefined)) io.out("未配置 MCP 服务器（dsh-mcp add 添加）。");
   return 0;
 }
@@ -366,6 +407,16 @@ async function cmdGet(rest: string[], io: CliIo, deps: CliDeps): Promise<number>
   const found = layers.flatMap((layer) => layer.rows.filter((r) => r.name === name).map((r) => ({ ...r, layer })));
   if (found.length === 0) return fail(io, getMissMessage(name));
   printServerDetails(found[0], io);
+  // 与装载器同口径：详情展示的是文件里的定义，但该定义未必是生效的那条。
+  const top = found[0];
+  if (top.row.disabled !== true) {
+    const view = shadowViewOf(layers);
+    if (!view.effective.has(top.row)) {
+      const loss = view.identityLosses.get(top.name);
+      if (loss !== undefined) io.out(`注意：     该行未实际装载——${identityShadowNote(loss)}；确属不同服务器请改名或调整命令与参数。`);
+      else if (view.shadowedUser.has(top.name)) io.out("注意：     该行未实际装载——已被项目自身配置的同名/同服务定义遮蔽。");
+    }
+  }
   for (const loser of found.slice(1)) io.out(`注意：     ${SOURCE_LABEL[loser.layer.source]} 中的同名 "${name}" 被上面来源遮蔽。`);
   return 0;
 }

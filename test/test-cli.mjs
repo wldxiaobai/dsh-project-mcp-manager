@@ -250,6 +250,36 @@ try {
     assert.ok(cap3.lines.join("\n").includes("ccserver"), "the layer returns once the switch is cleared");
     pass("DSH_MCP_IGNORE_MCP_JSON hides the project .mcp.json layer from the CLI");
   }
+
+  // 14. list/get 与装载器同口径：归一名（unityMCP=unity-mcp）与身份键（command+args）
+  // 去重剔除的行必须标注「同一服务，去重不装载」，生效行不加注——修复前 CLI 只按
+  // 精确同名判遮蔽，这类行被展示成正常加载，与注册表行为对不上号。
+  {
+    const cap = io();
+    assert.equal(await runCli(["add", "unityMCP", "node", "u-server.js"], cap.io, deps), 0, cap.errs.join("\n"));
+    const claudePath = join(home, ".claude.json");
+    const cu = JSON.parse(await readFile(claudePath, "utf8"));
+    cu.mcpServers["unity-mcp"] = { command: "node", args: ["--offline", "u-server.js"] };
+    cu.mcpServers["psrv-x"] = { command: "node", args: ["p.js"] };
+    await writeFile(claudePath, JSON.stringify(cu), "utf8");
+    const listCap = io();
+    assert.equal(await runCli(["list"], listCap.io, deps), 0);
+    const lines = listCap.lines;
+    const lineOf = (name) => lines.find((l) => l.trim().startsWith(name + ":"));
+    const unityLine = lineOf("unity-mcp");
+    assert.ok(unityLine !== undefined && unityLine.includes('与 "unityMCP" 同一服务') && unityLine.includes("归一化名称"), "normname loss marked: " + unityLine);
+    const psrvxLine = lineOf("psrv-x");
+    assert.ok(psrvxLine !== undefined && psrvxLine.includes('与 "psrv" 同一服务') && psrvxLine.includes("命令与参数"), "identity loss marked: " + psrvxLine);
+    const unityWin = lineOf("unityMCP");
+    assert.ok(unityWin !== undefined && !unityWin.includes("遮蔽") && !unityWin.includes("去重"), "the yml winner stays a plain source row: " + unityWin);
+    const getCap = io();
+    assert.equal(await runCli(["get", "unity-mcp"], getCap.io, deps), 0);
+    assert.ok(getCap.lines.join("\n").includes("该行未实际装载"), "get annotates the deduped loser");
+    const getWin = io();
+    assert.equal(await runCli(["get", "unityMCP"], getWin.io, deps), 0);
+    assert.ok(!getWin.lines.join("\n").includes("未实际装载"), "the effective winner gets no annotation");
+    pass("cli list/get mark cross-layer same-service dedup with the registry's merge");
+  }
 } finally {
   delete process.env.DSH_MCP_READ_CLAUDE_USER;
   await rm(dir, { recursive: true, force: true });

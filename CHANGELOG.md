@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shadow-set signature gate: they fire when the set of shadowed rows changes,
   not on every reconcile. Previously any file event caused one warning per
   project per shadowed row per reconcile cycle.
+- `dsh-mcp list`/`get` now annotate rows dropped by the registry's
+  cross-layer dedup (normalized-name or service identity, not just exact
+  name), by running `mergeSourcedRows` over the same four layers — the CLI
+  view and what actually mounts no longer disagree.
 
 ## [0.3.0] - 2026-09-03
 
