@@ -98,12 +98,18 @@ process.env.GITHUB_TOKEN }`）在项目文件里**不支持**——受管块内�
 
 ## Claude Code 兼容层（只读）
 
-为顺应 CC 用户习惯，插件会**装载**以下两个 CC 配置位置，但从不写入它们：
+为顺应 CC 用户习惯，插件会**装载**以下两个 CC 配置位置，但从不写入它们。
+两者的默认姿态不同，因为风险等级不同：
 
 - `<projectRoot>/.mcp.json` —— CC 的 project 层文件（`{ "mcpServers": { … } }`）。
-- `~/.claude.json` —— 只读取**顶层 `mcpServers`** 子树（严格 allowlist：
-  该文件是 CC 的整体状态库，其中的 oauth 凭据、项目历史、UI 状态一律不读入
-  配置、不写、不打日志、不在任何输出里回显）。
+  它是随仓库版本管理的项目自身声明：**默认开启**、只读。设
+  `DSH_MCP_IGNORE_MCP_JSON=1` 可整层停用。
+- `~/.claude.json` —— 只读取**顶层 `mcpServers`** 子树，且**只在显式请求时**：
+  设 `DSH_MCP_READ_CLAUDE_USER=1` 才读。这是 CC 的机器级用户状态，不属于任何
+  项目：无条件读取会把每台这样的服务器扇出到**每个已知 dsh 项目**各起一个
+  进程——这正是把它改为 opt-in 的事故根因。该文件其余内容一律不读入配置、
+  不写、不打日志、不在任何输出里回显（严格 allowlist：oauth 凭据、项目历史、
+  UI 状态对本插件不可见）。
 
 边界与限制：
 
@@ -121,27 +127,39 @@ process.env.GITHUB_TOKEN }`）在项目文件里**不支持**——受管块内�
   共享的只是 `cwd`，不是连接。
 - 未知 CC 键容忍忽略；`enabled: false`（以及作为别名的 `disabled: true`）
   静默跳过该条目（不记诊断，也不占名）。
-- 原生 yml 里 `disabled: true` 的行仍**占名遮蔽**下层同名行：下层副本一并
-  不装载——禁用意味着"这个名字不许跑"，而不是"让位给 CC 副本"。CC 侧的
-  `enabled: false` 没有占位效果。推论：不删除、只在 `.mcp.json` 里关掉一条，
-  同名的**用户层行会在该项目浮上来**装载；要把名字在所有层压住，请在
-  `.dsh/mcp.yml` 留一条 `disabled: true` 占位行。
+- 原生 yml 里 `disabled: true` 的行仍**占住影子键**（见下方去重规则）：下层
+  同名行一并被遮蔽不装载——禁用意味着"这个名字不许跑"，而不是"让位给 CC
+  副本"。CC 侧的 `enabled: false` 没有占位效果。推论：不删除、只在
+  `.mcp.json` 里关掉一条，同名的**用户层行会在该项目浮上来**装载；要把某台
+  服务器在所有层压住，请在 `.dsh/mcp.yml` 留一条 `disabled: true` 占位行
+  （名字或归一化名字对上即可）。
 - 坏文件/坏条目不影响其他服务器，且**按源隔离**：`.mcp.json` 坏了不会卸掉
   同项目的 yml 行（反之亦然）；条目错误写入 `.dsh/.mcp-diag.json` 与宿主
   日志（诊断从不带文件内容）。只有 `.mcp.json`、没用过原生 yml 的项目，
   一旦有可报内容也会创建 `.dsh/` 目录。
 - CC 每次会话都会重写 `~/.claude.json`；watcher 会对该文件做
   `mcpServers` 子树的规范化哈希门控——子树没变就不触发对账。
-- 逃生门：在 dsh 宿主环境设置 `DSH_MCP_IGNORE_CLAUDE_JSON=1` 可完全禁用对
-  `~/.claude.json` 的读取与监听。
+- 共存边界开关（dsh 宿主环境变量）：`DSH_MCP_READ_CLAUDE_USER=1` 显式启用
+  `~/.claude.json` 用户层；`DSH_MCP_IGNORE_MCP_JSON=1` 停用项目 `.mcp.json`
+  层；旧开关 `DSH_MCP_IGNORE_CLAUDE_JSON=1` 为强制关闭用户层，**优先级高于
+  opt-in**（冲突时打一次「胜出」告警；旧开关将在后续版本移除）。用户层开启
+  时，宿主一次性日志提示扇出规模（「N 条服务器将并入 M 个已知项目」），
+  让多出来的 spawn 可解释、可回退。
 
-**影子优先序**（同名服务器先到先得，被遮蔽方写入
-`.dsh/.mcp-diag.json` 的 `shadowedByYml` / `shadowedByProject`）：
+**影子优先序**——按 1→4 先到先得合并，后到行与已收录行命中**三把键中的任何
+一把**即被遮蔽：精确 `serverName`；*归一化名称*（转小写去掉非字母数字后相同
+——`unityMCP` 与 `unity-mcp` 就是一台服务器的两种写法）；*服务身份*
+（`stdio` 取 command + args，Windows 下路径大小写不敏感；`streamable-http`
+取 url）。command/url 为空的行不注册身份键——`node a.js` 与 `node b.js` 是
+不同服务、绝不互杀——而 `disabled` 占位行三键全占、自身不装载。被遮蔽方写入
+`.dsh/.mcp-diag.json`（`shadowedByYml` / `shadowedByProject` /
+`shadowedIdentity`），身份/归一名去重剔除的每行还会在宿主日志告警「跳过重复
+服务定义」：
 
 1. `<projectRoot>/.dsh/mcp.yml`（原生格式，面板/CLI 管理）
 2. `<projectRoot>/.mcp.json`（CC project 层）
 3. `~/.dsh/mcp.yml`（原生用户层，见 CLI）
-4. `~/.claude.json` 顶层 `mcpServers`（CC user 层）
+4. `~/.claude.json` 顶层 `mcpServers`（CC user 层，opt-in）
 
 用户层行适用于所有已知项目，因此「某项目与用户层同名」（或两个项目同名）
 会走常规的生效名冲突改名规则（见工作原理）。
@@ -215,6 +233,8 @@ dsh-mcp remove gitlab # 只动原生 yml；命中只读层时给出编辑指引
 
 `.dsh/mcp.yml` 中的 `stdio` 行（以及经兼容层装载的 `.mcp.json` 行）会在 dsh
 宿主进程内 spawn 其 `command`——项目文件是**可执行代码载体**，只应在可信项目
-中添加。装载失败/配置无效行仅告警跳过，不影响其他服务器。`~/.claude.json`
-之所以按严格 allowlist 只读，正是因为该文件还存放凭据：其中未使用的部分
-不会被读出、写入任何文件，也不会在 CLI 或诊断输出里出现。
+中添加。装载失败/配置无效行仅告警跳过，不影响其他服务器。CC 的机器级
+`~/.claude.json` 用户层因此**默认关闭**：读取它等于把外来的环境级服务器塞进
+每个项目的 spawn 集合，必须是显式决定（`DSH_MCP_READ_CLAUDE_USER=1`）。
+`~/.claude.json` 之所以同时按严格 allowlist 只读，正是因为该文件还存放凭据：
+其中未使用的部分不会被读出、写入任何文件，也不会在 CLI 或诊断输出里出现。

@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-03
+
+### Changed
+
+- **BREAKING** — `~/.claude.json` top-level `mcpServers` (the CC user layer) is
+  no longer read by default. It is machine-wide foreign state, and mounting it
+  unconditionally fanned every such server into every known project as its own
+  process (a zero-config directory silently spawning another workspace's
+  servers). Opt in with `DSH_MCP_READ_CLAUDE_USER=1`. The legacy
+  `DSH_MCP_IGNORE_CLAUDE_JSON=1` survives one release as a force-off override:
+  when both are set the ignore switch wins, with a one-shot warning (the
+  legacy switch will be removed later).
+- `mergeSourcedRows` now dedups same-service rows across layers by priority,
+  not just by exact name: three first-come-first-served shadow keys — exact
+  `serverName`, normalized name (lowercase, non-alphanumerics stripped, so
+  `unityMCP` and `unity-mcp` are one service), and service identity (`stdio`
+  command + args, path-case-insensitive on Windows; `streamable-http` url).
+  Rows without a command/url claim no identity key (`node a.js` vs
+  `node b.js` stay distinct); `disabled` placeholder rows hold all three keys
+  without mounting. Drops are visible: `shadowedIdentity` in the scan
+  diagnostics plus a host-log warning per row.
+
+### Added
+
+- `DSH_MCP_IGNORE_MCP_JSON=1` turns the project `.mcp.json` (CC project layer)
+  off wholesale — reading, watching, snapshot partitions and CLI views all
+  honor it. The layer itself stays on by default as an in-repo declaration.
+- When the CC user layer is on, the host logs a one-time fan-out notice
+  ("N servers will join M known projects") with the way back (unset the opt-in
+  or shadow per project with a `disabled` placeholder row).
+- Truth-table tests for the new layer predicates, `mergeSourcedRows` dedup
+  unit cases (0.1–0.7), and registry scenarios 25–28 plus CLI scenarios 12–13
+  covering the three switches, the conflict arbitration and the incident
+  replay (yml twin wins, foreign duplicate stays unmounted, others still fan).
+
+### Fixed
+
+- A project whose mounts all come from the user layer no longer writes false
+  `ENOENT` scan diagnostics when `<projectRoot>/.dsh/mcp.yml` is absent — the
+  missing-file scan error now only counts project-`yml` live mounts
+  (previously `servers.size` counted every source).
+
 ## [0.2.1] - 2026-09-01
 
 ### Added
@@ -241,7 +283,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Security note: `stdio` lines in `.dsh/mcp.yml` spawn their `command` inside the dsh host
 process, so project files are executable-code carriers — add them only in trusted projects.
 
-[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.2.1...HEAD
+[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.1.0...v0.1.1

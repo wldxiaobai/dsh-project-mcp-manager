@@ -111,13 +111,20 @@ if moved back to `cordis.patch.yml`.
 ## Claude Code compatibility (read-only)
 
 To fit the habits of Claude Code users, two CC locations are **loaded** but
-never written by this plugin:
+never written by this plugin — with different defaults, because they are
+different risk classes:
 
 - `<projectRoot>/.mcp.json` — the CC project file (`{ "mcpServers": { … } }`).
-- `~/.claude.json` — only the **top-level `mcpServers`** subtree is read
-  (strict allowlist: this file is CC's monolithic state store — oauth
-  credentials, per-project history and UI state in it are never touched,
-  logged or displayed).
+  An in-repo, version-controlled project declaration: **on by default**,
+  read-only. Turn the whole layer off with `DSH_MCP_IGNORE_MCP_JSON=1`.
+- `~/.claude.json` — only the **top-level `mcpServers`** subtree is read, and
+  only **on explicit request**: set `DSH_MCP_READ_CLAUDE_USER=1`. This is CC's
+  machine-wide user state, not something any one project asked for: mounting
+  it unconditionally fans every such server into *every* known dsh project as
+  its own process — the exact incident that made it opt-in. Nothing else in
+  the file is ever touched, logged or displayed (strict allowlist: oauth
+  credentials, per-project history and UI state stay invisible to this
+  plugin).
 
 Notes and limits:
 
@@ -138,13 +145,14 @@ Notes and limits:
 - Unknown CC keys are ignored per entry. `enabled: false` — and, as an alias,
   `disabled: true` — skips the row silently (no diagnostic, and no name
   occupancy — see below).
-- A `disabled: true` row in a **native yml** still occupies its name in the
-  shadow chain: same-name rows in lower layers are shadowed too and stay
-  unmounted — disabled means "this name must not run", not "let the CC copy
-  through". CC-side `enabled: false` has no placeholder effect. Consequence:
-  switching off a `.mcp.json` entry without deleting it lets a **same-named
-  user-layer row surface** in that project; to suppress the name across all
-  layers, keep a `disabled: true` placeholder row in `.dsh/mcp.yml`.
+- A `disabled: true` row in a **native yml** still holds its shadow keys in
+  the shadow chain (see dedup below): same-name rows in lower layers are
+  shadowed too and stay unmounted — disabled means "this name must not run",
+  not "let the CC copy through". CC-side `enabled: false` has no placeholder
+  effect. Consequence: switching off a `.mcp.json` entry without deleting it
+  lets a **same-named user-layer row surface** in that project; to suppress a
+  server across all layers, keep a `disabled: true` placeholder row (matching
+  name or normalized name) in `.dsh/mcp.yml`.
 - Broken files/entries never take down the valid ones; each source fails
   independently, so an unreadable `.mcp.json` cannot unmount the project's
   yml rows (and vice versa). Entry errors land in `.dsh/.mcp-diag.json` and
@@ -154,17 +162,30 @@ Notes and limits:
 - `~/.claude.json` is rewritten by CC on every session; the watcher re-reads
   it but only triggers reconciliation when the `mcpServers` subtree actually
   changed (canonical-JSON hash gate).
-- Escape hatch: set `DSH_MCP_IGNORE_CLAUDE_JSON=1` in the dsh host environment
-  to disable reading and watching `~/.claude.json` entirely.
+- Boundary switches (dsh host environment): `DSH_MCP_READ_CLAUDE_USER=1`
+  opts the `~/.claude.json` user layer in; `DSH_MCP_IGNORE_MCP_JSON=1` turns
+  the project `.mcp.json` layer off; the legacy `DSH_MCP_IGNORE_CLAUDE_JSON=1`
+  force-disables the user layer and **wins over the opt-in** (a one-shot
+  warning names the winner; the legacy switch will be removed in a later
+  release). While the user layer is on, the host logs its fan-out size once
+  ("N servers will join M known projects") so extra spawns are explainable.
 
-**Shadow priority** when the same `serverName` appears in several layers
-(first wins, losers reported in `.dsh/.mcp-diag.json` as `shadowedByYml` /
-`shadowedByProject`):
+**Shadow priority** — layers merge first-come-first-served (1 → 4 below), and
+a row is shadowed when it collides with an earlier row on **any** of three
+keys: the exact `serverName`; the *normalized name* (lowercased with
+non-alphanumerics stripped — `unityMCP` and `unity-mcp` are one service
+written two ways); or the *service identity* (`stdio`: command + args,
+path-case-insensitive on Windows; `streamable-http`: the url). Rows without a
+command/url register no identity key — `node a.js` and `node b.js` stay
+different services — while `disabled` placeholder rows hold all three keys
+without mounting anything. Losers are reported in `.dsh/.mcp-diag.json`
+(`shadowedByYml` / `shadowedByProject` / `shadowedIdentity`) and every
+identity/normalized-name drop warns in the host log:
 
 1. `<projectRoot>/.dsh/mcp.yml` (native, panel/CLI-managed)
 2. `<projectRoot>/.mcp.json` (CC project)
 3. `~/.dsh/mcp.yml` (native user layer — see CLI)
-4. `~/.claude.json` top-level `mcpServers` (CC user)
+4. `~/.claude.json` top-level `mcpServers` (CC user, opt-in)
 
 User-layer rows apply to every known project, so a name defined both in one
 project and in a user layer (or in two projects) participates in the regular
@@ -261,6 +282,9 @@ fails with an explanation. `--transport` accepts `stdio` (default) and `http`;
 their `command` inside the dsh host process — project files are **executable
 code carriers**, so only add them in projects you trust. Lines that fail to
 mount or are invalid are skipped with a warning and do not affect other
-servers. The read-only `~/.claude.json` allowlist exists precisely because
-that file also holds credentials: nothing from it is ever written out, echoed
-into diagnostics, or printed by the CLI.
+servers. CC's machine-wide `~/.claude.json` user layer is therefore **off by
+default**: reading it opts foreign, environment-level servers into every
+project's spawn set, which must be a deliberate `DSH_MCP_READ_CLAUDE_USER=1`.
+The read-only allowlist exists precisely because that file also holds
+credentials: nothing from it is ever written out, echoed into diagnostics, or
+printed by the CLI.
