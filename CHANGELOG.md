@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The one-shot `DSH_MCP_READ_CLAUDE_USER` / `DSH_MCP_IGNORE_CLAUDE_JSON`
+  conflict warning now re-arms when the conflict clears by unsetting the
+  legacy switch (the documented remedy). Previously the latch only reset on
+  the path where the opt-in itself was removed, so a second conflict went
+  silent.
+
 ## [0.3.0] - 2026-09-03
 
 ### Changed

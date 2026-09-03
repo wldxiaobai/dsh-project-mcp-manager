@@ -739,8 +739,9 @@ try {
     pass("DSH_MCP_IGNORE_MCP_JSON gates reading, watching, and partitions of the project .mcp.json layer");
 
     // 27. 开关冲突裁决：READ=1 与旧 IGNORE=1 同时置位 → 强制关闭胜出、cc-user
-    // 停用，且「IGNORE 胜出」告警恰好打一次（场景 21 已消耗过一次 latch，这里
-    // 冲突解除后重新武装再次命中）。
+    // 停用，「IGNORE 胜出」告警恰好一次；按告警清掉 IGNORE 使层恢复后闩必须
+    // 重新武装——再冲突还得再提示一次（修复前复位只挂在 READ 撤掉的分支上，
+    // 清 IGNORE 的解除路径会二次静默）。
     process.env.DSH_MCP_IGNORE_CLAUDE_JSON = "1";
     try {
       const warns27 = [];
@@ -752,14 +753,24 @@ try {
       await registry2.reconcileNow();
       const conflict27 = warns27.filter((w) => w.includes("胜出"));
       assert.equal(conflict27.length, 1, "conflict warned exactly once: " + JSON.stringify(conflict27));
-      assert.ok(await registry2.waitForState(dir2, "beta", (state) => state?.phase === "active", 500), "cc-project layer unaffected by the cc-user conflict");
+      // 解除路径一：清掉 IGNORE → enabled 分支必须复位闩；再设回 → 二次冲突再告警。
+      delete process.env.DSH_MCP_IGNORE_CLAUDE_JSON;
+      await registry2.reconcileNow();
+      assert.ok(await registry2.waitForState(dir2, "gamma", (state) => state?.phase === "active", 5000), "cc-user returns after clearing the conflict");
+      process.env.DSH_MCP_IGNORE_CLAUDE_JSON = "1";
+      await registry2.reconcileNow();
+      const conflict27b = warns27.filter((w) => w.includes("胜出"));
+      assert.equal(conflict27b.length, 2, "clearing the conflict re-arms the one-shot latch: " + JSON.stringify(conflict27b));
+      const snap27b = await registry2.snapshot();
+      assert.equal(snap27b.find((file) => file.source === "cc-user"), undefined, "IGNORE still force-off after the re-conflict");
       ctx2.logger.warn = origWarn27;
+      assert.ok(await registry2.waitForState(dir2, "beta", (state) => state?.phase === "active", 500), "cc-project layer unaffected by the cc-user conflict");
     } finally {
       delete process.env.DSH_MCP_IGNORE_CLAUDE_JSON;
     }
     await registry2.reconcileNow();
     assert.ok(await registry2.waitForState(dir2, "gamma", (state) => state?.phase === "active", 5000), "cc-user returns after clearing the conflict");
-    pass("IGNORE_CLAUDE_JSON forces the cc-user layer off over READ_CLAUDE_USER with a one-shot conflict warning");
+    pass("IGNORE_CLAUDE_JSON forces the cc-user layer off over READ_CLAUDE_USER with a re-armable one-shot conflict warning");
 
     // 28. 跨来源同服务去重（集成）：事故复刻——proj6 的 yml unityMCP 与 cc-user
     // unity-mcp 是同一 uvx 服务器的两种写法（args 差 --offline），proj6 只装一条，

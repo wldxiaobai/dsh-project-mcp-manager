@@ -566,6 +566,10 @@ export class ProjectMcpRegistry {
     // cc-user 默认关闭：CC 用户级配置是机器环境级外部状态，显式
     // DSH_MCP_READ_CLAUDE_USER=1 才读；旧 IGNORE 开关强制关闭并胜出。
     if (claudeUserLayerEnabled()) {
+      // 层恢复即视为冲突已解除：复位一次性告警闩，用户再设回 IGNORE 还能提示。
+      // 旧实现只在「READ 未置位且无冲突」分支复位，按告警清掉 IGNORE 的旅程
+      // 走不到复位路径，二次冲突会静默。
+      this.claudeConflictWarned = false;
       cc = await readClaudeUserFile(paths.claudeJson);
       if (cc.serversHash !== undefined) this.claudeServersHash = cc.serversHash;
     } else if (claudeUserLayerConflict()) {
