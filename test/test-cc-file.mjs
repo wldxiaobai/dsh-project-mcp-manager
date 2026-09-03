@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { canonicalJsonString, readClaudeUserFile, readMcpJsonFile } from "../lib/cc-file.js";
+import { canonicalJsonString, claudeUserLayerConflict, claudeUserLayerEnabled, mcpJsonLayerEnabled, readClaudeUserFile, readMcpJsonFile } from "../lib/cc-file.js";
 
 let passed = 0;
 function pass(name) {
@@ -155,6 +155,18 @@ assert.equal(
   canonicalJsonString({ a: [3, { c: 5, d: 4 }], b: { x: 2, y: 1 } })
 );
 pass("canonicalJsonString sorts nested keys deterministically");
+
+// 8. 共存边界开关谓词真值表（纯函数，传入合成 env，不碰 process.env）
+assert.equal(claudeUserLayerEnabled({}), false, "cc-user off by default");
+assert.equal(claudeUserLayerEnabled({ DSH_MCP_READ_CLAUDE_USER: "1" }), true, "opt-in enables cc-user");
+assert.equal(claudeUserLayerEnabled({ DSH_MCP_READ_CLAUDE_USER: "1", DSH_MCP_IGNORE_CLAUDE_JSON: "1" }), false, "IGNORE wins over READ");
+assert.equal(claudeUserLayerEnabled({ DSH_MCP_IGNORE_CLAUDE_JSON: "1" }), false, "IGNORE alone stays off");
+assert.equal(claudeUserLayerEnabled({ DSH_MCP_READ_CLAUDE_USER: "0" }), false, "non-1 value is not opt-in");
+assert.equal(claudeUserLayerConflict({ DSH_MCP_READ_CLAUDE_USER: "1", DSH_MCP_IGNORE_CLAUDE_JSON: "1" }), true, "conflict detected");
+assert.equal(claudeUserLayerConflict({ DSH_MCP_READ_CLAUDE_USER: "1" }), false);
+assert.equal(mcpJsonLayerEnabled({}), true, ".mcp.json layer on by default");
+assert.equal(mcpJsonLayerEnabled({ DSH_MCP_IGNORE_MCP_JSON: "1" }), false, "IGNORE_MCP_JSON closes it");
+pass("coexistence boundary switch predicates follow the documented truth table");
 
 console.log("\n" + passed + " passed, 0 failed");
 console.log("ALL CC FILE TESTS PASSED");

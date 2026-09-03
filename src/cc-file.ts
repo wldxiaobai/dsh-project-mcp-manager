@@ -30,8 +30,29 @@ import { SERVER_NAME_RE, ccServerEntrySchema, mcpServerInputSchema, toPatchRow, 
 export const CC_PROJECT_FILE = ".mcp.json";
 /** CC user scope 单体状态文件名（位于家目录，allowlist 只读其顶层 mcpServers）。 */
 export const CLAUDE_USER_FILE = ".claude.json";
-/** 置为 "1" 时整体跳过对 ~/.claude.json 的读取与监听。 */
+/** 旧开关（保留一个版本）：置为 "1" 时强制停用 ~/.claude.json 的读取与监听，
+ * 优先于 DSH_MCP_READ_CLAUDE_USER（两者同时设置时本开关胜出并告警一次）。 */
 export const IGNORE_CLAUDE_JSON_ENV = "DSH_MCP_IGNORE_CLAUDE_JSON";
+/** 置为 "1" 才选择启用对 ~/.claude.json 顶层 mcpServers 的读取与监听。
+ * cc-user 层默认关闭：CC 用户级配置属于机器环境级外部状态，不应隐式挂进每个项目。 */
+export const READ_CLAUDE_USER_ENV = "DSH_MCP_READ_CLAUDE_USER";
+/** 置为 "1" 时跳过项目 .mcp.json（cc-project 层）的读取与监听；该层默认开启。 */
+export const IGNORE_MCP_JSON_ENV = "DSH_MCP_IGNORE_MCP_JSON";
+
+/** cc-user 层是否启用：须显式设 READ_CLAUDE_USER=1；IGNORE_CLAUDE_JSON 为强制关闭（胜出）。 */
+export function claudeUserLayerEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env[READ_CLAUDE_USER_ENV] === "1" && env[IGNORE_CLAUDE_JSON_ENV] !== "1";
+}
+
+/** READ 与 IGNORE 同时置位：语义冲突，调用方应告警一次「IGNORE 胜出」。 */
+export function claudeUserLayerConflict(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env[READ_CLAUDE_USER_ENV] === "1" && env[IGNORE_CLAUDE_JSON_ENV] === "1";
+}
+
+/** 项目 .mcp.json（cc-project 层）是否启用：默认开，IGNORE_MCP_JSON=1 关。 */
+export function mcpJsonLayerEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env[IGNORE_MCP_JSON_ENV] !== "1";
+}
 
 /** 配置行来源（冲突遮蔽优先序见 registry：yml > cc-project > user-yml > cc-user）。 */
 export type McpRowSource = "yml" | "cc-project" | "user-yml" | "cc-user";
