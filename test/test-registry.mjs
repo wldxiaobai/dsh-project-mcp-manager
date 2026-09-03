@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ProjectMcpRegistry, projectMcpFile } from "../lib/registry.js";
+import { ProjectMcpRegistry, projectMcpFile, mergeSourcedRows } from "../lib/registry.js";
 import { MCP_BLOCK_BEGIN, MCP_BLOCK_END, writeManagedRows } from "../lib/mcp-file.js";
 
 let passed = 0;
@@ -53,7 +53,7 @@ async function rmRetry(path) {
 const stdioRow = (name, command = "node") => ({
   id: "panel-mcp-" + name,
   name: "@deepseek-ai/dsh-mcp-client",
-  config: { serverName: name, transport: "stdio", command, args: [], env: {}, cwd: "sub", toolCallTimeoutMs: 60000, failOnStartupError: false, reconnect: { enabled: true, initialDelayMs: 500, maxDelayMs: 30000, maxAttempts: 10 } }
+  config: { serverName: name, transport: "stdio", command, args: ["srv-" + name + ".js"], env: {}, cwd: "sub", toolCallTimeoutMs: 60000, failOnStartupError: false, reconnect: { enabled: true, initialDelayMs: 500, maxDelayMs: 30000, maxAttempts: 10 } }
 });
 
 /** 最小假宿主 ctx：记录 plugin 装载与 restrict 调用；effect 收集清理器。 */
@@ -125,6 +125,93 @@ function fakeAgent(id, cwd) {
 }
 
 const dir = await mkdtemp(join(tmpdir(), "dsh-project-mcp-manager-registry-"));
+
+// ── 0. mergeSourcedRows 跨来源同服务去重（纯函数）──────────────────────────
+{
+  const srow = (rawName, source, config, disabled = false) => ({
+    rawName,
+    source,
+    ...(disabled ? { disabled: true } : {}),
+    row: { id: "panel-mcp-" + rawName, name: "@deepseek-ai/dsh-mcp-client", ...(disabled ? { disabled: true } : {}), ...(config === undefined ? {} : { config }) }
+  });
+  const stdioCfg = (serverName, command, args) => ({ serverName, transport: "stdio", command, args, env: {}, cwd: "" });
+  const httpCfg = (serverName, url) => ({ serverName, transport: "streamable-http", url, headers: {} });
+
+  // 0.1 事故对：同名服务两种写法（args 差 --offline）→ 归一名键命中，高层胜出
+  {
+    const m = mergeSourcedRows([
+      [srow("unityMCP", "yml", stdioCfg("unityMCP", "C:\\uvx.exe", ["--from", "mcpforunityserver==10.1.0", "mcp-for-unity", "--transport", "stdio"]))],
+      [],
+      [],
+      [srow("unity-mcp", "cc-user", stdioCfg("unity-mcp", "C:\\uvx.exe", ["--offline", "--from", "mcpforunityserver==10.1.0", "mcp-for-unity", "--transport", "stdio"]))]
+    ]);
+    assert.deepEqual(m.rows.map((r) => r.rawName), ["unityMCP"], "normname dup drops the low-priority twin");
+    assert.deepEqual(m.shadowedIdentity, [{ name: "unity-mcp", winner: "unityMCP", reason: "normname" }], "identity shadow reports the incident pair");
+    assert.deepEqual(m.shadowedUser, ["unity-mcp"], "the dropped cc-user row also counts as project-shadowed user row");
+  }
+  // 0.2 完全相同的 command+args（名字归一后不同）→ 身份键命中
+  {
+    const m = mergeSourcedRows([
+      [srow("pencilA", "yml", stdioCfg("pencilA", "C:\\pencil\\mcp-server.exe", ["--agent", "cli"]))],
+      [],
+      [srow("pencil-user", "user-yml", stdioCfg("pencil-user", "C:\\pencil\\mcp-server.exe", ["--agent", "cli"]))]
+    ]);
+    assert.deepEqual(m.rows.map((r) => r.rawName), ["pencilA"], "identity dup keeps the yml row");
+    assert.deepEqual(m.shadowedIdentity, [{ name: "pencil-user", winner: "pencilA", reason: "identity" }]);
+  }
+  // 0.3 同 command 不同 args 是不同服务：node a.js 与 node b.js 不许互杀
+  {
+    const m = mergeSourcedRows([
+      [srow("aa", "yml", stdioCfg("aa", "node", ["a.js"])), srow("bb", "yml", stdioCfg("bb", "node", ["b.js"]))]
+    ]);
+    assert.equal(m.rows.length, 2, "same command, different args are different services");
+    assert.equal(m.shadowedIdentity.length, 0);
+  }
+  // 0.4 http 用 url 做身份键
+  {
+    const m = mergeSourcedRows([
+      [srow("remote", "yml", httpCfg("remote", "https://mcp.example/api"))],
+      [],
+      [],
+      [srow("remote2", "cc-user", httpCfg("remote2", "https://mcp.example/api"))]
+    ]);
+    assert.deepEqual(m.rows.map((r) => r.rawName), ["remote"]);
+    assert.deepEqual(m.shadowedIdentity, [{ name: "remote2", winner: "remote", reason: "identity" }]);
+  }
+  // 0.5 disabled 占名行注册归一名键：给用户层行提供占名退出手段
+  {
+    const m = mergeSourcedRows([
+      [srow("gamma", "yml", undefined, true)],
+      [],
+      [],
+      [srow("Gamma", "cc-user", stdioCfg("Gamma", "node", ["g.js"]))]
+    ]);
+    assert.equal(m.rows.length, 0, "disabled placeholder mounts nothing and its normname twin stays shadowed");
+    assert.deepEqual(m.shadowedIdentity, [{ name: "Gamma", winner: "gamma", reason: "normname" }]);
+  }
+  // 0.6 空 command 的行不注册身份键（两行都无 config 时不得互杀）
+  {
+    const m = mergeSourcedRows([
+      [],
+      [],
+      [srow("uc-a", "user-yml", stdioCfg("uc-a", "", []))],
+      [srow("uc-b", "cc-user", stdioCfg("uc-b", "", []))]
+    ]);
+    assert.equal(m.rows.length, 2, "rows without a command never claim the identity key");
+    assert.equal(m.shadowedIdentity.length, 0);
+  }
+  // 0.7 精确同名遮蔽仍先到先得，且不重复记入 shadowedIdentity
+  {
+    const m = mergeSourcedRows([
+      [srow("dup", "yml", stdioCfg("dup", "node", ["x.js"]))],
+      [srow("dup", "cc-project", stdioCfg("dup", "node", ["other.js"]))]
+    ]);
+    assert.deepEqual(m.shadowedOwnCc, ["dup"]);
+    assert.equal(m.shadowedIdentity.length, 0, "exact-name shadow is not an identity shadow");
+  }
+  pass("mergeSourcedRows dedups same service across layers by normalized name and identity, disabled rows hold the name");
+}
+
 const originalCwd = process.cwd();
 try {
   process.chdir(dir); // 进程 cwd 兜底指向 temp 目录，避免污染断言
@@ -345,7 +432,7 @@ try {
     process.env.CC_TEST_MISSING = "sekret";
     await writeManagedRows(projectMcpFile(dir2), [
       { ...stdioRow("alpha"), config: { ...stdioRow("alpha").config, args: ["a-yml.js"] } },
-      { ...stdioRow("eta"), config: { ...stdioRow("eta").config, command: "${CC_TEST_BIN}", env: { T: "${CC_TEST_MISSING}" } } }
+      { ...stdioRow("eta"), config: { ...stdioRow("eta").config, args: ["eta-yml.js"], command: "${CC_TEST_BIN}", env: { T: "${CC_TEST_MISSING}" } } }
     ]);
     await registry2.reconcileNow();
     const beta13 = ctx2.mounts.filter((config) => config.serverName === "beta").at(-1);
@@ -389,7 +476,7 @@ try {
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 900));
     assert.equal(registry2.debugReconcileCount, count15, "mcpServers-unchanged rewrite must not reconcile");
     const gate15 = JSON.parse(await readFile(join(home2, ".claude.json"), "utf8"));
-    gate15.mcpServers.zeta = { command: "node", args: [] };
+    gate15.mcpServers.zeta = { command: "node", args: ["z.js"] };
     await writeFile(join(home2, ".claude.json"), JSON.stringify(gate15), "utf8");
     const zetaActive = await registry2.waitForState(dir2, "zeta", (state) => state?.phase === "active", 5000);
     assert.ok(zetaActive, "changed mcpServers subtree passes the hash gate and mounts");
@@ -401,7 +488,7 @@ try {
     const dir3 = join(dir2, "proj3");
     await mkdir(join(dir3, ".dsh"), { recursive: true });
     await writeManagedRows(projectMcpFile(dir3), [stdioRow("keep-yml")], { createIfMissing: true });
-    await writeFile(join(dir3, ".mcp.json"), JSON.stringify({ mcpServers: { "cc-x": { command: "node", args: [] } } }), "utf8");
+    await writeFile(join(dir3, ".mcp.json"), JSON.stringify({ mcpServers: { "cc-x": { command: "node", args: ["x.js"] } } }), "utf8");
     ctx2.agentsList.push(fakeAgent("session-f", dir3));
     await registry2.reconcileNow();
     assert.ok(
@@ -439,7 +526,7 @@ try {
     }
     const ccFile18 = join(dir2, ".mcp.json");
     const parsed18 = JSON.parse(await readFile(ccFile18, "utf8"));
-    parsed18.mcpServers["hot-cc"] = { command: "node", args: [] };
+    parsed18.mcpServers["hot-cc"] = { command: "node", args: ["hot-cc.js"] };
     await writeFile(ccFile18, JSON.stringify(parsed18), "utf8");
     const hotActive18 = await registry2.waitForState(dir2, "hot-cc", (state) => state?.phase === "active", 5000);
     assert.ok(hotActive18, "editing .mcp.json hot-mounts without an explicit reconcile");
@@ -505,7 +592,7 @@ try {
         count21 = next;
       }
       const ig21 = JSON.parse(await readFile(join(home2, ".claude.json"), "utf8"));
-      ig21.mcpServers["ig-off"] = { command: "node", args: [] };
+      ig21.mcpServers["ig-off"] = { command: "node", args: ["ig.js"] };
       await writeFile(join(home2, ".claude.json"), JSON.stringify(ig21), "utf8");
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 900));
       assert.equal(registry2.debugReconcileCount, count21, "claude.json edits must not drive reconciles while ignored");
@@ -601,7 +688,7 @@ try {
         count25 = next;
       }
       const cu25 = JSON.parse(await readFile(join(home2, ".claude.json"), "utf8"));
-      cu25.mcpServers["never-25"] = { command: "node", args: [] };
+      cu25.mcpServers["never-25"] = { command: "node", args: ["n25.js"] };
       await writeFile(join(home2, ".claude.json"), JSON.stringify(cu25), "utf8");
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 900));
       assert.equal(registry2.debugReconcileCount, count25, "claude.json edits must not drive reconciles while cc-user is off");
@@ -640,7 +727,7 @@ try {
         count26 = next;
       }
       const ccFile26 = JSON.parse(await readFile(join(dir2, ".mcp.json"), "utf8"));
-      ccFile26.mcpServers["hot26"] = { command: "node", args: [] };
+      ccFile26.mcpServers["hot26"] = { command: "node", args: ["hot26.js"] };
       await writeFile(join(dir2, ".mcp.json"), JSON.stringify(ccFile26), "utf8");
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 900));
       assert.equal(registry2.debugReconcileCount, count26, ".mcp.json edits must not drive reconciles while the layer is off");
@@ -673,6 +760,41 @@ try {
     await registry2.reconcileNow();
     assert.ok(await registry2.waitForState(dir2, "gamma", (state) => state?.phase === "active", 5000), "cc-user returns after clearing the conflict");
     pass("IGNORE_CLAUDE_JSON forces the cc-user layer off over READ_CLAUDE_USER with a one-shot conflict warning");
+
+    // 28. 跨来源同服务去重（集成）：事故复刻——proj6 的 yml unityMCP 与 cc-user
+    // unity-mcp 是同一 uvx 服务器的两种写法（args 差 --offline），proj6 只装一条，
+    // 被剔除者进 diag 并告警；其它没有 yml  twin 的项目照常挂 unity-mcp。
+    {
+      const dir6 = join(dir2, "proj6");
+      await mkdir(dir6, { recursive: true });
+      await writeManagedRows(projectMcpFile(dir6), [{
+        id: "panel-mcp-unityMCP",
+        name: "@deepseek-ai/dsh-mcp-client",
+        config: { serverName: "unityMCP", transport: "stdio", command: "node", args: ["u-server.js"], env: {}, cwd: "", toolCallTimeoutMs: 60000, failOnStartupError: false, reconnect: { enabled: true, initialDelayMs: 500, maxDelayMs: 30000, maxAttempts: 10 } }
+      }], { createIfMissing: true });
+      await writeFile(join(home2, ".claude.json"), JSON.stringify({
+        mcpServers: { "unity-mcp": { command: "node", args: ["--offline", "u-server.js"] } }
+      }), "utf8");
+      const warns28 = [];
+      const origWarn28 = ctx2.logger.warn;
+      ctx2.logger.warn = (msg) => { warns28.push(String(msg)); };
+      try {
+        ctx2.agentsList.push(fakeAgent("session-j", dir6));
+        await registry2.reconcileNow();
+        assert.ok(
+          await waitForDiag(dir6, (rows) => rows.some((r) => r.kind === "scan" && Array.isArray(r.shadowedIdentity)
+            && r.shadowedIdentity.some((s) => s.name === "unity-mcp" && s.winner === "unityMCP" && s.reason === "normname"))),
+          "scan diag reports the identity shadow with winner and reason");
+        assert.ok(warns28.some((w) => w.includes('跳过重复服务定义 "unity-mcp"')), "dup definition warned once: " + JSON.stringify(warns28.slice(-3)));
+        assert.ok(await registry2.waitForState(dir6, "unityMCP", (state) => state?.phase === "active", 5000), "the yml twin mounts in proj6");
+        const snap28 = await registry2.snapshot();
+        const part6 = snap28.find((file) => file.project === dir6 && file.source === "yml");
+        assert.ok(part6 !== undefined && part6.servers.length === 1 && part6.servers[0].serverName === "unityMCP", "proj6 serves exactly the yml definition");
+      } finally {
+        ctx2.logger.warn = origWarn28;
+      }
+      pass("registry dedups the same service across layers and reports the shadowed twin");
+    }
 
     // 场景 24 的 unlink 会留下防抖后的迟到 reconcile 与 chokidar 内部重扫：
     // 先让队列落空再关 watcher，否则 close 与临时目录删除赛跑、句柄不释放。

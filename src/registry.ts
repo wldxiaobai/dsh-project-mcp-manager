@@ -56,6 +56,7 @@ import {
   expandEnvRefs,
   inputFromPatchRow,
   mcpServerInputSchema,
+  configFromPatchRow,
   patchRowToView,
   projectKeyOf,
   serverNameFromRowId,
@@ -206,27 +207,90 @@ function normalizePathKey(path: string): string {
 
 const SOURCE_RANK: Record<McpRowSource, number> = { yml: 0, "cc-project": 1, "user-yml": 2, "cc-user": 3 };
 
+/** 服务身份键：stdio 看「可执行文件 + 参数」，http 看 url。command/url 缺失或为空的行
+ * 不注册身份键（disabled 占名行常无 config，只占名字不冒充服务）。Windows 下路径大小写
+ * 不敏感，command 统一小写；args 逐项字符串化后以 \0 连接（顺序与内容都要求一致）。 */
+function serviceIdentityKey(item: SourcedRow): string | undefined {
+  const config = configFromPatchRow(item.row);
+  if (config === undefined) return undefined;
+  if (config.transport === "streamable-http") {
+    return typeof config.url === "string" && config.url !== "" ? "h\0" + config.url : undefined;
+  }
+  if (config.transport === "stdio") {
+    if (typeof config.command !== "string" || config.command === "") return undefined;
+    const command = process.platform === "win32" ? config.command.toLowerCase() : config.command;
+    const args = Array.isArray(config.args) ? config.args.map((arg) => String(arg)).join("\0") : "";
+    return "s\0" + command + "\0" + args;
+  }
+  return undefined;
+}
+
+/** 归一名键：小写并去掉非字母数字后同名视为同一服务（unityMCP 与 unity-mcp 是一个
+ * 服务器的两种写法，真实事故对）；归一后为空串的原始名不注册该键。 */
+function normalizedNameKey(rawName: string): string | undefined {
+  const norm = rawName.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return norm === "" ? undefined : norm;
+}
+
+/** 被身份/归一名去重剔除的行：loser 原名、winner 原名、命中维度。 */
+export interface IdentityShadow {
+  name: string;
+  winner: string;
+  reason: "identity" | "normname";
+}
+
 /**
- * 多来源行按优先序合并（数组顺序=优先序，先到先得；后到同名行为被遮蔽）。
+ * 多来源行按优先序合并（数组顺序=优先序，先到先得；后到重复行为被遮蔽）。
+ * 三把遮蔽键同时先到先得：精确原名、归一名（normalizedNameKey）、服务身份
+ * （serviceIdentityKey）。disabled 占名行照样注册三键——给低层行提供
+ * 「占名退出」手段，但本身不进 rows。
  * shadowedOwnCc：被项目 yml 遮蔽的项目 .mcp.json 行；shadowedUser：被任一项目
- * 自身行遮蔽的用户层行。纯函数，供测试。
+ * 自身行遮蔽的用户层行（含身份/归一名命中）；shadowedIdentity：被归一名或
+ * 身份键去重剔除的行明细。纯函数，供测试。
  */
-export function mergeSourcedRows(candidates: SourcedRow[][]): { rows: DesiredProjectRow[]; shadowedOwnCc: string[]; shadowedUser: string[] } {
+export function mergeSourcedRows(candidates: SourcedRow[][]): {
+  rows: DesiredProjectRow[];
+  shadowedOwnCc: string[];
+  shadowedUser: string[];
+  shadowedIdentity: IdentityShadow[];
+} {
   const byName = new Map<string, SourcedRow>();
+  const byNorm = new Map<string, SourcedRow>();
+  const byIdentity = new Map<string, SourcedRow>();
   const shadowedOwnCc: string[] = [];
   const shadowedUser: string[] = [];
+  const shadowedIdentity: IdentityShadow[] = [];
+  const classifyShadow = (item: SourcedRow, winner: SourcedRow) => {
+    if (item.source === "cc-project" && winner.source === "yml") {
+      if (!shadowedOwnCc.includes(item.rawName)) shadowedOwnCc.push(item.rawName);
+    } else if (SOURCE_RANK[item.source] >= 2 && SOURCE_RANK[winner.source] <= 1) {
+      if (!shadowedUser.includes(item.rawName)) shadowedUser.push(item.rawName);
+    }
+  };
   for (const list of candidates) {
     for (const item of list) {
       const winner = byName.get(item.rawName);
       if (winner !== undefined) {
-        if (item.source === "cc-project" && winner.source === "yml") {
-          if (!shadowedOwnCc.includes(item.rawName)) shadowedOwnCc.push(item.rawName);
-        } else if (SOURCE_RANK[item.source] >= 2 && SOURCE_RANK[winner.source] <= 1) {
-          if (!shadowedUser.includes(item.rawName)) shadowedUser.push(item.rawName);
-        }
+        classifyShadow(item, winner);
+        continue;
+      }
+      const normKey = normalizedNameKey(item.rawName);
+      const idKey = serviceIdentityKey(item);
+      const normWinner = normKey === undefined ? undefined : byNorm.get(normKey);
+      const idWinner = idKey === undefined ? undefined : byIdentity.get(idKey);
+      const dupWinner = normWinner ?? idWinner;
+      if (dupWinner !== undefined) {
+        shadowedIdentity.push({
+          name: item.rawName,
+          winner: dupWinner.rawName,
+          reason: normWinner !== undefined ? "normname" : "identity"
+        });
+        classifyShadow(item, dupWinner);
         continue;
       }
       byName.set(item.rawName, item);
+      if (normKey !== undefined) byNorm.set(normKey, item);
+      if (idKey !== undefined) byIdentity.set(idKey, item);
     }
   }
   return {
@@ -234,7 +298,8 @@ export function mergeSourcedRows(candidates: SourcedRow[][]): { rows: DesiredPro
       .filter((item) => item.disabled !== true)
       .map((item) => ({ rawName: item.rawName, row: item.row, source: item.source })),
     shadowedOwnCc,
-    shadowedUser
+    shadowedUser,
+    shadowedIdentity
   };
 }
 
@@ -589,13 +654,18 @@ export class ProjectMcpRegistry {
         : { rows: [], entryErrors: [] };
       // 影子优先级：项目 mcp.yml > 项目 .mcp.json > 用户 ~/.dsh/mcp.yml > 用户 ~/.claude.json。
       const merged = mergeSourcedRows([yml.rows, cc.rows, this.userLayer.ymlRows, this.userLayer.cc?.rows ?? []]);
+      // 跨来源同服务去重告警：unityMCP 与 unity-mcp 这类「一个服务器两个名字」的
+      // 冗余定义，只装载高优先级层一条，被剔除的必须可见，不能静默消失。
+      for (const shadow of merged.shadowedIdentity) {
+        this.ctx.logger.warn(`项目 MCP（${projectRoot}）：跳过重复服务定义 "${shadow.name}"（与 "${shadow.winner}" 为同一服务，${shadow.reason === "normname" ? "归一化名称相同" : "命令与参数相同"}，按层优先级保留高优先级定义）`);
+      }
       const ownRows = merged.rows.filter((row) => row.source === "yml" || row.source === "cc-project");
       // 源级隔离：某个源坏了只清空该源的 rows（读取器已保证），其余源照常进
       // desired。绝不能整项目一票否决——那会把坏文件的代价转嫁给好文件的行。
       desiredByProject.set(key, { projectRoot, rows: merged.rows });
       // 诊断只记有信息量的扫描：异常，或确实解析出了项目自身配置行。干净且无配置的
       // 项目不写任何记录——用户层行落到每个项目不算该项目的事件。
-      if (!yml.ok || ownRows.length > 0 || cc.fileError !== undefined || cc.entryErrors.length > 0 || merged.shadowedOwnCc.length > 0 || merged.shadowedUser.length > 0) {
+      if (!yml.ok || ownRows.length > 0 || cc.fileError !== undefined || cc.entryErrors.length > 0 || merged.shadowedOwnCc.length > 0 || merged.shadowedUser.length > 0 || merged.shadowedIdentity.length > 0) {
         await this.writeDiag(projectRoot, {
           kind: "scan",
           ok: yml.ok && cc.fileError === undefined,
@@ -603,6 +673,7 @@ export class ProjectMcpRegistry {
           rows: ownRows.map((row) => row.rawName),
           ...(merged.shadowedOwnCc.length > 0 ? { shadowedByYml: merged.shadowedOwnCc } : {}),
           ...(merged.shadowedUser.length > 0 ? { shadowedByProject: merged.shadowedUser } : {}),
+          ...(merged.shadowedIdentity.length > 0 ? { shadowedIdentity: merged.shadowedIdentity } : {}),
           ...(cc.entryErrors.length > 0 ? { ccEntryErrors: cc.entryErrors } : {})
         });
       }
