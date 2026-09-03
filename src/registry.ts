@@ -261,6 +261,14 @@ function classifyShadow(item: SourcedRow, winner: SourcedRow, buckets: ShadowBuc
   else if (SOURCE_RANK[item.source] >= 2 && SOURCE_RANK[winner.source] <= 1) pushUnique(buckets.shadowedUser, item.rawName);
 }
 
+/** 剔除集签名：排序后逐条 name\0winner\0reason 拼接，供「集合变了才告警」比较。 */
+function identityShadowSignature(shadows: IdentityShadow[]): string {
+  return shadows
+    .map((shadow) => shadow.name + "\u0000" + shadow.winner + "\u0000" + shadow.reason)
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+    .join("\u0001");
+}
+
 /** 单行三键先到先得：命中已有影子键则归因剔除，否则注册进影子表（disabled 占名行也注册）。 */
 function mergeOneRow(item: SourcedRow, byName: Map<string, SourcedRow>, byNorm: Map<string, SourcedRow>, byIdentity: Map<string, SourcedRow>, buckets: ShadowBuckets): void {
   const winner = byName.get(item.rawName);
@@ -366,6 +374,8 @@ export class ProjectMcpRegistry {
   private ccUserFanoutWarned = false;
   /** READ 与旧 IGNORE 同时置位：「IGNORE 胜出」只告警一次。 */
   private claudeConflictWarned = false;
+  /** identity 去重告警/诊断的变更门控：projectKey → 上次对账的剔除集签名。 */
+  private readonly identityShadowSigs = new Map<string, string>();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private chain: Promise<void> = Promise.resolve();
   private disposed = false;
@@ -686,8 +696,17 @@ export class ProjectMcpRegistry {
       const merged = mergeSourcedRows([yml.rows, cc.rows, this.userLayer.ymlRows, this.userLayer.cc?.rows ?? []]);
       // 跨来源同服务去重告警：unityMCP 与 unity-mcp 这类「一个服务器两个名字」的
       // 冗余定义，只装载高优先级层一条，被剔除的必须可见，不能静默消失。
-      for (const shadow of merged.shadowedIdentity) {
-        this.ctx.logger.warn(`项目 MCP（${projectRoot}）：跳过重复服务定义 "${shadow.name}"（与 "${shadow.winner}" 为同一服务，${shadow.reason === "normname" ? "归一化名称相同" : "命令与参数相同"}，按层优先级保留高优先级定义）`);
+      // 变更门控：剔除集与上次一致就沉默——否则任何文件事件都会让每个
+      // 已知项目各刷一遍同样的告警（规模 = 对账次数 × 项目数 × 重复行数）。
+      const shadowSig = identityShadowSignature(merged.shadowedIdentity);
+      const prevShadowSig = this.identityShadowSigs.get(key);
+      const shadowChanged = shadowSig !== prevShadowSig;
+      if (shadowSig === "") this.identityShadowSigs.delete(key);
+      else this.identityShadowSigs.set(key, shadowSig);
+      if (shadowChanged) {
+        for (const shadow of merged.shadowedIdentity) {
+          this.ctx.logger.warn(`项目 MCP（${projectRoot}）：跳过重复服务定义 "${shadow.name}"（与 "${shadow.winner}" 为同一服务，${shadow.reason === "normname" ? "归一化名称相同" : "命令与参数相同"}，按层优先级保留高优先级定义）`);
+        }
       }
       const ownRows = merged.rows.filter((row) => row.source === "yml" || row.source === "cc-project");
       // 源级隔离：某个源坏了只清空该源的 rows（读取器已保证），其余源照常进
@@ -695,7 +714,7 @@ export class ProjectMcpRegistry {
       desiredByProject.set(key, { projectRoot, rows: merged.rows });
       // 诊断只记有信息量的扫描：异常，或确实解析出了项目自身配置行。干净且无配置的
       // 项目不写任何记录——用户层行落到每个项目不算该项目的事件。
-      if (!yml.ok || ownRows.length > 0 || cc.fileError !== undefined || cc.entryErrors.length > 0 || merged.shadowedOwnCc.length > 0 || merged.shadowedUser.length > 0 || merged.shadowedIdentity.length > 0) {
+      if (!yml.ok || ownRows.length > 0 || cc.fileError !== undefined || cc.entryErrors.length > 0 || merged.shadowedOwnCc.length > 0 || merged.shadowedUser.length > 0 || (merged.shadowedIdentity.length > 0 && shadowChanged)) {
         await this.writeDiag(projectRoot, {
           kind: "scan",
           ok: yml.ok && cc.fileError === undefined,

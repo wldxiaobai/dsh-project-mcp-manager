@@ -796,11 +796,31 @@ try {
           await waitForDiag(dir6, (rows) => rows.some((r) => r.kind === "scan" && Array.isArray(r.shadowedIdentity)
             && r.shadowedIdentity.some((s) => s.name === "unity-mcp" && s.winner === "unityMCP" && s.reason === "normname"))),
           "scan diag reports the identity shadow with winner and reason");
-        assert.ok(warns28.some((w) => w.includes('跳过重复服务定义 "unity-mcp"')), "dup definition warned once: " + JSON.stringify(warns28.slice(-3)));
+        assert.ok(warns28.some((w) => w.includes('跳过重复服务定义 "unity-mcp"')), "dup definition warned on the first reconcile: " + JSON.stringify(warns28.slice(-3)));
         assert.ok(await registry2.waitForState(dir6, "unityMCP", (state) => state?.phase === "active", 5000), "the yml twin mounts in proj6");
         const snap28 = await registry2.snapshot();
         const part6 = snap28.find((file) => file.project === dir6 && file.source === "yml");
         assert.ok(part6 !== undefined && part6.servers.length === 1 && part6.servers[0].serverName === "unityMCP", "proj6 serves exactly the yml definition");
+        // 变更门控（P1-2 回归）：剔除集稳定就不得每次对账各刷一遍；集合真正
+        // 变化（清零→再出现）才重新告警。
+        const dup28 = () => warns28.filter((w) => w.includes('跳过重复服务定义 "unity-mcp"')).length;
+        assert.equal(dup28(), 1, "identity dedup warned exactly on first sight");
+        await registry2.reconcileNow();
+        await registry2.reconcileNow();
+        assert.equal(dup28(), 1, "stable shadow set stays silent across reconciles");
+        const cu28 = JSON.parse(await readFile(join(home2, ".claude.json"), "utf8"));
+        const cpuUnity28 = cu28.mcpServers["unity-mcp"];
+        delete cu28.mcpServers["unity-mcp"];
+        cu28.mcpServers["distinct-28"] = { command: "node", args: ["u-server.js", "extra"] };
+        await writeFile(join(home2, ".claude.json"), JSON.stringify(cu28), "utf8");
+        await registry2.reconcileNow();
+        assert.equal(dup28(), 1, "clearing the shadow alone must not warn");
+        assert.ok(await registry2.waitForState(dir6, "distinct-28", (state) => state?.phase === "active", 5000), "the replacement server mounts once the shadow is gone");
+        cu28.mcpServers["unity-mcp"] = cpuUnity28;
+        delete cu28.mcpServers["distinct-28"];
+        await writeFile(join(home2, ".claude.json"), JSON.stringify(cu28), "utf8");
+        await registry2.reconcileNow();
+        assert.equal(dup28(), 2, "a changed shadow set re-arms the dedup warning");
       } finally {
         ctx2.logger.warn = origWarn28;
       }

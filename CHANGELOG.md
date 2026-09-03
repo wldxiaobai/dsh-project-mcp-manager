@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   legacy switch (the documented remedy). Previously the latch only reset on
   the path where the opt-in itself was removed, so a second conflict went
   silent.
+- Identity dedup warnings (`跳过重复服务定义 "x"`) now use a per-project
+  shadow-set signature gate: they fire when the set of shadowed rows changes,
+  not on every reconcile. Previously any file event caused one warning per
+  project per shadowed row per reconcile cycle.
 
 ## [0.3.0] - 2026-09-03
 
