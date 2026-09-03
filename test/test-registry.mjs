@@ -369,7 +369,7 @@ try {
       mcpServers: {
         alpha: { command: "node", args: ["a-cc.js"] },
         beta: { command: "${CC_TEST_BIN}", args: [], env: { T: "${CC_TEST_MISSING}" } },
-        bad: { type: "sse", url: "http://example/" }
+        bad: { type: "sse", url: "https://example/" }
       }
     }), "utf8");
     await writeFile(join(home2, ".claude.json"), JSON.stringify({

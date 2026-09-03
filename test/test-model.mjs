@@ -187,11 +187,11 @@ assert.equal(isUrlOrEnvRef("https://${HOST}/mcp"), true, "串内占位（host �
 assert.equal(isUrlOrEnvRef("${GATEWAY}/mcp"), true, "README 的网关前缀占位写法不得在装载前被拒");
 assert.equal(isUrlOrEnvRef("http://localhost:3000/mcp"), true);
 assert.equal(isUrlOrEnvRef("not-url"), false);
-const mixedUrl = mcpServerInputSchema.parse({ serverName: "h", transport: "streamable-http", url: "http://x/${PART}" });
+const mixedUrl = mcpServerInputSchema.parse({ serverName: "h", transport: "streamable-http", url: "https://x/${PART}" });
 assert.deepEqual(expandEnvRefs(mixedUrl, {}), { ok: false, missingVar: "PART" });
 const mixedOk = expandEnvRefs(mixedUrl, { PART: "seg" });
 assert.equal(mixedOk.ok, true);
-assert.equal(mixedOk.input.url, "http://x/seg");
+assert.equal(mixedOk.input.url, "https://x/seg");
 const httpRef = mcpServerInputSchema.parse({
   serverName: "h", transport: "streamable-http", url: "${URL}", headers: { Authorization: "Bearer ${TOK}", X: "${TOK}" }
 });

@@ -39,7 +39,7 @@ try {
   // 1. add stdio（含多 args、env、-- 透传），写进项目 yml
   {
     const cap = io();
-    const code = await runCli(["add", "fs", "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp/data", "-e", "TOKEN=${API_TOKEN}", "--", "extra"], cap.io, deps);
+    const code = await runCli(["add", "fs", "npx", "-y", "@modelcontextprotocol/server-filesystem", "/srv/data", "-e", "TOKEN=${API_TOKEN}", "--", "extra"], cap.io, deps);
     assert.equal(code, 0, cap.errs.join("\n"));
     const raw = await readFile(projectYml, "utf8");
     assert.ok(raw.includes("serverName: fs"), "managed block written");
@@ -74,7 +74,7 @@ try {
     assert.equal(await runCli(["add", "bad name!", "node"], cap.io, deps), 1, "invalid server name rejected");
     assert.ok(cap.errs.join("\n").includes("配置无效"));
     const cap2 = io();
-    assert.equal(await runCli(["add", "-t", "sse", "x", "http://e/"], cap2.io, deps), 1, "sse rejected");
+    assert.equal(await runCli(["add", "-t", "sse", "x", "https://e/"], cap2.io, deps), 1, "sse rejected");
     assert.ok(cap2.errs.join("\n").includes("sse"));
     const cap3 = io();
     assert.equal(await runCli(["add", "y", "node", "--scope", "local"], cap3.io, deps), 1, "local scope guidance");
@@ -92,7 +92,7 @@ try {
     const cap = io();
     assert.equal(await runCli(["list"], cap.io, deps), 0);
     const text = cap.lines.join("\n");
-    assert.ok(text.includes("fs: npx -y @modelcontextprotocol/server-filesystem /tmp/data extra (stdio) -- project (.dsh/mcp.yml)"), "project yml row shown with target: " + text);
+    assert.ok(text.includes("fs: npx -y @modelcontextprotocol/server-filesystem /srv/data extra (stdio) -- project (.dsh/mcp.yml)"), "project yml row shown with target: " + text);
     assert.ok(text.includes("ccserver: node shadowed.js") === false, "cc shadowed entry uses yml winner label");
     const fsLines = cap.lines.filter((line) => line.startsWith("  fs:"));
     assert.equal(fsLines.length, 2, "both fs rows listed (winner + shadowed)");
