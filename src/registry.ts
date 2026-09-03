@@ -1074,13 +1074,17 @@ export class ProjectMcpRegistry {
     const view = patchRowToView(located.row, { kind: "workspace", path: projectRoot });
     if (view === undefined) return undefined;
     const effectiveName = this.effective.get(key + "\u0000" + rawName);
+    // owned：装载实例确实来自这条行所在的那个源（与分区视图 partitionServers 的
+    // state?.source === source 同一口径）。异来源实例挂在同一个 rawName 上时，
+    // 本行是被遮蔽方——phase 走 null，toolCount 不借用别源的装载数据。
+    const owned = state?.source === located.source;
     return {
       ...view,
       ...(located.source === undefined ? {} : { source: located.source }),
       ...(effectiveName === undefined ? {} : { effectiveServerName: effectiveName }),
-      fiberPhase: fiberPhaseFor(state, located.row, true),
+      fiberPhase: fiberPhaseFor(state, located.row, owned),
       skipReason: skipReasonFor(this.skipReasons, key, rawName, state, located.row) ?? null,
-      toolCount: state?.phase === "active" ? mcpToolCount(this.ctx, state.effectiveName) : 0
+      toolCount: owned && state?.phase === "active" ? mcpToolCount(this.ctx, state.effectiveName) : 0
     };
   }
 

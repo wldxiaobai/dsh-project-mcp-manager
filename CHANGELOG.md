@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cross-layer dedup (normalized-name or service identity, not just exact
   name), by running `mergeSourcedRows` over the same four layers — the CLI
   view and what actually mounts no longer disagree.
+- `serverView()` no longer hardwires the mount-ownership flag: `fiberPhase`
+  and `toolCount` now require the located row's source to own the mounted
+  instance (same rule as the partition view), so a row that does not back the
+  live mount no longer borrows the winner's phase and tool count.
 
 ### Changed
 

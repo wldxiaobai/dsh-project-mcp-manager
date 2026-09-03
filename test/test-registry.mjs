@@ -801,6 +801,11 @@ try {
         const snap28 = await registry2.snapshot();
         const part6 = snap28.find((file) => file.project === dir6 && file.source === "yml");
         assert.ok(part6 !== undefined && part6.servers.length === 1 && part6.servers[0].serverName === "unityMCP", "proj6 serves exactly the yml definition");
+        // serverView（P2-6）：单行视图同样只给「本行拥有装载实例」的生命周期与工具数。
+        const view6 = await registry2.serverView(dir6, "unityMCP");
+        assert.ok(view6 !== undefined && view6.fiberPhase === "active" && view6.source === "yml", "serverView shows the owning yml row as mounted");
+        const viewCpu = await registry2.serverView(dir6, "unity-mcp");
+        assert.ok(viewCpu !== undefined && viewCpu.fiberPhase === "pending" && viewCpu.toolCount === 0, "the deduped row is never shown as loaded");
         // 变更门控（P1-2 回归）：剔除集稳定就不得每次对账各刷一遍；集合真正
         // 变化（清零→再出现）才重新告警。
         const dup28 = () => warns28.filter((w) => w.includes('跳过重复服务定义 "unity-mcp"')).length;
