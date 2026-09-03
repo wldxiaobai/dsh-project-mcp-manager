@@ -135,7 +135,7 @@ export interface ProjectChangePlan {
 function canonicalConfig(config: Record<string, unknown> | undefined): string {
   return JSON.stringify(config ?? null, (key, value) => {
     if (value !== null && typeof value === "object" && !Array.isArray(value)) {
-      return Object.keys(value).sort().reduce((acc: Record<string, unknown>, k) => {
+      return Object.keys(value).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).reduce((acc: Record<string, unknown>, k) => {
         acc[k] = (value as Record<string, unknown>)[k];
         return acc;
       }, {});
@@ -459,7 +459,7 @@ export class ProjectMcpRegistry {
 
   private async syncWatcher() {
     const roots = await this.knownProjects();
-    const keys = roots.map((root) => projectKeyOf(root)).sort();
+    const keys = roots.map((root) => projectKeyOf(root)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     const same = this.watchedFiles.length === keys.length && keys.every((key, index) => key === this.watchedFiles[index]);
     if (same) return;
     const old = this.watcher;
@@ -570,7 +570,8 @@ export class ProjectMcpRegistry {
     const paths = this.resolveUserLayerPaths();
     // 只监听这两个具体文件本身；未启用的 ~/.claude.json 连监听都不建。
     const targets = claudeUserLayerEnabled() ? [paths.mcpYml, paths.claudeJson] : [paths.mcpYml];
-    const keys = targets.map((target) => normalizePathKey(target)).sort();
+    // 码元序显式比较器：排序只用于跨轮次相等性比较，须与 locale 无关保持稳定。
+    const keys = targets.map((target) => normalizePathKey(target)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     const same = this.userWatchedPaths.length === keys.length && keys.every((key, index) => key === this.userWatchedPaths[index]);
     if (same) return;
     const old = this.userWatcher;

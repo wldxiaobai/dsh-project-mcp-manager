@@ -80,7 +80,8 @@ export interface CcReadResult {
 export function canonicalJsonString(value: unknown): string {
   return JSON.stringify(value, (_key, item) => {
     if (item !== null && typeof item === "object" && !Array.isArray(item)) {
-      return Object.keys(item as object).sort().reduce((acc: Record<string, unknown>, k) => {
+      // 码元序是刻意选择：serversHash 门要求跨环境稳定，locale 排序会改变既有哈希。
+      return Object.keys(item as object).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).reduce((acc: Record<string, unknown>, k) => {
         acc[k] = (item as Record<string, unknown>)[k];
         return acc;
       }, {});

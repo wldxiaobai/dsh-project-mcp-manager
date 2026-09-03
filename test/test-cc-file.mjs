@@ -91,7 +91,7 @@ try {
   }));
   const r3b = await readMcpJsonFile(p3b, "/work/proj");
   assert.deepEqual(r3b.entryErrors, [], "off flags must be silent, url-only must not error as missing-command");
-  assert.deepEqual(r3b.rows.map((row) => row.rawName).sort(), ["full-name", "off-truthy", "url-only"]);
+  assert.deepEqual(r3b.rows.map((row) => row.rawName).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)), ["full-name", "off-truthy", "url-only"]);
   assert.equal(r3b.rows.find((row) => row.rawName === "url-only").row.config.transport, "streamable-http");
   assert.equal(r3b.rows.find((row) => row.rawName === "full-name").row.config.transport, "streamable-http");
   pass("enabled:false / disabled:true skipped silently; url inferred as http; streamable-http type accepted");

@@ -115,7 +115,7 @@ function fakeAgent(id, cwd) {
     ctx: {
       tools: {
         restrict({ deny }) {
-          denies.push([...deny].sort());
+          denies.push([...deny].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
           return () => {};
         }
       }
@@ -387,7 +387,7 @@ try {
     await registry2.reconcileNow();
 
     // 10. 装载集合：cc-project(alpha)+cc-user(gamma) 生效；beta 因缺变量跳过、bad(sse) 拒载、localonly 不读
-    const names10 = ctx2.mounts.map((config) => config.serverName).sort();
+    const names10 = ctx2.mounts.map((config) => config.serverName).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     assert.deepEqual(names10, ["alpha", "gamma"], "CC project+user rows mount; sse and missing-env rows do not; local scope excluded");
     const alpha10 = ctx2.mounts.find((config) => config.serverName === "alpha");
     assert.equal(alpha10.cwd, dir2, "CC stdio cwd defaults to project root");
@@ -401,7 +401,7 @@ try {
     assert.equal(snap11.find((file) => file.path === projectMcpFile(dir2)), undefined, "absent project yml yields no partition");
     const ccPart11 = snap11.find((file) => file.source === "cc-project");
     assert.ok(ccPart11 !== undefined && ccPart11.project === dir2);
-    assert.deepEqual(ccPart11.servers.map((server) => server.serverName).sort(), ["alpha", "beta"]);
+    assert.deepEqual(ccPart11.servers.map((server) => server.serverName).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)), ["alpha", "beta"]);
     assert.ok(Array.isArray(ccPart11.entryErrors) && ccPart11.entryErrors.some((note) => note.includes("bad")));
     const betaView11 = ccPart11.servers.find((server) => server.serverName === "beta");
     assert.equal(betaView11.fiberPhase, "pending", "fiberPhase stays on the lifecycle vocabulary");
