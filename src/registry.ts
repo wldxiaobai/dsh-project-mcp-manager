@@ -293,13 +293,13 @@ function mergeOneRow(item: SourcedRow, byName: Map<string, SourcedRow>, byNorm: 
 }
 
 /** fiberPhase 展示推导：未装载时 disabled 占名→null、否则 pending；已装载且本分区拥有该实例才给生命周期枚举。 */
-function fiberPhaseFor(state: any, row: PatchRow, owned: boolean): unknown {
+function fiberPhaseFor(state: ProjectServerState | undefined, row: PatchRow, owned: boolean): unknown {
   if (state === undefined) return row.disabled === true ? null : "pending";
   return owned ? phaseToFiberPhase(state.phase) : null;
 }
 
 /** 跳过原因只在「无装载实例且该行不是 disabled 占名行」时有值。 */
-function skipReasonFor(skipReasons: Map<string, string>, key: string, rawName: string, state: any, row: PatchRow): string | undefined {
+function skipReasonFor(skipReasons: Map<string, string>, key: string, rawName: string, state: ProjectServerState | undefined, row: PatchRow): string | undefined {
   if (state !== undefined || row.disabled === true) return undefined;
   return skipReasons.get(key + "\u0000" + rawName);
 }
@@ -1044,7 +1044,7 @@ export class ProjectMcpRegistry {
   }
 
   /** 行级 view 的逐层影子优先查找：项目 yml > 项目 .mcp.json > 用户 yml > cc-user > 装载残留态。 */
-  private async locateRow(projectRoot: string, rawName: string, state?: any): Promise<{ row?: PatchRow; source?: McpRowSource }> {
+  private async locateRow(projectRoot: string, rawName: string, state?: ProjectServerState): Promise<{ row?: PatchRow; source?: McpRowSource }> {
     try {
       const raw = await readPatchFile(projectMcpFile(projectRoot));
       const ymlRow = extractManagedRows(raw).find((candidate) => rowNameOf(candidate) === rawName);
