@@ -18,7 +18,7 @@ import { pathToFileURL } from "node:url";
 import { mkdir } from "node:fs/promises";
 import { extractManagedRows, readPatchFile, writeManagedRows, type PatchRow } from "./mcp-file.js";
 import { mcpServerInputSchema, patchRowToView, serverNameFromRowId, toPatchRow, type McpServerInput } from "./model.js";
-import { CC_PROJECT_FILE, CLAUDE_USER_FILE, IGNORE_CLAUDE_JSON_ENV, readClaudeUserFile, readMcpJsonFile, type McpRowSource } from "./cc-file.js";
+import { CC_PROJECT_FILE, CLAUDE_USER_FILE, IGNORE_MCP_JSON_ENV, READ_CLAUDE_USER_ENV, claudeUserLayerEnabled, mcpJsonLayerEnabled, readClaudeUserFile, readMcpJsonFile, type McpRowSource } from "./cc-file.js";
 import { findProjectRoot } from "./project-root.js";
 
 export interface CliIo {
@@ -187,14 +187,16 @@ async function collectLayers(deps: CliDeps): Promise<LayerRows[]> {
     if (!message.includes("ENOENT")) ymlNote = `读取失败：${message}`;
   }
   layers.push({ source: "yml", path: join(projectRoot, ".dsh", "mcp.yml"), rows: ymlRows, ...(ymlNote ? { note: ymlNote } : {}) });
-  // 2) 项目 .mcp.json（只读兼容层）
-  const cc = await readMcpJsonFile(join(projectRoot, CC_PROJECT_FILE), projectRoot);
-  layers.push({
-    source: "cc-project",
-    path: join(projectRoot, CC_PROJECT_FILE),
-    rows: cc.rows.map((r) => ({ name: r.rawName, row: r.row })),
-    ...(cc.fileError ? { note: `读取失败：${cc.fileError}` } : cc.entryErrors.length > 0 ? { note: `坏条目：${cc.entryErrors.join("；")}` } : {})
-  });
+  // 2) 项目 .mcp.json（只读兼容层；DSH_MCP_IGNORE_MCP_JSON=1 关闭后整层不出现）
+  if (mcpJsonLayerEnabled()) {
+    const cc = await readMcpJsonFile(join(projectRoot, CC_PROJECT_FILE), projectRoot);
+    layers.push({
+      source: "cc-project",
+      path: join(projectRoot, CC_PROJECT_FILE),
+      rows: cc.rows.map((r) => ({ name: r.rawName, row: r.row })),
+      ...(cc.fileError ? { note: `读取失败：${cc.fileError}` } : cc.entryErrors.length > 0 ? { note: `坏条目：${cc.entryErrors.join("；")}` } : {})
+    });
+  }
   // 3) 用户 ~/.dsh/mcp.yml
   const userYml: { name: string; row: PatchRow }[] = [];
   let userYmlNote: string | undefined;
@@ -208,8 +210,9 @@ async function collectLayers(deps: CliDeps): Promise<LayerRows[]> {
     if (!message.includes("ENOENT")) userYmlNote = `读取失败：${message}`;
   }
   layers.push({ source: "user-yml", path: join(home, ".dsh", "mcp.yml"), rows: userYml, ...(userYmlNote ? { note: userYmlNote } : {}) });
-  // 4) 用户 ~/.claude.json（allowlist 只读；受 DSH_MCP_IGNORE_CLAUDE_JSON 开关控制）
-  if (process.env[IGNORE_CLAUDE_JSON_ENV] !== "1") {
+  // 4) 用户 ~/.claude.json（allowlist 只读；默认关闭，DSH_MCP_READ_CLAUDE_USER=1 启用，
+  // 旧开关 DSH_MCP_IGNORE_CLAUDE_JSON=1 强制关闭）
+  if (claudeUserLayerEnabled()) {
     const cu = await readClaudeUserFile(join(home, CLAUDE_USER_FILE));
     layers.push({
       source: "cc-user",
@@ -280,6 +283,8 @@ export async function runCli(argv: string[], io: CliIo, deps: CliDeps = {}): Pro
 
   if (command === "list") {
     const allLayers = await collectLayers(deps);
+    const cu = allLayers.find((layer) => layer.source === "cc-user");
+    if (cu !== undefined && cu.rows.length > 0) io.out(`提示：cc-user 层已启用（${READ_CLAUDE_USER_ENV}=1），~/${CLAUDE_USER_FILE} 的 ${cu.rows.length} 条服务器将并入各项目的生效集合。`);
     const layers = parsed.scope === undefined
       ? allLayers
       : allLayers.filter((layer) => (parsed.scope === "project" ? layer.source === "yml" || layer.source === "cc-project" : layer.source === "user-yml" || layer.source === "cc-user"));
@@ -305,7 +310,12 @@ export async function runCli(argv: string[], io: CliIo, deps: CliDeps = {}): Pro
     if (name === undefined) return fail(io, "用法：dsh-mcp get <name>");
     const layers = await collectLayers(deps);
     const found = layers.flatMap((layer) => layer.rows.filter((r) => r.name === name).map((r) => ({ ...r, layer })));
-    if (found.length === 0) return fail(io, `未找到服务器 "${name}"（已查 .dsh/mcp.yml、${CC_PROJECT_FILE}、~/.dsh/mcp.yml、~/${CLAUDE_USER_FILE}）`);
+    if (found.length === 0) {
+      const offNotes: string[] = [];
+      if (!mcpJsonLayerEnabled()) offNotes.push(`${CC_PROJECT_FILE} 层已停用（${IGNORE_MCP_JSON_ENV}=1）`);
+      if (!claudeUserLayerEnabled()) offNotes.push(`~/${CLAUDE_USER_FILE} 层未启用（设 ${READ_CLAUDE_USER_ENV}=1 才读取）`);
+      return fail(io, `未找到服务器 "${name}"（已查 .dsh/mcp.yml、${CC_PROJECT_FILE}、~/.dsh/mcp.yml、~/${CLAUDE_USER_FILE}${offNotes.length > 0 ? "；" + offNotes.join("；") : ""}）`);
+    }
     const winner = found[0];
     io.out(`Name:     ${name}`);
     io.out(`Source:   ${SOURCE_LABEL[winner.layer.source]}`);

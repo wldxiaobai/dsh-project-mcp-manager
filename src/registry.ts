@@ -39,6 +39,10 @@ import {
   CC_PROJECT_FILE,
   CLAUDE_USER_FILE,
   IGNORE_CLAUDE_JSON_ENV,
+  READ_CLAUDE_USER_ENV,
+  claudeUserLayerConflict,
+  claudeUserLayerEnabled,
+  mcpJsonLayerEnabled,
   readClaudeUserFile,
   readMcpJsonFile,
   type CcReadResult,
@@ -268,6 +272,10 @@ export class ProjectMcpRegistry {
     cc: CcReadResult | null;
   } = { mcpYml: "", claudeJson: "", ymlRows: [], ymlError: null, cc: null };
   private reconcileCount = 0;
+  /** cc-user 扇出警示：内容由无行变有行后提示一次「每项目各挂一条」。 */
+  private ccUserFanoutWarned = false;
+  /** READ 与旧 IGNORE 同时置位：「IGNORE 胜出」只告警一次。 */
+  private claudeConflictWarned = false;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private chain: Promise<void> = Promise.resolve();
   private disposed = false;
@@ -410,7 +418,7 @@ export class ProjectMcpRegistry {
     const ymlFiles = new Set(roots.map((root) => normalizePathKey(projectMcpFile(root))));
     const kick = (path: string) => {
       const key = normalizePathKey(path);
-      if (ymlFiles.has(key) || ccFiles.has(key)) this.kick();
+      if (ymlFiles.has(key) || (ccFiles.has(key) && mcpJsonLayerEnabled())) this.kick();
     };
     watcher.on("add", kick);
     watcher.on("change", kick);
@@ -465,9 +473,19 @@ export class ProjectMcpRegistry {
     const paths = this.resolveUserLayerPaths();
     const yml = await this.readNativeRows(paths.mcpYml, "user-yml", false);
     let cc: CcReadResult | null = null;
-    if (process.env[IGNORE_CLAUDE_JSON_ENV] !== "1") {
+    // cc-user 默认关闭：CC 用户级配置是机器环境级外部状态，显式
+    // DSH_MCP_READ_CLAUDE_USER=1 才读；旧 IGNORE 开关强制关闭并胜出。
+    if (claudeUserLayerEnabled()) {
       cc = await readClaudeUserFile(paths.claudeJson);
       if (cc.serversHash !== undefined) this.claudeServersHash = cc.serversHash;
+    } else if (claudeUserLayerConflict()) {
+      if (!this.claudeConflictWarned) {
+        this.claudeConflictWarned = true;
+        this.ctx.logger.warn(`用户层 MCP：${READ_CLAUDE_USER_ENV} 与 ${IGNORE_CLAUDE_JSON_ENV} 同时置位，强制关闭开关胜出，cc-user 层停用`);
+      }
+    } else {
+      // 冲突解除后重新武装：下一次再冲突还能提示一次。
+      this.claudeConflictWarned = false;
     }
     this.userLayer = { mcpYml: paths.mcpYml, claudeJson: paths.claudeJson, ymlRows: yml.rows, ymlError: yml.error, cc };
     for (const note of cc?.entryErrors ?? []) this.ctx.logger.warn(`用户层 MCP（${CLAUDE_USER_FILE}）：${note}`);
@@ -485,8 +503,8 @@ export class ProjectMcpRegistry {
    */
   private async syncUserWatcher(): Promise<void> {
     const paths = this.resolveUserLayerPaths();
-    // 只监听这两个具体文件本身；被 kill switch 关掉的 ~/.claude.json 连监听都不建。
-    const targets = process.env[IGNORE_CLAUDE_JSON_ENV] === "1" ? [paths.mcpYml] : [paths.mcpYml, paths.claudeJson];
+    // 只监听这两个具体文件本身；未启用的 ~/.claude.json 连监听都不建。
+    const targets = claudeUserLayerEnabled() ? [paths.mcpYml, paths.claudeJson] : [paths.mcpYml];
     const keys = targets.map((target) => normalizePathKey(target)).sort();
     const same = this.userWatchedPaths.length === keys.length && keys.every((key, index) => key === this.userWatchedPaths[index]);
     if (same) return;
@@ -502,7 +520,7 @@ export class ProjectMcpRegistry {
     const onEvent = (path: string) => {
       const target = normalizePathKey(path);
       if (target === normalizePathKey(paths.claudeJson)) {
-        if (process.env[IGNORE_CLAUDE_JSON_ENV] === "1") return;
+        if (!claudeUserLayerEnabled()) return;
         void this.claudeGateThenKick();
         return;
       }
@@ -551,6 +569,14 @@ export class ProjectMcpRegistry {
     await this.readUserLayer();
 
     const roots = await this.knownProjects();
+    // cc-user 扇出可见性：用户级行进入每个项目的合并集（每项目各挂一条连接），
+    // 启用时至少提示一次规模，让「为什么这个目录多了个 spawn」可解释。
+    const ccUserRows = this.userLayer.cc?.rows.length ?? 0;
+    if (ccUserRows === 0) this.ccUserFanoutWarned = false;
+    else if (!this.ccUserFanoutWarned) {
+      this.ccUserFanoutWarned = true;
+      this.ctx.logger.warn(`用户层 MCP：${CLAUDE_USER_FILE} 的 ${ccUserRows} 条服务器将并入 ${roots.length} 个已知项目各挂一条连接；不想要时取消 ${READ_CLAUDE_USER_ENV}，或在项目 .dsh/mcp.yml 用 disabled 占名行遮蔽`);
+    }
     const desiredByProject = new Map<string, { projectRoot: string; rows: DesiredProjectRow[] }>();
     for (const projectRoot of roots) {
       const key = projectKeyOf(projectRoot);
@@ -558,7 +584,9 @@ export class ProjectMcpRegistry {
       // 会把「纯用户层挂载」误判成「yml 装载后文件被删」，产生假 ENOENT 诊断。
       const hasYmlMounts = [...(this.projects.get(key)?.servers.values() ?? [])].some((state) => state.source === "yml" || state.source === undefined);
       const yml = await this.readNativeRows(projectMcpFile(projectRoot), "yml", hasYmlMounts);
-      const cc = await readMcpJsonFile(projectMcpJsonFile(projectRoot), projectRoot);
+      const cc: CcReadResult = mcpJsonLayerEnabled()
+        ? await readMcpJsonFile(projectMcpJsonFile(projectRoot), projectRoot)
+        : { rows: [], entryErrors: [] };
       // 影子优先级：项目 mcp.yml > 项目 .mcp.json > 用户 ~/.dsh/mcp.yml > 用户 ~/.claude.json。
       const merged = mergeSourcedRows([yml.rows, cc.rows, this.userLayer.ymlRows, this.userLayer.cc?.rows ?? []]);
       const ownRows = merged.rows.filter((row) => row.source === "yml" || row.source === "cc-project");
@@ -909,7 +937,7 @@ export class ProjectMcpRegistry {
     } catch {
       // 落到后续层
     }
-    if (row === undefined) {
+    if (row === undefined && mcpJsonLayerEnabled()) {
       const cc = await readMcpJsonFile(projectMcpJsonFile(projectRoot), projectRoot);
       const found = cc.rows.find((candidate) => candidate.rawName === rawName);
       if (found !== undefined) {
@@ -978,21 +1006,23 @@ export class ProjectMcpRegistry {
         if (usable) file.servers = this.partitionServers(entry, key, rows, "yml");
         out.push(file);
       }
-      // ── 项目 .mcp.json 分区 ──
-      const ccPath = projectMcpJsonFile(entry.projectRoot);
-      const cc = await readMcpJsonFile(ccPath, entry.projectRoot);
-      const ccLive = [...entry.servers.values()].some((state) => state.source === "cc-project");
-      if (cc.rows.length > 0 || cc.fileError !== undefined || cc.entryErrors.length > 0 || ccLive) {
-        const ccFile: ProjectFileState = {
-          project: entry.projectRoot,
-          path: ccPath,
-          ok: cc.fileError === undefined,
-          error: cc.fileError ?? null,
-          source: "cc-project",
-          servers: this.partitionServers(entry, key, cc.rows.map((r) => r.row), "cc-project")
-        };
-        if (cc.entryErrors.length > 0) (ccFile as any).entryErrors = cc.entryErrors;
-        out.push(ccFile);
+      // ── 项目 .mcp.json 分区（被开关关闭时整分区不出，含残留装载的情形）──
+      if (mcpJsonLayerEnabled()) {
+        const ccPath = projectMcpJsonFile(entry.projectRoot);
+        const cc = await readMcpJsonFile(ccPath, entry.projectRoot);
+        const ccLive = [...entry.servers.values()].some((state) => state.source === "cc-project");
+        if (cc.rows.length > 0 || cc.fileError !== undefined || cc.entryErrors.length > 0 || ccLive) {
+          const ccFile: ProjectFileState = {
+            project: entry.projectRoot,
+            path: ccPath,
+            ok: cc.fileError === undefined,
+            error: cc.fileError ?? null,
+            source: "cc-project",
+            servers: this.partitionServers(entry, key, cc.rows.map((r) => r.row), "cc-project")
+          };
+          if (cc.entryErrors.length > 0) (ccFile as any).entryErrors = cc.entryErrors;
+          out.push(ccFile);
+        }
       }
     }
     // ── 用户层两个分区（无 fiberPhase：装载实例按项目分布，见各项目的 servers.state.source）──

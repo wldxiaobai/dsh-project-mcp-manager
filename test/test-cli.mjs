@@ -82,6 +82,9 @@ try {
     pass("cli rejects invalid names, sse transport, and explains local scope");
   }
 
+  // 共存边界基线：cc-user 默认关闭，场景 5+ 的四层视图需要显式 opt-in
+  //（场景 10/12 各自临时切换开关验证两态）。
+  process.env.DSH_MCP_READ_CLAUDE_USER = "1";
   // 5. list：四个来源 + 遮蔽标注
   await writeFile(join(project, ".mcp.json"), JSON.stringify({ mcpServers: { fs: { command: "node", args: ["shadowed.js"] }, ccserver: { command: "node", args: [] } } }), "utf8");
   await writeFile(join(home, ".claude.json"), JSON.stringify({ oauth: {}, mcpServers: { ccuser: { type: "http", url: "https://u/mcp" } } }), "utf8");
@@ -199,7 +202,56 @@ try {
     }
     pass("cli resolves project root through real findProjectRoot (git hit and cwd fallback)");
   }
+
+  // 12. cc-user 默认关闭：不设 DSH_MCP_READ_CLAUDE_USER 时 list 无 ~/.claude.json 层，
+  // get 未命中时解释被停用的层；opt-in 恢复并给出扇出提示。
+  {
+    delete process.env.DSH_MCP_READ_CLAUDE_USER;
+    try {
+      const cap = io();
+      assert.equal(await runCli(["list"], cap.io, deps), 0);
+      const text = cap.lines.join("\n");
+      assert.ok(!text.includes("ccuser"), "cc-user rows hidden by default");
+      assert.ok(!text.includes(".claude.json"), "no cc-user layer label by default");
+      assert.ok(text.includes("psrv"), "the remaining layers still listed");
+      const cap2 = io();
+      assert.equal(await runCli(["get", "ccuser"], cap2.io, deps), 1);
+      assert.ok(cap2.errs.join("\n").includes("DSH_MCP_READ_CLAUDE_USER"), "not-found message explains the disabled layer");
+    } finally {
+      process.env.DSH_MCP_READ_CLAUDE_USER = "1";
+    }
+    const cap3 = io();
+    assert.equal(await runCli(["list"], cap3.io, deps), 0);
+    const text3 = cap3.lines.join("\n");
+    assert.ok(text3.includes("ccuser"), "opt-in brings the layer back");
+    assert.ok(text3.includes("提示：cc-user 层已启用"), "reminder printed while the layer is on");
+    pass("cli hides cc-user by default, explains it on miss, and reminds when enabled");
+  }
+
+  // 13. DSH_MCP_IGNORE_MCP_JSON=1：list 失去项目 .mcp.json 层，get 对只存在于
+  // 该层的名字指明停用开关；cc-user 层不受牵连。
+  {
+    process.env.DSH_MCP_IGNORE_MCP_JSON = "1";
+    try {
+      const cap = io();
+      assert.equal(await runCli(["list"], cap.io, deps), 0);
+      const text = cap.lines.join("\n");
+      assert.ok(!text.includes("ccserver"), "cc-project rows hidden by the switch");
+      assert.ok(text.includes("psrv"), "yml layers untouched");
+      assert.ok(text.includes("ccuser"), "cc-user layer not implicated");
+      const cap2 = io();
+      assert.equal(await runCli(["get", "ccserver"], cap2.io, deps), 1);
+      assert.ok(cap2.errs.join("\n").includes("DSH_MCP_IGNORE_MCP_JSON"), "not-found names the stopped layer");
+    } finally {
+      delete process.env.DSH_MCP_IGNORE_MCP_JSON;
+    }
+    const cap3 = io();
+    assert.equal(await runCli(["list"], cap3.io, deps), 0);
+    assert.ok(cap3.lines.join("\n").includes("ccserver"), "the layer returns once the switch is cleared");
+    pass("DSH_MCP_IGNORE_MCP_JSON hides the project .mcp.json layer from the CLI");
+  }
 } finally {
+  delete process.env.DSH_MCP_READ_CLAUDE_USER;
   await rm(dir, { recursive: true, force: true });
 }
 

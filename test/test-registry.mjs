@@ -275,6 +275,8 @@ try {
   try {
     delete process.env.CC_TEST_MISSING;
     process.env.CC_TEST_BIN = "node";
+    // 场景 10+ 的基线假定 cc-user 装载：新默认是关闭，显式 opt-in 进入基线。
+    process.env.DSH_MCP_READ_CLAUDE_USER = "1";
     process.chdir(dir2);
     await writeFile(join(dir2, ".mcp.json"), JSON.stringify({
       mcpServers: {
@@ -580,6 +582,98 @@ try {
     assert.ok(diag24.some((row) => row.kind === "scan" && row.ok === false && String(row.error).includes("ENOENT")), "deleting a live yml file still records a scan error");
     pass("absent project yml stays silent for user-layer-only mounts and stays loud for removed live yml files");
 
+    // 25. cc-user 默认关闭：不设 DSH_MCP_READ_CLAUDE_USER 时 ~/.claude.json 不读、
+    // 不看、无分区（修复前无条件读取并静默挂进每个项目——无关项目被 FastMCP 桥
+    // 反复 spawn 的根因）。opt-in 恢复装载并一次性提示扇出规模。
+    delete process.env.DSH_MCP_READ_CLAUDE_USER;
+    try {
+      const dispBefore25 = ctx2.disposals.length;
+      await registry2.reconcileNow();
+      assert.ok(ctx2.disposals.slice(dispBefore25).length >= 4, "cc-user rows unmount in every known project once the layer defaults off");
+      const snap25 = await registry2.snapshot();
+      assert.equal(snap25.find((file) => file.source === "cc-user"), undefined, "no cc-user partition by default");
+      assert.ok(await registry2.waitForState(dir2, "beta", (state) => state?.phase === "active", 500), "cc-project rows untouched by the cc-user default");
+      let count25 = registry2.debugReconcileCount;
+      for (let waited = 0; waited < 6000; waited += 300) {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
+        const next = registry2.debugReconcileCount;
+        if (next === count25) break;
+        count25 = next;
+      }
+      const cu25 = JSON.parse(await readFile(join(home2, ".claude.json"), "utf8"));
+      cu25.mcpServers["never-25"] = { command: "node", args: [] };
+      await writeFile(join(home2, ".claude.json"), JSON.stringify(cu25), "utf8");
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 900));
+      assert.equal(registry2.debugReconcileCount, count25, "claude.json edits must not drive reconciles while cc-user is off");
+      assert.ok(!(await registry2.waitForState(dir2, "never-25", (state) => state !== undefined, 300)), "never-25 stays unmounted while off");
+      // opt-in：恢复装载 + 扇出警示恰好一次。
+      const warns25 = [];
+      const origWarn25 = ctx2.logger.warn;
+      ctx2.logger.warn = (msg) => { warns25.push(String(msg)); };
+      process.env.DSH_MCP_READ_CLAUDE_USER = "1";
+      await registry2.reconcileNow();
+      assert.ok(await registry2.waitForState(dir2, "never-25", (state) => state?.phase === "active", 5000), "rows mount after explicit opt-in");
+      await registry2.reconcileNow();
+      const fanout25 = warns25.filter((w) => w.includes("并入"));
+      assert.equal(fanout25.length, 1, "fan-out size warned exactly once: " + JSON.stringify(fanout25));
+      ctx2.logger.warn = origWarn25;
+    } finally {
+      process.env.DSH_MCP_READ_CLAUDE_USER = "1";
+    }
+    pass("cc-user layer defaults off and hot-returns on opt-in with a one-time fan-out warning");
+
+    // 26. .mcp.json 可关：IGNORE_MCP_JSON=1 → 该层不读不看、分区消失、已装
+    // cc-project fiber 被卸；yml 源不受牵连。撤开关后恢复。
+    process.env.DSH_MCP_IGNORE_MCP_JSON = "1";
+    try {
+      const dispBefore26 = ctx2.disposals.length;
+      await registry2.reconcileNow();
+      assert.ok(ctx2.disposals.slice(dispBefore26).includes("hot-cc"), "cc-project fiber unmounts when the layer is switched off");
+      assert.ok(await registry2.waitForState(dir2, "eta", (state) => state?.phase === "active", 500), "native yml rows stay mounted");
+      const snap26 = await registry2.snapshot();
+      assert.equal(snap26.find((file) => file.source === "cc-project"), undefined, "cc-project partitions vanish with the switch");
+      let count26 = registry2.debugReconcileCount;
+      for (let waited = 0; waited < 6000; waited += 300) {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
+        const next = registry2.debugReconcileCount;
+        if (next === count26) break;
+        count26 = next;
+      }
+      const ccFile26 = JSON.parse(await readFile(join(dir2, ".mcp.json"), "utf8"));
+      ccFile26.mcpServers["hot26"] = { command: "node", args: [] };
+      await writeFile(join(dir2, ".mcp.json"), JSON.stringify(ccFile26), "utf8");
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 900));
+      assert.equal(registry2.debugReconcileCount, count26, ".mcp.json edits must not drive reconciles while the layer is off");
+    } finally {
+      delete process.env.DSH_MCP_IGNORE_MCP_JSON;
+    }
+    await registry2.reconcileNow();
+    assert.ok(await registry2.waitForState(dir2, "hot26", (state) => state?.phase === "active", 5000), ".mcp.json rows return once the switch is cleared");
+    pass("DSH_MCP_IGNORE_MCP_JSON gates reading, watching, and partitions of the project .mcp.json layer");
+
+    // 27. 开关冲突裁决：READ=1 与旧 IGNORE=1 同时置位 → 强制关闭胜出、cc-user
+    // 停用，且「IGNORE 胜出」告警恰好打一次（场景 21 已消耗过一次 latch，这里
+    // 冲突解除后重新武装再次命中）。
+    process.env.DSH_MCP_IGNORE_CLAUDE_JSON = "1";
+    try {
+      const warns27 = [];
+      const origWarn27 = ctx2.logger.warn;
+      ctx2.logger.warn = (msg) => { warns27.push(String(msg)); };
+      await registry2.reconcileNow();
+      const snap27 = await registry2.snapshot();
+      assert.equal(snap27.find((file) => file.source === "cc-user"), undefined, "IGNORE wins over READ: layer off");
+      await registry2.reconcileNow();
+      const conflict27 = warns27.filter((w) => w.includes("胜出"));
+      assert.equal(conflict27.length, 1, "conflict warned exactly once: " + JSON.stringify(conflict27));
+      assert.ok(await registry2.waitForState(dir2, "beta", (state) => state?.phase === "active", 500), "cc-project layer unaffected by the cc-user conflict");
+      ctx2.logger.warn = origWarn27;
+    } finally {
+      delete process.env.DSH_MCP_IGNORE_CLAUDE_JSON;
+    }
+    await registry2.reconcileNow();
+    assert.ok(await registry2.waitForState(dir2, "gamma", (state) => state?.phase === "active", 5000), "cc-user returns after clearing the conflict");
+    pass("IGNORE_CLAUDE_JSON forces the cc-user layer off over READ_CLAUDE_USER with a one-shot conflict warning");
+
     // 场景 24 的 unlink 会留下防抖后的迟到 reconcile 与 chokidar 内部重扫：
     // 先让队列落空再关 watcher，否则 close 与临时目录删除赛跑、句柄不释放。
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 800));
@@ -589,6 +683,9 @@ try {
       if (typeof cleanup === "function") cleanup();
     }
   } finally {
+    delete process.env.DSH_MCP_READ_CLAUDE_USER;
+    delete process.env.DSH_MCP_IGNORE_MCP_JSON;
+    delete process.env.DSH_MCP_IGNORE_CLAUDE_JSON;
     if (savedBin === undefined) delete process.env.CC_TEST_BIN;
     else process.env.CC_TEST_BIN = savedBin;
     if (savedMissing === undefined) delete process.env.CC_TEST_MISSING;
