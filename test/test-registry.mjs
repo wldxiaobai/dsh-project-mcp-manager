@@ -140,10 +140,10 @@ const dir = await mkdtemp(join(tmpdir(), "dsh-project-mcp-manager-registry-"));
   // 0.1 事故对：同名服务两种写法（args 差 --offline）→ 归一名键命中，高层胜出
   {
     const m = mergeSourcedRows([
-      [srow("unityMCP", "yml", stdioCfg("unityMCP", "C:\\uvx.exe", ["--from", "mcpforunityserver==10.1.0", "mcp-for-unity", "--transport", "stdio"]))],
+      [srow("unityMCP", "yml", stdioCfg("unityMCP", String.raw`C:\uvx.exe`, ["--from", "mcpforunityserver==10.1.0", "mcp-for-unity", "--transport", "stdio"]))],
       [],
       [],
-      [srow("unity-mcp", "cc-user", stdioCfg("unity-mcp", "C:\\uvx.exe", ["--offline", "--from", "mcpforunityserver==10.1.0", "mcp-for-unity", "--transport", "stdio"]))]
+      [srow("unity-mcp", "cc-user", stdioCfg("unity-mcp", String.raw`C:\uvx.exe`, ["--offline", "--from", "mcpforunityserver==10.1.0", "mcp-for-unity", "--transport", "stdio"]))]
     ]);
     assert.deepEqual(m.rows.map((r) => r.rawName), ["unityMCP"], "normname dup drops the low-priority twin");
     assert.deepEqual(m.shadowedIdentity, [{ name: "unity-mcp", winner: "unityMCP", reason: "normname" }], "identity shadow reports the incident pair");
@@ -152,9 +152,9 @@ const dir = await mkdtemp(join(tmpdir(), "dsh-project-mcp-manager-registry-"));
   // 0.2 完全相同的 command+args（名字归一后不同）→ 身份键命中
   {
     const m = mergeSourcedRows([
-      [srow("pencilA", "yml", stdioCfg("pencilA", "C:\\pencil\\mcp-server.exe", ["--agent", "cli"]))],
+      [srow("pencilA", "yml", stdioCfg("pencilA", String.raw`C:\pencil\mcp-server.exe`, ["--agent", "cli"]))],
       [],
-      [srow("pencil-user", "user-yml", stdioCfg("pencil-user", "C:\\pencil\\mcp-server.exe", ["--agent", "cli"]))]
+      [srow("pencil-user", "user-yml", stdioCfg("pencil-user", String.raw`C:\pencil\mcp-server.exe`, ["--agent", "cli"]))]
     ]);
     assert.deepEqual(m.rows.map((r) => r.rawName), ["pencilA"], "identity dup keeps the yml row");
     assert.deepEqual(m.shadowedIdentity, [{ name: "pencil-user", winner: "pencilA", reason: "identity" }]);
@@ -435,11 +435,11 @@ try {
       { ...stdioRow("eta"), config: { ...stdioRow("eta").config, args: ["eta-yml.js"], command: "${CC_TEST_BIN}", env: { T: "${CC_TEST_MISSING}" } } }
     ]);
     await registry2.reconcileNow();
-    const beta13 = ctx2.mounts.filter((config) => config.serverName === "beta").at(-1);
+    const beta13 = ctx2.mounts.findLast((config) => config.serverName === "beta");
     assert.ok(beta13 !== undefined, "beta mounts once its env var exists");
     assert.equal(beta13.env.T, "sekret", "${VAR} expanded from process.env at mount time");
     assert.equal(beta13.command, "node", "${VAR} expanded in command too");
-    const eta13 = ctx2.mounts.filter((config) => config.serverName === "eta").at(-1);
+    const eta13 = ctx2.mounts.findLast((config) => config.serverName === "eta");
     assert.ok(eta13 !== undefined, "native yml row with ${VAR} mounts expanded");
     assert.equal(eta13.env.T, "sekret");
     assert.equal(eta13.command, "node");
@@ -509,7 +509,7 @@ try {
     await writeFile(projectMcpFile(dir3), "data: [unclosed\n", "utf8");
     await registry2.reconcileNow();
     assert.ok(ctx2.disposals.includes("keep-yml"), "yml row unmounts while its file is unparseable");
-    const remount17 = ctx2.mounts.filter((config) => config.serverName === "cc-x").at(-1);
+    const remount17 = ctx2.mounts.findLast((config) => config.serverName === "cc-x");
     assert.ok(remount17 !== undefined && ctx2.mounts.filter((config) => config.serverName === "cc-x").length >= 2, ".mcp.json row remounts despite the broken yml");
     assert.deepEqual(remount17.args, ["x2.js"], "remounted with the repaired .mcp.json config");
     pass("a broken project mcp.yml does not block .mcp.json rows");
@@ -541,7 +541,7 @@ try {
     try {
       await writeFile(ccFile18, JSON.stringify(parsed19), "utf8");
       assert.ok(await registry2.waitForState(dir2, "http-ok", (state) => state?.phase === "active", 5000), "http row with interpolated Bearer header mounts");
-      const httpOk19 = ctx2.mounts.filter((config) => config.serverName === "http-ok").at(-1);
+      const httpOk19 = ctx2.mounts.findLast((config) => config.serverName === "http-ok");
       assert.equal(httpOk19.headers.Authorization, "Bearer sekret", "in-string interpolation reaches the mount config");
       assert.ok(await registry2.waitForState(dir2, "http-bad", (state) => state === undefined, 500), "invalid expanded url is never mounted");
       const seen19 = await waitForDiag(dir2, (lines) => lines.some((row) => row.kind === "env-invalid" && row.rawName === "http-bad"), 5000);
@@ -600,7 +600,7 @@ try {
       delete process.env.DSH_MCP_IGNORE_CLAUDE_JSON;
       await registry2.reconcileNow();
       assert.ok(await registry2.waitForState(dir2, "zeta", (state) => state?.phase === "active", 5000), "rows remount once the switch is cleared");
-      assert.ok(ctx2.mounts.filter((config) => /_ig-off$/.test(config.serverName)).length >= 2, "claude.json is read again in every project after clearing the switch");
+      assert.ok(ctx2.mounts.filter((config) => config.serverName.endsWith("_ig-off")).length >= 2, "claude.json is read again in every project after clearing the switch");
     } finally {
       delete process.env.DSH_MCP_IGNORE_CLAUDE_JSON;
     }
@@ -619,10 +619,10 @@ try {
     ]);
     ctx2.agentsList.push(fakeAgent("session-g", dir4));
     await registry2.reconcileNow();
-    const nocwd22 = ctx2.mounts.filter((config) => config.serverName === "nocwd").at(-1);
+    const nocwd22 = ctx2.mounts.findLast((config) => config.serverName === "nocwd");
     assert.ok(nocwd22 !== undefined, "project row with empty cwd mounts");
     assert.equal(nocwd22.cwd, dir4, "empty cwd at the project layer resolves to the project root");
-    const userNoCwd22 = ctx2.mounts.filter((config) => /(^|_)user-nocwd$/.test(config.serverName)).at(-1);
+    const userNoCwd22 = ctx2.mounts.findLast((config) => /(^|_)user-nocwd$/.test(config.serverName));
     assert.ok(userNoCwd22 !== undefined, "user row with empty cwd mounts");
     assert.equal(userNoCwd22.cwd, "", "empty cwd at the user layer stays host-inherit");
     pass("empty stdio cwd resolves to the project root for project sources and stays host-inherit for user sources");

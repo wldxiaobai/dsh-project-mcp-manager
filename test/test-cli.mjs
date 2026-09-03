@@ -154,7 +154,7 @@ try {
     const cap2 = io();
     assert.equal(await runCli(["add", "psrv", "node", "p.js"], cap2.io, deps), 0, cap2.errs.join("\n"));
     const projRaw = await readFile(projectYml, "utf8");
-    assert.match(projRaw, /cwd:\s*\.?\s*$/m, "project-scope row defaults to .");
+    assert.match(projRaw, /cwd: \.?$/m, "project-scope row defaults to .");
     assert.ok(projRaw.includes("cwd: ."), "project-scope cwd is the dot literal");
     pass("cli default cwd is '.' for project scope and '' for user scope");
   }
