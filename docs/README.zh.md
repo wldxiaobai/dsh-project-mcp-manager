@@ -151,7 +151,11 @@ process.env.GITHUB_TOKEN }`）在项目文件里**不支持**——受管块内�
 ——`unityMCP` 与 `unity-mcp` 就是一台服务器的两种写法）；*服务身份*
 （`stdio` 取 command + args，Windows 下路径大小写不敏感；`streamable-http`
 取 url）。command/url 为空的行不注册身份键——`node a.js` 与 `node b.js` 是
-不同服务、绝不互杀——而 `disabled` 占位行三键全占、自身不装载。被遮蔽方写入
+不同服务、绝不互杀——而 `disabled` 占位行三键全占、自身不装载。身份比对用的
+是**文件里的原始字符串，发生在 `${VAR}` 展开之前**，且 `env`、`headers`、
+`cwd` **不参与**身份键：同一命令行、仅 env 不同的两台真不同服务器仍会被去重
+（只留高优先级一条），同一台服务器一条写 `${VAR}`、一条写字面量则**不**互认。
+误剔时的处置：给被剔行改名（归一化后不同）或调整命令与参数。被遮蔽方写入
 `.dsh/.mcp-diag.json`（`shadowedByYml` / `shadowedByProject` /
 `shadowedIdentity`），身份/归一名去重剔除的每行还会在宿主日志告警「跳过重复
 服务定义」：

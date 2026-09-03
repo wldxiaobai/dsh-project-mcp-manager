@@ -80,7 +80,7 @@ const secretRow = toPatchRow(mcpServerInputSchema.parse({
   env: { GITHUB_TOKEN: "super-secret", FOO: "bar" }
 }));
 const view = patchRowToView(secretRow);
-assert.deepEqual(view.envKeys.sort(), ["FOO", "GITHUB_TOKEN"]);
+assert.deepEqual(view.envKeys.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)), ["FOO", "GITHUB_TOKEN"]);
 assert.equal(JSON.stringify(view).includes("super-secret"), false);
 pass("patchRowToView redacts secret values");
 
@@ -118,7 +118,7 @@ pass("namespacedServerName produces valid, deterministic names");
 // 10. denySetFor：own 项目不 deny，无项目 deny 全部
 const mounted = [{ projectRoot: projA, effectiveNames: ["a1", "a2"] }, { projectRoot: projB, effectiveNames: ["b1"] }];
 assert.deepEqual(denySetFor(projA, mounted), ["b1"]);
-assert.deepEqual(denySetFor(undefined, mounted).sort(), ["a1", "a2", "b1"]);
+assert.deepEqual(denySetFor(undefined, mounted).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)), ["a1", "a2", "b1"]);
 pass("denySetFor scopes visibility to the session's own project");
 
 assert.equal(SERVER_NAME_RE.test("a_b-1"), true);
@@ -187,11 +187,11 @@ assert.equal(isUrlOrEnvRef("https://${HOST}/mcp"), true, "串内占位（host �
 assert.equal(isUrlOrEnvRef("${GATEWAY}/mcp"), true, "README 的网关前缀占位写法不得在装载前被拒");
 assert.equal(isUrlOrEnvRef("http://localhost:3000/mcp"), true);
 assert.equal(isUrlOrEnvRef("not-url"), false);
-const mixedUrl = mcpServerInputSchema.parse({ serverName: "h", transport: "streamable-http", url: "http://x/${PART}" });
+const mixedUrl = mcpServerInputSchema.parse({ serverName: "h", transport: "streamable-http", url: "https://x/${PART}" });
 assert.deepEqual(expandEnvRefs(mixedUrl, {}), { ok: false, missingVar: "PART" });
 const mixedOk = expandEnvRefs(mixedUrl, { PART: "seg" });
 assert.equal(mixedOk.ok, true);
-assert.equal(mixedOk.input.url, "http://x/seg");
+assert.equal(mixedOk.input.url, "https://x/seg");
 const httpRef = mcpServerInputSchema.parse({
   serverName: "h", transport: "streamable-http", url: "${URL}", headers: { Authorization: "Bearer ${TOK}", X: "${TOK}" }
 });

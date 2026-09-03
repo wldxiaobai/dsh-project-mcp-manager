@@ -135,7 +135,7 @@ export interface ProjectChangePlan {
 function canonicalConfig(config: Record<string, unknown> | undefined): string {
   return JSON.stringify(config ?? null, (key, value) => {
     if (value !== null && typeof value === "object" && !Array.isArray(value)) {
-      return Object.keys(value).sort().reduce((acc: Record<string, unknown>, k) => {
+      return Object.keys(value).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).reduce((acc: Record<string, unknown>, k) => {
         acc[k] = (value as Record<string, unknown>)[k];
         return acc;
       }, {});
@@ -219,7 +219,7 @@ function serviceIdentityKey(item: SourcedRow): string | undefined {
   if (config.transport === "stdio") {
     if (typeof config.command !== "string" || config.command === "") return undefined;
     const command = process.platform === "win32" ? config.command.toLowerCase() : config.command;
-    const args = Array.isArray(config.args) ? config.args.map((arg) => String(arg)).join("\0") : "";
+    const args = Array.isArray(config.args) ? config.args.map(String).join("\0") : "";
     return "s\0" + command + "\0" + args;
   }
   return undefined;
@@ -237,6 +237,71 @@ export interface IdentityShadow {
   name: string;
   winner: string;
   reason: "identity" | "normname";
+}
+
+/** 影子键的条件 get：键为 undefined 直接不查，免调用点三元。 */
+function getIfDefined<V>(map: Map<string, V>, key: string | undefined): V | undefined {
+  return key === undefined ? undefined : map.get(key);
+}
+
+function pushUnique(list: string[], name: string): void {
+  if (!list.includes(name)) list.push(name);
+}
+
+/** 跨层遮蔽诊断的三个收集桶。 */
+interface ShadowBuckets {
+  shadowedOwnCc: string[];
+  shadowedUser: string[];
+  shadowedIdentity: IdentityShadow[];
+}
+
+/** 被遮蔽行归因：项目 cc 行被项目 yml 遮蔽单列；被任一项目自身行遮蔽的用户层行入 shadowedUser。 */
+function classifyShadow(item: SourcedRow, winner: SourcedRow, buckets: ShadowBuckets): void {
+  if (item.source === "cc-project" && winner.source === "yml") pushUnique(buckets.shadowedOwnCc, item.rawName);
+  else if (SOURCE_RANK[item.source] >= 2 && SOURCE_RANK[winner.source] <= 1) pushUnique(buckets.shadowedUser, item.rawName);
+}
+
+/** 剔除集签名：排序后逐条 name\0winner\0reason 拼接，供「集合变了才告警」比较。 */
+function identityShadowSignature(shadows: IdentityShadow[]): string {
+  return shadows
+    .map((shadow) => shadow.name + "\u0000" + shadow.winner + "\u0000" + shadow.reason)
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+    .join("\u0001");
+}
+
+/** 单行三键先到先得：命中已有影子键则归因剔除，否则注册进影子表（disabled 占名行也注册）。 */
+function mergeOneRow(item: SourcedRow, byName: Map<string, SourcedRow>, byNorm: Map<string, SourcedRow>, byIdentity: Map<string, SourcedRow>, buckets: ShadowBuckets): void {
+  const winner = byName.get(item.rawName);
+  if (winner !== undefined) {
+    classifyShadow(item, winner, buckets);
+    return;
+  }
+  const normKey = normalizedNameKey(item.rawName);
+  const idKey = serviceIdentityKey(item);
+  const normWinner = getIfDefined(byNorm, normKey);
+  const idWinner = getIfDefined(byIdentity, idKey);
+  const dupWinner = normWinner ?? idWinner;
+  if (dupWinner !== undefined) {
+    const reason: IdentityShadow["reason"] = normWinner !== undefined ? "normname" : "identity";
+    buckets.shadowedIdentity.push({ name: item.rawName, winner: dupWinner.rawName, reason });
+    classifyShadow(item, dupWinner, buckets);
+    return;
+  }
+  byName.set(item.rawName, item);
+  if (normKey !== undefined) byNorm.set(normKey, item);
+  if (idKey !== undefined) byIdentity.set(idKey, item);
+}
+
+/** fiberPhase 展示推导：未装载时 disabled 占名→null、否则 pending；已装载且本分区拥有该实例才给生命周期枚举。 */
+function fiberPhaseFor(state: ProjectServerState | undefined, row: PatchRow, owned: boolean): unknown {
+  if (state === undefined) return row.disabled === true ? null : "pending";
+  return owned ? phaseToFiberPhase(state.phase) : null;
+}
+
+/** 跳过原因只在「无装载实例且该行不是 disabled 占名行」时有值。 */
+function skipReasonFor(skipReasons: Map<string, string>, key: string, rawName: string, state: ProjectServerState | undefined, row: PatchRow): string | undefined {
+  if (state !== undefined || row.disabled === true) return undefined;
+  return skipReasons.get(key + "\u0000" + rawName);
 }
 
 /**
@@ -257,49 +322,17 @@ export function mergeSourcedRows(candidates: SourcedRow[][]): {
   const byName = new Map<string, SourcedRow>();
   const byNorm = new Map<string, SourcedRow>();
   const byIdentity = new Map<string, SourcedRow>();
-  const shadowedOwnCc: string[] = [];
-  const shadowedUser: string[] = [];
-  const shadowedIdentity: IdentityShadow[] = [];
-  const classifyShadow = (item: SourcedRow, winner: SourcedRow) => {
-    if (item.source === "cc-project" && winner.source === "yml") {
-      if (!shadowedOwnCc.includes(item.rawName)) shadowedOwnCc.push(item.rawName);
-    } else if (SOURCE_RANK[item.source] >= 2 && SOURCE_RANK[winner.source] <= 1) {
-      if (!shadowedUser.includes(item.rawName)) shadowedUser.push(item.rawName);
-    }
-  };
+  const buckets: ShadowBuckets = { shadowedOwnCc: [], shadowedUser: [], shadowedIdentity: [] };
   for (const list of candidates) {
-    for (const item of list) {
-      const winner = byName.get(item.rawName);
-      if (winner !== undefined) {
-        classifyShadow(item, winner);
-        continue;
-      }
-      const normKey = normalizedNameKey(item.rawName);
-      const idKey = serviceIdentityKey(item);
-      const normWinner = normKey === undefined ? undefined : byNorm.get(normKey);
-      const idWinner = idKey === undefined ? undefined : byIdentity.get(idKey);
-      const dupWinner = normWinner ?? idWinner;
-      if (dupWinner !== undefined) {
-        shadowedIdentity.push({
-          name: item.rawName,
-          winner: dupWinner.rawName,
-          reason: normWinner !== undefined ? "normname" : "identity"
-        });
-        classifyShadow(item, dupWinner);
-        continue;
-      }
-      byName.set(item.rawName, item);
-      if (normKey !== undefined) byNorm.set(normKey, item);
-      if (idKey !== undefined) byIdentity.set(idKey, item);
-    }
+    for (const item of list) mergeOneRow(item, byName, byNorm, byIdentity, buckets);
   }
   return {
     rows: [...byName.values()]
       .filter((item) => item.disabled !== true)
       .map((item) => ({ rawName: item.rawName, row: item.row, source: item.source })),
-    shadowedOwnCc,
-    shadowedUser,
-    shadowedIdentity
+    shadowedOwnCc: buckets.shadowedOwnCc,
+    shadowedUser: buckets.shadowedUser,
+    shadowedIdentity: buckets.shadowedIdentity
   };
 }
 
@@ -327,7 +360,7 @@ export class ProjectMcpRegistry {
   /** 最近一次读到的 ~/.claude.json mcpServers 子树规范化哈希（watcher 门控用）。 */
   private claudeServersHash: string | undefined;
   /** 装载被跳过的行（key\0rawName → 原因）；快照按独立 skipReason 字段展示，fiberPhase 保持枚举。 */
-  private skipReasons = new Map<string, string>();
+  private readonly skipReasons = new Map<string, string>();
   /** 最近一次用户层读取结果（reconcile 与 snapshot 共享；首轮 reconcile 前为空）。 */
   private userLayer: {
     mcpYml: string;
@@ -341,6 +374,8 @@ export class ProjectMcpRegistry {
   private ccUserFanoutWarned = false;
   /** READ 与旧 IGNORE 同时置位：「IGNORE 胜出」只告警一次。 */
   private claudeConflictWarned = false;
+  /** identity 去重告警/诊断的变更门控：projectKey → 上次对账的剔除集签名。 */
+  private readonly identityShadowSigs = new Map<string, string>();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private chain: Promise<void> = Promise.resolve();
   private disposed = false;
@@ -459,7 +494,7 @@ export class ProjectMcpRegistry {
 
   private async syncWatcher() {
     const roots = await this.knownProjects();
-    const keys = roots.map((root) => projectKeyOf(root)).sort();
+    const keys = roots.map((root) => projectKeyOf(root)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     const same = this.watchedFiles.length === keys.length && keys.every((key, index) => key === this.watchedFiles[index]);
     if (same) return;
     const old = this.watcher;
@@ -541,6 +576,10 @@ export class ProjectMcpRegistry {
     // cc-user 默认关闭：CC 用户级配置是机器环境级外部状态，显式
     // DSH_MCP_READ_CLAUDE_USER=1 才读；旧 IGNORE 开关强制关闭并胜出。
     if (claudeUserLayerEnabled()) {
+      // 层恢复即视为冲突已解除：复位一次性告警闩，用户再设回 IGNORE 还能提示。
+      // 旧实现只在「READ 未置位且无冲突」分支复位，按告警清掉 IGNORE 的旅程
+      // 走不到复位路径，二次冲突会静默。
+      this.claudeConflictWarned = false;
       cc = await readClaudeUserFile(paths.claudeJson);
       if (cc.serversHash !== undefined) this.claudeServersHash = cc.serversHash;
     } else if (claudeUserLayerConflict()) {
@@ -570,7 +609,8 @@ export class ProjectMcpRegistry {
     const paths = this.resolveUserLayerPaths();
     // 只监听这两个具体文件本身；未启用的 ~/.claude.json 连监听都不建。
     const targets = claudeUserLayerEnabled() ? [paths.mcpYml, paths.claudeJson] : [paths.mcpYml];
-    const keys = targets.map((target) => normalizePathKey(target)).sort();
+    // 码元序显式比较器：排序只用于跨轮次相等性比较，须与 locale 无关保持稳定。
+    const keys = targets.map((target) => normalizePathKey(target)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     const same = this.userWatchedPaths.length === keys.length && keys.every((key, index) => key === this.userWatchedPaths[index]);
     if (same) return;
     const old = this.userWatcher;
@@ -656,8 +696,17 @@ export class ProjectMcpRegistry {
       const merged = mergeSourcedRows([yml.rows, cc.rows, this.userLayer.ymlRows, this.userLayer.cc?.rows ?? []]);
       // 跨来源同服务去重告警：unityMCP 与 unity-mcp 这类「一个服务器两个名字」的
       // 冗余定义，只装载高优先级层一条，被剔除的必须可见，不能静默消失。
-      for (const shadow of merged.shadowedIdentity) {
-        this.ctx.logger.warn(`项目 MCP（${projectRoot}）：跳过重复服务定义 "${shadow.name}"（与 "${shadow.winner}" 为同一服务，${shadow.reason === "normname" ? "归一化名称相同" : "命令与参数相同"}，按层优先级保留高优先级定义）`);
+      // 变更门控：剔除集与上次一致就沉默——否则任何文件事件都会让每个
+      // 已知项目各刷一遍同样的告警（规模 = 对账次数 × 项目数 × 重复行数）。
+      const shadowSig = identityShadowSignature(merged.shadowedIdentity);
+      const prevShadowSig = this.identityShadowSigs.get(key);
+      const shadowChanged = shadowSig !== prevShadowSig;
+      if (shadowSig === "") this.identityShadowSigs.delete(key);
+      else this.identityShadowSigs.set(key, shadowSig);
+      if (shadowChanged) {
+        for (const shadow of merged.shadowedIdentity) {
+          this.ctx.logger.warn(`项目 MCP（${projectRoot}）：跳过重复服务定义 "${shadow.name}"（与 "${shadow.winner}" 为同一服务，${shadow.reason === "normname" ? "归一化名称相同" : "命令与参数相同"}，按层优先级保留高优先级定义）；确属不同服务器请改名或调整命令与参数`);
+        }
       }
       const ownRows = merged.rows.filter((row) => row.source === "yml" || row.source === "cc-project");
       // 源级隔离：某个源坏了只清空该源的 rows（读取器已保证），其余源照常进
@@ -665,7 +714,7 @@ export class ProjectMcpRegistry {
       desiredByProject.set(key, { projectRoot, rows: merged.rows });
       // 诊断只记有信息量的扫描：异常，或确实解析出了项目自身配置行。干净且无配置的
       // 项目不写任何记录——用户层行落到每个项目不算该项目的事件。
-      if (!yml.ok || ownRows.length > 0 || cc.fileError !== undefined || cc.entryErrors.length > 0 || merged.shadowedOwnCc.length > 0 || merged.shadowedUser.length > 0 || merged.shadowedIdentity.length > 0) {
+      if (!yml.ok || ownRows.length > 0 || cc.fileError !== undefined || cc.entryErrors.length > 0 || merged.shadowedOwnCc.length > 0 || merged.shadowedUser.length > 0 || (merged.shadowedIdentity.length > 0 && shadowChanged)) {
         await this.writeDiag(projectRoot, {
           kind: "scan",
           ok: yml.ok && cc.fileError === undefined,
@@ -994,55 +1043,48 @@ export class ProjectMcpRegistry {
     return false;
   }
 
-  /** 行级 view；未装载时 phase 按行状态推导。行查找按影子优先序逐层进行。 */
-  async serverView(projectRoot: string, rawName: string): Promise<any | undefined> {
-    const key = projectKeyOf(projectRoot);
-    const entry = this.projects.get(key);
-    const state = entry?.servers.get(rawName);
-    let row: PatchRow | undefined;
-    let source: McpRowSource | undefined;
+  /** 行级 view 的逐层影子优先查找：项目 yml > 项目 .mcp.json > 用户 yml > cc-user > 装载残留态。 */
+  private async locateRow(projectRoot: string, rawName: string, state?: ProjectServerState): Promise<{ row?: PatchRow; source?: McpRowSource }> {
     try {
       const raw = await readPatchFile(projectMcpFile(projectRoot));
-      row = extractManagedRows(raw).find((candidate) => rowNameOf(candidate) === rawName);
-      if (row !== undefined) source = "yml";
+      const ymlRow = extractManagedRows(raw).find((candidate) => rowNameOf(candidate) === rawName);
+      if (ymlRow !== undefined) return { row: ymlRow, source: "yml" };
     } catch {
       // 落到后续层
     }
-    if (row === undefined && mcpJsonLayerEnabled()) {
+    if (mcpJsonLayerEnabled()) {
       const cc = await readMcpJsonFile(projectMcpJsonFile(projectRoot), projectRoot);
       const found = cc.rows.find((candidate) => candidate.rawName === rawName);
-      if (found !== undefined) {
-        row = found.row;
-        source = "cc-project";
-      }
+      if (found !== undefined) return { row: found.row, source: "cc-project" };
     }
-    if (row === undefined) {
-      const uy = this.userLayer.ymlRows.find((candidate) => candidate.rawName === rawName);
-      const uc = this.userLayer.cc?.rows.find((candidate) => candidate.rawName === rawName);
-      if (uy !== undefined) {
-        row = uy.row;
-        source = "user-yml";
-      } else if (uc !== undefined) {
-        row = uc.row;
-        source = "cc-user";
-      }
-    }
-    if (row === undefined) {
-      row = state?.row;
-      source = state?.source;
-    }
-    if (row === undefined) return undefined;
-    const view = patchRowToView(row, { kind: "workspace", path: projectRoot });
+    const uy = this.userLayer.ymlRows.find((candidate) => candidate.rawName === rawName);
+    if (uy !== undefined) return { row: uy.row, source: "user-yml" };
+    const uc = this.userLayer.cc?.rows.find((candidate) => candidate.rawName === rawName);
+    if (uc !== undefined) return { row: uc.row, source: "cc-user" };
+    if (state?.row !== undefined) return { row: state.row, source: state.source };
+    return {};
+  }
+
+  /** 行级 view；未装载时 phase 按行状态推导。行查找按影子优先序逐层进行。 */
+  async serverView(projectRoot: string, rawName: string): Promise<any | undefined> {
+    const key = projectKeyOf(projectRoot);
+    const state = this.projects.get(key)?.servers.get(rawName);
+    const located = await this.locateRow(projectRoot, rawName, state);
+    if (located.row === undefined) return undefined;
+    const view = patchRowToView(located.row, { kind: "workspace", path: projectRoot });
     if (view === undefined) return undefined;
     const effectiveName = this.effective.get(key + "\u0000" + rawName);
-    const skipReason = state === undefined && row.disabled !== true ? this.skipReasons.get(key + "\u0000" + rawName) : undefined;
+    // owned：装载实例确实来自这条行所在的那个源（与分区视图 partitionServers 的
+    // state?.source === source 同一口径）。异来源实例挂在同一个 rawName 上时，
+    // 本行是被遮蔽方——phase 走 null，toolCount 不借用别源的装载数据。
+    const owned = state?.source === located.source;
     return {
       ...view,
-      ...(source === undefined ? {} : { source }),
+      ...(located.source === undefined ? {} : { source: located.source }),
       ...(effectiveName === undefined ? {} : { effectiveServerName: effectiveName }),
-      fiberPhase: state === undefined ? (row.disabled === true ? null : "pending") : phaseToFiberPhase(state.phase),
-      skipReason: skipReason ?? null,
-      toolCount: state !== undefined && state.phase === "active" ? mcpToolCount(this.ctx, state.effectiveName) : 0
+      fiberPhase: fiberPhaseFor(state, located.row, owned),
+      skipReason: skipReasonFor(this.skipReasons, key, rawName, state, located.row) ?? null,
+      toolCount: owned && state?.phase === "active" ? mcpToolCount(this.ctx, state.effectiveName) : 0
     };
   }
 
@@ -1140,20 +1182,15 @@ export class ProjectMcpRegistry {
       const view = patchRowToView(row, { kind: "workspace", path: entry.projectRoot });
       if (view === undefined) continue;
       const state = entry.servers.get(rawName);
-      const owned = state !== undefined && state.source === source;
+      const owned = state?.source === source;
       const effectiveName = this.effective.get(key + "\u0000" + rawName);
-      const skipReason = state === undefined && row.disabled !== true ? this.skipReasons.get(key + "\u0000" + rawName) : undefined;
       out.push({
         ...view,
         source,
         ...(effectiveName === undefined ? {} : { effectiveServerName: effectiveName }),
-        fiberPhase: state === undefined
-          ? (row.disabled === true ? null : "pending")
-          : owned
-            ? phaseToFiberPhase(state.phase)
-            : null, // 该名字由更高优先层装载：本分区行只作展示
-        skipReason: skipReason ?? null, // env-missing / env-invalid / config-invalid / plugin-throw；fiberPhase 保持生命周期枚举
-        toolCount: owned && state !== undefined && state.phase === "active" ? mcpToolCount(this.ctx, state.effectiveName) : 0
+        fiberPhase: fiberPhaseFor(state, row, owned),
+        skipReason: skipReasonFor(this.skipReasons, key, rawName, state, row) ?? null, // env-missing / env-invalid / config-invalid / plugin-throw；fiberPhase 保持生命周期枚举
+        toolCount: owned && state?.phase === "active" ? mcpToolCount(this.ctx, state.effectiveName) : 0
       });
     }
     return out;

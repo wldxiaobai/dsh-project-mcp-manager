@@ -2,7 +2,7 @@
 
 ## 项目概览
 
-`dsh-project-mcp-manager`（v0.3.0）是一个 **DSH 插件**（无 UI）：为每个项目自动装载 MCP 服务器。在项目根放 `<projectRoot>/.dsh/mcp.yml`，dsh 会话在该项目开启时自动经 `@deepseek-ai/dsh-mcp-client` 装载其中的 MCP 服务器，文件改动热重载，工具可见性按会话 cwd 隔离。另提供 Claude Code 只读兼容层（`<projectRoot>/.mcp.json` 默认开、`~/.claude.json` 顶层 `mcpServers` 白名单默认关需 `DSH_MCP_READ_CLAUDE_USER=1`）和 `dsh-mcp` CLI（只管原生 yml）。
+`dsh-project-mcp-manager`（v0.3.1）是一个 **DSH 插件**（无 UI）：为每个项目自动装载 MCP 服务器。在项目根放 `<projectRoot>/.dsh/mcp.yml`，dsh 会话在该项目开启时自动经 `@deepseek-ai/dsh-mcp-client` 装载其中的 MCP 服务器，文件改动热重载，工具可见性按会话 cwd 隔离。另提供 Claude Code 只读兼容层（`<projectRoot>/.mcp.json` 默认开、`~/.claude.json` 顶层 `mcpServers` 白名单默认关需 `DSH_MCP_READ_CLAUDE_USER=1`）和 `dsh-mcp` CLI（只管原生 yml）。
 
 - 语言：TypeScript（ESM，`"type": "module"`），`target ES2022` / `module NodeNext`，`strict: true`（`noImplicitAny: false`）。
 - 编译产物：`src/` → `lib/`（`main: lib/index.js`）。

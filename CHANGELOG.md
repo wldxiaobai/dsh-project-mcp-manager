@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-04
+
+### Fixed
+
+- The one-shot `DSH_MCP_READ_CLAUDE_USER` / `DSH_MCP_IGNORE_CLAUDE_JSON`
+  conflict warning now re-arms when the conflict clears by unsetting the
+  legacy switch (the documented remedy). Previously the latch only reset on
+  the path where the opt-in itself was removed, so a second conflict went
+  silent.
+- Identity dedup warnings (`跳过重复服务定义 "x"`) now use a per-project
+  shadow-set signature gate: they fire when the set of shadowed rows changes,
+  not on every reconcile. Previously any file event caused one warning per
+  project per shadowed row per reconcile cycle.
+- `dsh-mcp list`/`get` now annotate rows dropped by the registry's
+  cross-layer dedup (normalized-name or service identity, not just exact
+  name), by running `mergeSourcedRows` over the same four layers — the CLI
+  view and what actually mounts no longer disagree.
+- `serverView()` no longer hardwires the mount-ownership flag: `fiberPhase`
+  and `toolCount` now require the located row's source to own the mounted
+  instance (same rule as the partition view), so a row that does not back the
+  live mount no longer borrows the winner's phase and tool count.
+
+### Changed
+
+- The identity-dedup warning now carries the remedy ("确属不同服务器请改名或
+  调整命令与参数"), and both READMEs document the two identity-key caveats
+  that used to be implicit: comparison runs on raw config strings **before**
+  `${VAR}` expansion, and `env`/`headers`/`cwd` are not part of the key.
+- Legacy `DSH_MCP_IGNORE_CLAUDE_JSON` now has an explicit removal anchor
+  (`TODO(v0.4)` at its definition site).
+
 ## [0.3.0] - 2026-09-03
 
 ### Changed
@@ -283,7 +314,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Security note: `stdio` lines in `.dsh/mcp.yml` spawn their `command` inside the dsh host
 process, so project files are executable-code carriers — add them only in trusted projects.
 
-[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.3.0...HEAD
+[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.1.1...v0.2.0

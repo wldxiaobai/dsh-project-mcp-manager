@@ -16,7 +16,7 @@ export const SERVER_NAME_RE = /^[A-Za-z0-9_-]{1,32}$/;
  * `${9bad}` 非法名一律按字面量处理。只在 mount 时运行时展开，展开结果
  * 绝不回写文件、不进诊断明文。
  */
-const EMBEDDED_ENV_REF_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+const EMBEDDED_ENV_REF_RE = /\$\{([A-Za-z_]\w*)\}/g;
 
 /** url 字段允许合法 URL 或含 `${VAR}` 占位的串（整值与串内插值同待）：装载前
  * 一律放行占位串，展开后的真实合法性由 mount 复验兜底（env-invalid 诊断）。 */

@@ -39,7 +39,7 @@ try {
   // 1. add stdio（含多 args、env、-- 透传），写进项目 yml
   {
     const cap = io();
-    const code = await runCli(["add", "fs", "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp/data", "-e", "TOKEN=${API_TOKEN}", "--", "extra"], cap.io, deps);
+    const code = await runCli(["add", "fs", "npx", "-y", "@modelcontextprotocol/server-filesystem", "/srv/data", "-e", "TOKEN=${API_TOKEN}", "--", "extra"], cap.io, deps);
     assert.equal(code, 0, cap.errs.join("\n"));
     const raw = await readFile(projectYml, "utf8");
     assert.ok(raw.includes("serverName: fs"), "managed block written");
@@ -74,7 +74,7 @@ try {
     assert.equal(await runCli(["add", "bad name!", "node"], cap.io, deps), 1, "invalid server name rejected");
     assert.ok(cap.errs.join("\n").includes("配置无效"));
     const cap2 = io();
-    assert.equal(await runCli(["add", "-t", "sse", "x", "http://e/"], cap2.io, deps), 1, "sse rejected");
+    assert.equal(await runCli(["add", "-t", "sse", "x", "https://e/"], cap2.io, deps), 1, "sse rejected");
     assert.ok(cap2.errs.join("\n").includes("sse"));
     const cap3 = io();
     assert.equal(await runCli(["add", "y", "node", "--scope", "local"], cap3.io, deps), 1, "local scope guidance");
@@ -92,7 +92,7 @@ try {
     const cap = io();
     assert.equal(await runCli(["list"], cap.io, deps), 0);
     const text = cap.lines.join("\n");
-    assert.ok(text.includes("fs: npx -y @modelcontextprotocol/server-filesystem /tmp/data extra (stdio) -- project (.dsh/mcp.yml)"), "project yml row shown with target: " + text);
+    assert.ok(text.includes("fs: npx -y @modelcontextprotocol/server-filesystem /srv/data extra (stdio) -- project (.dsh/mcp.yml)"), "project yml row shown with target: " + text);
     assert.ok(text.includes("ccserver: node shadowed.js") === false, "cc shadowed entry uses yml winner label");
     const fsLines = cap.lines.filter((line) => line.startsWith("  fs:"));
     assert.equal(fsLines.length, 2, "both fs rows listed (winner + shadowed)");
@@ -154,7 +154,7 @@ try {
     const cap2 = io();
     assert.equal(await runCli(["add", "psrv", "node", "p.js"], cap2.io, deps), 0, cap2.errs.join("\n"));
     const projRaw = await readFile(projectYml, "utf8");
-    assert.match(projRaw, /cwd:\s*\.?\s*$/m, "project-scope row defaults to .");
+    assert.match(projRaw, /cwd: \.?$/m, "project-scope row defaults to .");
     assert.ok(projRaw.includes("cwd: ."), "project-scope cwd is the dot literal");
     pass("cli default cwd is '.' for project scope and '' for user scope");
   }
@@ -249,6 +249,36 @@ try {
     assert.equal(await runCli(["list"], cap3.io, deps), 0);
     assert.ok(cap3.lines.join("\n").includes("ccserver"), "the layer returns once the switch is cleared");
     pass("DSH_MCP_IGNORE_MCP_JSON hides the project .mcp.json layer from the CLI");
+  }
+
+  // 14. list/get 与装载器同口径：归一名（unityMCP=unity-mcp）与身份键（command+args）
+  // 去重剔除的行必须标注「同一服务，去重不装载」，生效行不加注——修复前 CLI 只按
+  // 精确同名判遮蔽，这类行被展示成正常加载，与注册表行为对不上号。
+  {
+    const cap = io();
+    assert.equal(await runCli(["add", "unityMCP", "node", "u-server.js"], cap.io, deps), 0, cap.errs.join("\n"));
+    const claudePath = join(home, ".claude.json");
+    const cu = JSON.parse(await readFile(claudePath, "utf8"));
+    cu.mcpServers["unity-mcp"] = { command: "node", args: ["--offline", "u-server.js"] };
+    cu.mcpServers["psrv-x"] = { command: "node", args: ["p.js"] };
+    await writeFile(claudePath, JSON.stringify(cu), "utf8");
+    const listCap = io();
+    assert.equal(await runCli(["list"], listCap.io, deps), 0);
+    const lines = listCap.lines;
+    const lineOf = (name) => lines.find((l) => l.trim().startsWith(name + ":"));
+    const unityLine = lineOf("unity-mcp");
+    assert.ok(unityLine !== undefined && unityLine.includes('与 "unityMCP" 同一服务') && unityLine.includes("归一化名称"), "normname loss marked: " + unityLine);
+    const psrvxLine = lineOf("psrv-x");
+    assert.ok(psrvxLine !== undefined && psrvxLine.includes('与 "psrv" 同一服务') && psrvxLine.includes("命令与参数"), "identity loss marked: " + psrvxLine);
+    const unityWin = lineOf("unityMCP");
+    assert.ok(unityWin !== undefined && !unityWin.includes("遮蔽") && !unityWin.includes("去重"), "the yml winner stays a plain source row: " + unityWin);
+    const getCap = io();
+    assert.equal(await runCli(["get", "unity-mcp"], getCap.io, deps), 0);
+    assert.ok(getCap.lines.join("\n").includes("该行未实际装载"), "get annotates the deduped loser");
+    const getWin = io();
+    assert.equal(await runCli(["get", "unityMCP"], getWin.io, deps), 0);
+    assert.ok(!getWin.lines.join("\n").includes("未实际装载"), "the effective winner gets no annotation");
+    pass("cli list/get mark cross-layer same-service dedup with the registry's merge");
   }
 } finally {
   delete process.env.DSH_MCP_READ_CLAUDE_USER;
