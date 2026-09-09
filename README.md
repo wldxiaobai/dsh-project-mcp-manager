@@ -23,8 +23,8 @@ Feature documentation lives in `docs/`, English and Chinese side by side:
 
 Design and release records (Chinese): [dsh 0.1.2-rc.1 adaptation](docs/adaptation-dsh-0.1.2-rc1.md) ·
 [JSON config layer proposal](docs/proposal-json-mcp-config.md) ·
-[v0.4.0 release notes](docs/release-notes-v0.4.0.md) ·
-[v0.3.1 release notes](docs/release-notes-v0.3.1.md).
+[v0.4.0 release notes](docs/releases/v0.4.0.md) ·
+[v0.3.1 release notes](docs/releases/v0.3.1.md).
 
 ## Installation (mount into a profile)
 
