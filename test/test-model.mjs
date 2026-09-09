@@ -13,11 +13,14 @@ import {
   patchRowToView,
   projectKeyOf,
   rowIdForServerName,
+  rowNameOf,
   serverNameFromRowId,
   toOfficialConfig,
   toPatchRow
 } from "../lib/model.js";
 import { jsonServerEntrySchema } from "../lib/json-file.js";
+import { dshHomeDir, dshHomeFor, profileMcpJsonFile, userLayerPathsIn } from "../lib/dsh-paths.js";
+import { join, resolve } from "node:path";
 
 let passed = 0;
 function pass(name) {
@@ -216,6 +219,33 @@ assert.equal(jsonServerEntrySchema.safeParse({}).success, true); // 空条目先
 assert.equal(jsonServerEntrySchema.safeParse({ command: "npx", toolCallTimeoutMs: 1000, disabled: true }).success, true);
 assert.equal(jsonServerEntrySchema.safeParse({ command: "npx", toolCallTimeoutMs: 0 }).success, false);
 pass("jsonServerEntrySchema tolerates unknown keys and DSH passthrough, rejects non-string secrets");
+
+// 16. dsh-paths：DSH_HOME 重定位与注入优先（用户层三文件都从这里派生）
+{
+  const homeDir = process.platform === "win32" ? String.raw`C:\Users\x` : "/home/x";
+  const relocated = process.platform === "win32" ? String.raw`D:\dsh-home` : "/srv/dsh-home";
+  assert.equal(dshHomeDir(homeDir, {}), join(homeDir, ".dsh"), "no DSH_HOME → <home>/.dsh");
+  assert.equal(dshHomeDir(homeDir, { DSH_HOME: "" }), join(homeDir, ".dsh"), "empty DSH_HOME is ignored");
+  assert.equal(dshHomeDir(homeDir, { DSH_HOME: relocated }), resolve(relocated), "DSH_HOME wins and is absolutized");
+  assert.equal(dshHomeFor(homeDir, { DSH_HOME: relocated }), join(homeDir, ".dsh"), "explicit home injection beats DSH_HOME");
+  assert.equal(dshHomeFor(undefined, { DSH_HOME: relocated }), resolve(relocated), "no injection → DSH_HOME");
+  const paths = userLayerPathsIn(relocated);
+  assert.deepEqual(paths, {
+    mcpYml: join(relocated, "mcp.yml"),
+    mcpJson: join(relocated, "mcp.json"),
+    profilesDir: join(relocated, "profiles")
+  }, "user layer paths derive from the dsh home");
+  assert.equal(profileMcpJsonFile(paths.profilesDir, "web"), join(relocated, "profiles", "web", "mcp.json"));
+  pass("dshHomeDir/dshHomeFor honour DSH_HOME with injection priority");
+}
+
+// 17. rowNameOf：受管行 id 优先于 config.serverName（CLI 与装载器同口径）
+{
+  assert.equal(rowNameOf({ id: "panel-mcp-fromid", name: "@deepseek-ai/dsh-mcp-client", config: { serverName: "fromconfig" } }), "fromid", "row id wins over config.serverName");
+  assert.equal(rowNameOf({ name: "@deepseek-ai/dsh-mcp-client", config: { serverName: "onlyconfig" } }), "onlyconfig", "config.serverName is the fallback");
+  assert.equal(rowNameOf({ id: "other-prefix", name: "@deepseek-ai/dsh-mcp-client", config: {} }), undefined, "no name at all");
+  pass("rowNameOf prefers the managed row id");
+}
 
 console.log("\n" + passed + " passed, 0 failed");
 console.log("ALL MCP MODEL TESTS PASSED");

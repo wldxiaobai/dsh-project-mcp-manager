@@ -818,6 +818,48 @@ try {
       pass("a project root equal to the DSH home does not double-mount the user layer");
     }
 
+    // 31. DSH_HOME 重定位：不注入 userLayerPaths 时，用户层三文件与全局诊断都跟随 $DSH_HOME
+    //（此前硬编码 homedir()/.dsh，重定位后用户层整体静默失效——缺文件是合法零配置，不报错）。
+    {
+      const savedHome = process.env.DSH_HOME;
+      const relocated = await mkdtemp(join(tmpdir(), "dsh-project-mcp-manager-dshhome-"));
+      try {
+        process.env.DSH_HOME = relocated;
+        await writeFile(join(relocated, "mcp.json"), JSON.stringify({
+          mcpServers: { relocated: { command: "node", args: ["r.js"] } }
+        }), "utf8");
+        await writeManagedRows(join(relocated, "mcp.yml"), [stdioRow("relocated-yml")], { createIfMissing: true });
+        await mkdir(join(relocated, "profiles", "web"), { recursive: true });
+        await writeFile(join(relocated, "profiles", "web", "mcp.json"), JSON.stringify({
+          mcpServers: { "relocated-profile": { command: "node", args: ["rp.js"] } }
+        }), "utf8");
+        const ctx6 = fakeCtx();
+        const registry6 = new ProjectMcpRegistry(ctx6, { globalNames: async () => [], activeProfile: async () => "web" });
+        const dir31 = join(dir2, "proj31");
+        await mkdir(join(dir31, ".dsh"), { recursive: true });
+        ctx6.agentsList.push(fakeAgent("session-relocated", dir31));
+        await registry6.reconcileNow();
+        const names31 = ctx6.mounts.map((config) => config.serverName);
+        for (const expected of ["relocated", "relocated-yml", "relocated-profile"]) {
+          assert.ok(names31.includes(expected), `${expected} mounts from $DSH_HOME: ${names31.join(",")}`);
+        }
+        const snap31 = await registry6.snapshot();
+        for (const expectedPath of [join(relocated, "mcp.json"), join(relocated, "mcp.yml"), join(relocated, "profiles", "web", "mcp.json")]) {
+          assert.ok(snap31.some((file) => file.kind === "global" && file.path === expectedPath), `global partition path follows $DSH_HOME: ${expectedPath}`);
+        }
+        assert.ok(await pathExists(join(relocated, ".mcp-diag.json")), "global diagnostics land in $DSH_HOME/.mcp-diag.json");
+        for (const disposer of ctx6.disposers) {
+          const cleanup = disposer();
+          if (typeof cleanup === "function") cleanup();
+        }
+        pass("DSH_HOME relocation moves the user layer files and the global diagnostics");
+      } finally {
+        if (savedHome === undefined) delete process.env.DSH_HOME;
+        else process.env.DSH_HOME = savedHome;
+        await rmRetry(relocated);
+      }
+    }
+
     // 场景 24 的 unlink 会留下防抖后的迟到 reconcile 与 chokidar 内部重扫：
     // 先让队列落空再关 watcher，否则 close 与临时目录删除赛跑、句柄不释放。
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 800));

@@ -33,11 +33,19 @@
  */
 import chokidar from "chokidar";
 import { dirname, join, resolve } from "node:path";
-import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import * as mcpClient from "@deepseek-ai/dsh-mcp-client";
 import { extractManagedRows, readPatchFile, type PatchRow } from "./mcp-file.js";
+import {
+  DIAG_FILE,
+  DSH_DIR,
+  MCP_YML_FILE,
+  dshHomeDir,
+  profileMcpJsonFile,
+  userLayerPathsIn,
+  type UserLayerPaths
+} from "./dsh-paths.js";
 import {
   CC_PROJECT_FILE,
   JSON_MCP_FILE,
@@ -58,7 +66,7 @@ import {
   configFromPatchRow,
   patchRowToView,
   projectKeyOf,
-  serverNameFromRowId,
+  rowNameOf,
   toOfficialConfig
 } from "./model.js";
 import { mcpToolCount } from "./status.js";
@@ -66,7 +74,7 @@ import { mcpToolCount } from "./status.js";
 const delay = (ms: number) => new Promise<void>((resolvePromise) => setTimeout(resolvePromise, ms));
 
 /** 项目 MCP 配置文件名（位于项目根 `.dsh/` 下）。 */
-export const PROJECT_MCP_FILE = "mcp.yml";
+export const PROJECT_MCP_FILE = MCP_YML_FILE;
 
 /**
  * 从 loader 根 include 的配置路径（或 `ctx.baseUrl`）解析当前 profile 名。
@@ -157,8 +165,9 @@ export interface ProjectMcpRegistryOptions {
   globalNames: () => Promise<string[]>;
   /** 当前运行的 profile 名（决定读哪个 `profiles/<name>/mcp.json`）；解析不出返回 undefined。 */
   activeProfile?: () => Promise<string | undefined>;
-  /** 用户层路径注入点（测试用）；缺省 `<home>/.dsh/mcp.yml`、`<home>/.dsh/mcp.json`、`<home>/.dsh/profiles`。 */
-  userLayerPaths?: { mcpYml: string; mcpJson: string; profilesDir: string };
+  /** 用户层路径注入点（测试用）；缺省 `<dshHome>/mcp.yml`、`<dshHome>/mcp.json`、`<dshHome>/profiles`
+   *  （dshHome = `$DSH_HOME` 或 `<home>/.dsh`，见 dsh-paths.dshHomeDir）。 */
+  userLayerPaths?: Partial<UserLayerPaths>;
 }
 
 interface ProjectEntry {
@@ -211,12 +220,8 @@ function canonicalConfig(config: Record<string, unknown> | undefined): string {
   });
 }
 
-/** 行的原始 serverName（受管行 id 或 config.serverName）。 */
-export function rowNameOf(row: PatchRow): string | undefined {
-  const fromId = serverNameFromRowId(row.id);
-  if (fromId !== undefined) return fromId;
-  return typeof row.config?.serverName === "string" ? row.config.serverName : undefined;
-}
+/** 行的原始 serverName（受管行 id 或 config.serverName）；实现在 model.ts，CLI 与装载同口径。 */
+export { rowNameOf } from "./model.js";
 
 /**
  * 计算一个项目应当执行的装载变更（纯函数）：
@@ -649,13 +654,9 @@ export class ProjectMcpRegistry {
 
   // ── 用户层（~/.dsh/mcp.yml、~/.dsh/mcp.json、~/.dsh/profiles/<p>/mcp.json）──
 
-  private resolveUserLayerPaths(): { mcpYml: string; mcpJson: string; profilesDir: string } {
-    const home = homedir();
-    const defaults = {
-      mcpYml: join(home, ".dsh", PROJECT_MCP_FILE),
-      mcpJson: join(home, ".dsh", JSON_MCP_FILE),
-      profilesDir: join(home, ".dsh", "profiles")
-    };
+  /** 用户层三个来源文件路径：缺省跟随 dshHome（`$DSH_HOME` 优先），注入项逐键覆盖。 */
+  private resolveUserLayerPaths(): UserLayerPaths {
+    const defaults = userLayerPathsIn(dshHomeDir());
     const provided = this.providers.userLayerPaths;
     return provided === undefined ? defaults : { ...defaults, ...provided };
   }
@@ -698,7 +699,7 @@ export class ProjectMcpRegistry {
     this.activeProfileName = this.providers.activeProfile === undefined ? undefined : await this.providers.activeProfile().catch(() => undefined);
     const yml = await this.readNativeRows(paths.mcpYml, "dsh-user-yml", false);
     const json = await readDshJsonFile(paths.mcpJson, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" });
-    const profileJson = this.activeProfileName === undefined ? null : join(paths.profilesDir, this.activeProfileName, JSON_MCP_FILE);
+    const profileJson = this.activeProfileName === undefined ? null : profileMcpJsonFile(paths.profilesDir, this.activeProfileName);
     const profile: JsonReadResult = profileJson === null
       ? { rows: [], entryErrors: [] }
       : await readDshJsonFile(profileJson, { source: "dsh-profile-user", cwdPolicy: "host", projectRoot: "" });
@@ -939,16 +940,17 @@ export class ProjectMcpRegistry {
     }
   }
 
-  // ── 装载诊断（项目：<root>/.dsh/.mcp-diag.json；全局：$DSH_HOME/.mcp-diag.json）──
+  // ── 装载诊断（项目：<root>/.dsh/.mcp-diag.json；全局：<dshHome>/.mcp-diag.json）──
   // 调用方只在有异常或有配置行时写入：无配置的干净项目不创建该文件。
 
   private async writeDiag(projectRoot: string, event: Record<string, unknown>): Promise<void> {
-    await this.writeDiagAt(join(projectRoot, ".dsh", ".mcp-diag.json"), event);
+    await this.writeDiagAt(join(projectRoot, DSH_DIR, DIAG_FILE), event);
   }
 
+  /** 全局诊断落 dshHome 根（与用户层 mcp.yml 同目录：注入 userLayerPaths 时同样跟随注入值）。 */
   private async writeGlobalDiag(event: Record<string, unknown>): Promise<void> {
     const { mcpYml } = this.resolveUserLayerPaths();
-    await this.writeDiagAt(join(dirname(mcpYml), ".mcp-diag.json"), event);
+    await this.writeDiagAt(join(dirname(mcpYml), DIAG_FILE), event);
   }
 
   private async writeDiagAt(path: string, event: Record<string, unknown>): Promise<void> {

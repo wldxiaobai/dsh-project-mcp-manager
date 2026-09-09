@@ -165,6 +165,18 @@ export function rowIdForServerName(serverName: string): string {
   return MANAGED_ROW_ID_PREFIX + serverName;
 }
 
+/**
+ * 行的原始 serverName：**受管行 id 优先**，其次 `config.serverName`。
+ * 装载（registry）与 CLI 判重/删除必须同口径——反向优先（config 优先）会在
+ * `id: panel-mcp-a` + `config.serverName: b` 这类不一致行上认成另一个名字，
+ * 于是 CLI 删不掉装载器实际装载的那条。
+ */
+export function rowNameOf(row: PatchRow): string | undefined {
+  const fromId = serverNameFromRowId(row.id);
+  if (fromId !== undefined) return fromId;
+  return typeof row.config?.serverName === "string" ? row.config.serverName : undefined;
+}
+
 export function serverNameFromRowId(id: string | undefined): string | undefined {
   if (typeof id !== "string" || !id.startsWith(MANAGED_ROW_ID_PREFIX)) return undefined;
   const name = id.slice(MANAGED_ROW_ID_PREFIX.length);

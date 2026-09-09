@@ -296,6 +296,43 @@ try {
     assert.deepEqual(profileDoc.mcpServers.pp, { command: "node", args: ["p.js"] }, "profile row written to profiles/<name>/mcp.json");
     pass("cli --format / DSH_MCP_CLI_FORMAT / --scope profile write to the right file");
   }
+
+  // 17. DSH_HOME 重定位：未注入 deps.home 时，用户层与 profile 层路径都跟随 $DSH_HOME；
+  // 注入的 deps.home 仍优先于环境变量（否则测试会读到真实用户配置，注入失去隔离意义）。
+  {
+    const relocated = join(dir, "dsh-home");
+    await mkdir(join(relocated, "profiles", "web"), { recursive: true });
+    await writeFile(join(relocated, "mcp.json"), JSON.stringify({ mcpServers: { relocated: { command: "node", args: ["r.js"] } } }), "utf8");
+    const savedHome = process.env.DSH_HOME;
+    process.env.DSH_HOME = relocated;
+    try {
+      const envDeps = { resolveProjectRoot: async () => project };
+      const capAdd = io();
+      assert.equal(await runCli(["add", "envhome", "node", "eh.js", "--scope", "user"], capAdd.io, envDeps), 0, capAdd.errs.join("\n"));
+      assert.ok(await pathExists(join(relocated, "mcp.yml")), "user scope write follows $DSH_HOME");
+      const capList = io();
+      assert.equal(await runCli(["list"], capList.io, envDeps), 0, capList.errs.join("\n"));
+      const listed = capList.lines.join("\n");
+      assert.ok(listed.includes("relocated:"), "user json layer under $DSH_HOME is listed: " + listed);
+      // get 未命中时报出实际查过的六层路径（M6）：重定位后的用户层路径必须在列。
+      const capMiss = io();
+      assert.equal(await runCli(["get", "nosuch"], capMiss.io, envDeps), 1);
+      const missText = capMiss.errs.join("\n");
+      assert.ok(missText.includes(join(relocated, "mcp.json")), "miss message lists the relocated user json path: " + missText);
+      assert.ok(missText.includes(join(relocated, "mcp.yml")), "miss message lists the relocated user yml path");
+      const capProfile = io();
+      assert.equal(await runCli(["add", "ph", "node", "ph.js", "--scope", "profile", "--profile", "web"], capProfile.io, envDeps), 0, capProfile.errs.join("\n"));
+      assert.ok(await pathExists(join(relocated, "profiles", "web", "mcp.json")), "profile scope write follows $DSH_HOME");
+      // deps.home 注入优先：同一环境下仍写进注入的 home。
+      const capInjected = io();
+      assert.equal(await runCli(["add", "injhome", "node", "ih.js", "--scope", "user", "--format", "json"], capInjected.io, deps), 0, capInjected.errs.join("\n"));
+      assert.ok(await pathExists(join(home, ".dsh", "mcp.json")), "injected deps.home wins over $DSH_HOME");
+      pass("cli follows DSH_HOME for user/profile scopes while deps.home injection still wins");
+    } finally {
+      if (savedHome === undefined) delete process.env.DSH_HOME;
+      else process.env.DSH_HOME = savedHome;
+    }
+  }
 } finally {
   await rm(dir, { recursive: true, force: true });
 }

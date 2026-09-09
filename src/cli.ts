@@ -12,15 +12,15 @@
  *
  * @module
  */
-import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { mkdir, readdir } from "node:fs/promises";
 import { extractManagedRows, readPatchFile, writeManagedRows, type PatchRow } from "./mcp-file.js";
-import { mcpServerInputSchema, patchRowToView, serverNameFromRowId, toPatchRow, type McpServerInput } from "./model.js";
+import { mcpServerInputSchema, patchRowToView, rowNameOf, toPatchRow, type McpServerInput } from "./model.js";
 import { CC_PROJECT_FILE, IGNORE_MCP_JSON_ENV, JSON_MCP_FILE, mcpJsonLayerEnabled, readDshJsonFile, readMcpJsonFile, type JsonReadResult, type McpRowSource, type SourcedRow } from "./json-file.js";
+import { MCP_YML_FILE, dshHomeFor, profileMcpJsonFile, userLayerPathsIn } from "./dsh-paths.js";
 import { readJsonServers, toJsonEntry, updateJsonServers } from "./json-write.js";
-import { mergeSourcedRows, type IdentityShadow } from "./registry.js";
+import { mergeSourcedRows, projectDshJsonFile, projectMcpFile, projectMcpJsonFile, type IdentityShadow } from "./registry.js";
 import { findProjectRoot } from "./project-root.js";
 
 export interface CliIo {
@@ -29,10 +29,15 @@ export interface CliIo {
 }
 
 export interface CliDeps {
-  /** 用户层根目录（默认 homedir()，测试注入）。 */
+  /** 用户主目录（测试注入）：给出时用户层固定为 `<home>/.dsh`，忽略 `$DSH_HOME`。 */
   home?: string;
   /** 项目根解析（默认向上找 .git，测试注入）。 */
   resolveProjectRoot?: (cwd: string) => Promise<string>;
+}
+
+/** 用户层根目录：`deps.home` 注入优先，否则 `$DSH_HOME`，再否则 `~/.dsh`。 */
+function dshHomeOf(deps: CliDeps): string {
+  return dshHomeFor(deps.home);
 }
 
 interface ParsedArgs {
@@ -86,12 +91,6 @@ const HELP = `dsh-mcp —— 项目/用户/profile 级 MCP 服务器管理（原
 function fail(io: CliIo, message: string): number {
   io.err(`错误：${message}`);
   return 1;
-}
-
-function nameOf(row: PatchRow): string | undefined {
-  const fromConfig = row.config?.serverName;
-  if (typeof fromConfig === "string" && fromConfig !== "") return fromConfig;
-  return serverNameFromRowId(row.id);
 }
 
 function parseKv(raw: string, separator: string, kind: string): [string, string] | string {
@@ -234,7 +233,7 @@ async function readNativeLayer(path: string, source: McpRowSource): Promise<Laye
   let note: string | undefined;
   try {
     for (const row of extractManagedRows(await readPatchFile(path))) {
-      const name = nameOf(row);
+      const name = rowNameOf(row);
       if (name !== undefined) rows.push({ name, row });
     }
   } catch (error) {
@@ -244,22 +243,21 @@ async function readNativeLayer(path: string, source: McpRowSource): Promise<Laye
   return makeLayer(source, path, rows, note);
 }
 
-/** 只读兼容层的错误注记：文件级优先，坏条目次之，两者皆无则 undefined。 */
-function ccLayerNote(cc: { fileError?: string; entryErrors: string[] }): string | undefined {
-  if (cc.fileError !== undefined) return `读取失败：${cc.fileError}`;
-  if (cc.entryErrors.length > 0) return `坏条目：${cc.entryErrors.join("；")}`;
+/** JSON 层（DSH 方言与遗留只读层同用）的错误注记：文件级优先，坏条目次之，两者皆无则 undefined。 */
+function layerNote(result: { fileError?: string; entryErrors: string[] }): string | undefined {
+  if (result.fileError !== undefined) return `读取失败：${result.fileError}`;
+  if (result.entryErrors.length > 0) return `坏条目：${result.entryErrors.join("；")}`;
   return undefined;
 }
 
 /** 读一个 DSH 自有 JSON 层（缺文件=空层）。 */
 async function readJsonLayer(path: string, source: McpRowSource, cwdPolicy: "project" | "host", projectRoot: string, label?: string): Promise<LayerRows> {
   const result: JsonReadResult = await readDshJsonFile(path, { source, cwdPolicy, projectRoot });
-  return makeLayer(source, path, result.rows.map((r) => ({ name: r.rawName, row: r.row })), ccLayerNote(result), label);
+  return makeLayer(source, path, result.rows.map((r) => ({ name: r.rawName, row: r.row })), layerNote(result), label);
 }
 
-/** 枚举 `~/.dsh/profiles/<name>/mcp.json`：每个存在的 profile 各一层。 */
-async function collectProfileLayers(home: string): Promise<LayerRows[]> {
-  const profilesDir = join(home, ".dsh", "profiles");
+/** 枚举 `<dshHome>/profiles/<name>/mcp.json`：每个存在的 profile 各一层。 */
+async function collectProfileLayers(profilesDir: string): Promise<LayerRows[]> {
   let names: string[] = [];
   try {
     names = (await readdir(profilesDir, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
@@ -270,7 +268,7 @@ async function collectProfileLayers(home: string): Promise<LayerRows[]> {
   // profile 名都是字符串，默认字典序即等价于原先的手搓比较器
   names.sort();
   for (const name of names) {
-    const path = join(profilesDir, name, JSON_MCP_FILE);
+    const path = profileMcpJsonFile(profilesDir, name);
     const layer = await readJsonLayer(path, "dsh-profile-user", "host", "", `profile (${name})`);
     if (layer.rows.length === 0 && layer.note === undefined) continue;
     out.push(layer);
@@ -280,26 +278,26 @@ async function collectProfileLayers(home: string): Promise<LayerRows[]> {
 
 async function collectLayers(deps: CliDeps): Promise<LayerRows[]> {
   const projectRoot = await resolveProjectRootFor(deps);
-  const home = deps.home ?? homedir();
+  const userPaths = userLayerPathsIn(dshHomeOf(deps));
   const layers: LayerRows[] = [];
   // 1) 项目原生 yml；2) 项目 .dsh/mcp.json（DSH 自有 JSON 方言）
-  const ymlPath = join(projectRoot, ".dsh", "mcp.yml");
-  const ymlLayer = await readNativeLayer(ymlPath, "dsh-project");
-  const projectJsonLayer = await readJsonLayer(join(projectRoot, ".dsh", JSON_MCP_FILE), "dsh-project-json", "project", projectRoot);
-  layers.push(makeLayer("dsh-project", ymlLayer.path, ymlLayer.rows, ymlLayer.note), projectJsonLayer);
+  layers.push(
+    await readNativeLayer(projectMcpFile(projectRoot), "dsh-project"),
+    await readJsonLayer(projectDshJsonFile(projectRoot), "dsh-project-json", "project", projectRoot)
+  );
   // 3) 项目 .mcp.json（遗留只读层；DSH_MCP_IGNORE_MCP_JSON=1 关闭后整层不出现）
   if (mcpJsonLayerEnabled()) {
-    const ccPath = join(projectRoot, CC_PROJECT_FILE);
+    const ccPath = projectMcpJsonFile(projectRoot);
     const cc = await readMcpJsonFile(ccPath, projectRoot);
-    layers.push(makeLayer("cc-project", ccPath, cc.rows.map((r) => ({ name: r.rawName, row: r.row })), ccLayerNote(cc)));
+    layers.push(makeLayer("cc-project", ccPath, cc.rows.map((r) => ({ name: r.rawName, row: r.row })), layerNote(cc)));
   }
   // 4) profile 用户层（每个已存在的 profile 各一层）
-  layers.push(...await collectProfileLayers(home));
-  // 5) 用户 ~/.dsh/mcp.yml；6) 用户 ~/.dsh/mcp.json
-  const userYmlPath = join(home, ".dsh", "mcp.yml");
-  const userYmlLayer = await readNativeLayer(userYmlPath, "dsh-user-yml");
-  const userJsonLayer = await readJsonLayer(join(home, ".dsh", JSON_MCP_FILE), "dsh-user", "host", "");
-  layers.push(makeLayer("dsh-user-yml", userYmlLayer.path, userYmlLayer.rows, userYmlLayer.note), userJsonLayer);
+  layers.push(...await collectProfileLayers(userPaths.profilesDir));
+  // 5) 用户 <dshHome>/mcp.yml；6) 用户 <dshHome>/mcp.json
+  layers.push(
+    await readNativeLayer(userPaths.mcpYml, "dsh-user-yml"),
+    await readJsonLayer(userPaths.mcpJson, "dsh-user", "host", "")
+  );
   return layers;
 }
 
@@ -350,16 +348,17 @@ function identityShadowNote(shadow: IdentityShadow): string {
   return `与 "${shadow.winner}" 同一服务（${shadow.reason === "normname" ? "归一化名称" : "命令与参数"}相同），去重不装载`;
 }
 
-function printLayerRows(layer: LayerRows, seen: Map<string, McpRowSource>, view: ShadowView, io: CliIo): number {
+/** seen 存的是胜者层的展示名（不是 source 枚举）：profile 胜者要带 profile 名。 */
+function printLayerRows(layer: LayerRows, seen: Map<string, string>, view: ShadowView, io: CliIo): number {
   if (layer.note !== undefined) io.out(`${layer.path}: ${layer.note}`);
   let count = 0;
   for (const { name, row } of layer.rows) {
     count++;
     const winner = seen.get(name);
-    if (winner === undefined) seen.set(name, layer.source);
+    if (winner === undefined) seen.set(name, sourceLabel(layer));
     const disabled = row.disabled === true ? ", disabled" : "";
     let shadow = sourceLabel(layer);
-    if (winner !== undefined) shadow = `（已被 ${SOURCE_LABEL[winner]} 遮蔽）`;
+    if (winner !== undefined) shadow = `（已被 ${winner} 遮蔽）`;
     else if (row.disabled !== true && !view.effective.has(row)) {
       const loss = view.identityLosses.get(name);
       if (loss !== undefined) shadow = `（${identityShadowNote(loss)}）`;
@@ -389,8 +388,7 @@ interface WriteTarget {
 
 /** profile 名 → 配置文件路径；未指定时列出可用 profile 供报错。 */
 async function resolveProfileTarget(parsed: ParsedArgs, deps: CliDeps): Promise<WriteTarget | { error: string }> {
-  const home = deps.home ?? homedir();
-  const profilesDir = join(home, ".dsh", "profiles");
+  const { profilesDir } = userLayerPathsIn(dshHomeOf(deps));
   let available: string[] = [];
   try {
     available = (await readdir(profilesDir, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
@@ -407,23 +405,24 @@ async function resolveProfileTarget(parsed: ParsedArgs, deps: CliDeps): Promise<
     return { error: `profile "${name}" 不存在于 ${profilesDir}；可用：${list}` };
   }
   if (parsed.format === "yml") return { error: "--scope profile 只支持 json（profile 层没有 yml 文件）" };
-  return { path: join(profilesDir, name, JSON_MCP_FILE), format: "json", scope: "profile" };
+  return { path: profileMcpJsonFile(profilesDir, name), format: "json", scope: "profile" };
+}
+
+/** 一个作用域目录（`<root>/.dsh` 或 `<dshHome>`）下的方言文件路径。 */
+function targetIn(dir: string, format: "yml" | "json", scope: WriteTarget["scope"]): WriteTarget {
+  return { path: join(dir, format === "json" ? JSON_MCP_FILE : MCP_YML_FILE), format, scope };
 }
 
 async function resolveWriteTarget(parsed: ParsedArgs, deps: CliDeps): Promise<WriteTarget | { error: string }> {
   const resolved = resolveFormat(parsed);
   if ("error" in resolved) return resolved;
-  const home = deps.home ?? homedir();
   if (parsed.scope === "profile") return resolveProfileTarget(parsed, deps);
-  if (parsed.scope === "user") {
-    return { path: join(home, ".dsh", resolved.format === "json" ? JSON_MCP_FILE : "mcp.yml"), format: resolved.format, scope: "user" };
-  }
-  const root = await resolveProjectRootFor(deps);
-  return { path: join(root, ".dsh", resolved.format === "json" ? JSON_MCP_FILE : "mcp.yml"), format: resolved.format, scope: "project" };
+  if (parsed.scope === "user") return targetIn(dshHomeOf(deps), resolved.format, "user");
+  return targetIn(join(await resolveProjectRootFor(deps), ".dsh"), resolved.format, "project");
 }
 
 /** 目标文件里已有的服务器名（按方言读；文件缺失/空 → 空集合）。 */
-async function existingNames(target: WriteTarget, io: CliIo): Promise<string[] | { error: string }> {
+async function existingNames(target: WriteTarget): Promise<string[] | { error: string }> {
   if (target.format === "json") {
     try {
       return Object.keys(await readJsonServers(target.path));
@@ -432,7 +431,7 @@ async function existingNames(target: WriteTarget, io: CliIo): Promise<string[] |
     }
   }
   try {
-    return extractManagedRows(await readPatchFile(target.path)).map((row) => nameOf(row)).filter((name): name is string => name !== undefined);
+    return extractManagedRows(await readPatchFile(target.path)).map((row) => rowNameOf(row)).filter((name): name is string => name !== undefined);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (message.includes("ENOENT")) return [];
@@ -461,7 +460,7 @@ async function cmdAdd(parsed: ParsedArgs, rest: string[], io: CliIo, deps: CliDe
   }
   const targetFile = await resolveWriteTarget(parsed, deps);
   if ("error" in targetFile) return fail(io, targetFile.error);
-  const names = await existingNames(targetFile, io);
+  const names = await existingNames(targetFile);
   if (!Array.isArray(names)) return fail(io, names.error);
   if (names.includes(name)) {
     const profileFlag = parsed.profile === undefined ? "" : ` --profile ${parsed.profile}`;
@@ -495,7 +494,7 @@ async function cmdList(parsed: ParsedArgs, io: CliIo, deps: CliDeps): Promise<nu
   const layers = parsed.scope === undefined
     ? allLayers
     : allLayers.filter((layer) => isProjectSource(layer.source) === (parsed.scope === "project"));
-  const seen = new Map<string, McpRowSource>();
+  const seen = new Map<string, string>();
   let total = 0;
   for (const layer of layers) total += printLayerRows(layer, seen, view, io);
   if (total === 0 && layers.every((layer) => layer.note === undefined)) io.out("未配置 MCP 服务器（dsh-mcp add 添加）。");
@@ -532,11 +531,12 @@ function printServerDetails(hit: { name: string; row: PatchRow; layer: LayerRows
   if (hit.row.disabled === true) io.out("注意：     该行被标记 disabled，不会装载。");
 }
 
-function getMissMessage(name: string): string {
+/** 未命中提示：已查层由 collectLayers 的实际结果拼出（六层，不是写死的三层）。 */
+function getMissMessage(name: string, layers: LayerRows[]): string {
   const offNotes: string[] = [];
   if (!mcpJsonLayerEnabled()) offNotes.push(`${CC_PROJECT_FILE} 层已停用（${IGNORE_MCP_JSON_ENV}=1）`);
   const tail = offNotes.length > 0 ? "；" + offNotes.join("；") : "";
-  return `未找到服务器 "${name}"（已查 .dsh/mcp.yml、${CC_PROJECT_FILE}、~/.dsh/mcp.yml${tail}）`;
+  return `未找到服务器 "${name}"（已查 ${layers.map((layer) => layer.path).join("、")}${tail}）`;
 }
 
 async function cmdGet(rest: string[], io: CliIo, deps: CliDeps): Promise<number> {
@@ -544,7 +544,7 @@ async function cmdGet(rest: string[], io: CliIo, deps: CliDeps): Promise<number>
   if (name === undefined) return fail(io, "用法：dsh-mcp get <name>");
   const layers = await collectLayers(deps);
   const found = layers.flatMap((layer) => layer.rows.filter((r) => r.name === name).map((r) => ({ ...r, layer })));
-  if (found.length === 0) return fail(io, getMissMessage(name));
+  if (found.length === 0) return fail(io, getMissMessage(name, layers));
   printServerDetails(found[0], io);
   // 与装载器同口径：详情展示的是文件里的定义，但该定义未必是生效的那条。
   const top = found[0];
@@ -566,11 +566,10 @@ async function removeTargets(parsed: ParsedArgs, deps: CliDeps): Promise<WriteTa
     const target = await resolveProfileTarget(parsed, deps);
     return "error" in target ? target : [target];
   }
-  const home = deps.home ?? homedir();
-  const root = parsed.scope === "user" ? home : await resolveProjectRootFor(deps);
   const scope = parsed.scope ?? "project";
-  const yml: WriteTarget = { path: join(root, ".dsh", "mcp.yml"), format: "yml", scope };
-  const json: WriteTarget = { path: join(root, ".dsh", JSON_MCP_FILE), format: "json", scope };
+  const dir = parsed.scope === "user" ? dshHomeOf(deps) : join(await resolveProjectRootFor(deps), ".dsh");
+  const yml = targetIn(dir, "yml", scope);
+  const json = targetIn(dir, "json", scope);
   if (parsed.format === "yml") return [yml];
   if (parsed.format === "json") return [json];
   return [yml, json];
@@ -581,7 +580,7 @@ type RemoveOutcome = "removed" | "absent" | { error: string };
 
 /** 在一个目标文件里删掉 name；不拥有该 name 时返回 `absent` 让调用方继续找下一个目标。 */
 async function removeFromTarget(target: WriteTarget, name: string, io: CliIo): Promise<RemoveOutcome> {
-  const names = await existingNames(target, io);
+  const names = await existingNames(target);
   if (!Array.isArray(names)) return { error: names.error };
   if (!names.includes(name)) return "absent";
   try {
@@ -591,7 +590,7 @@ async function removeFromTarget(target: WriteTarget, name: string, io: CliIo): P
       });
     } else {
       const rows = extractManagedRows(await readPatchFile(target.path));
-      await writeManagedRows(target.path, rows.filter((row) => nameOf(row) !== name));
+      await writeManagedRows(target.path, rows.filter((row) => rowNameOf(row) !== name));
     }
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
