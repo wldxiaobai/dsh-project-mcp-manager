@@ -7,7 +7,7 @@ import { mkdtemp, readFile, rm, writeFile, access } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { readJsonDocument, readJsonServers, toJsonEntry, updateJsonServers, writeJsonServers } from "../lib/json-write.js";
-import { mcpServerInputSchema } from "../lib/model.js";
+import { byCodeUnit, mcpServerInputSchema } from "../lib/model.js";
 
 let passed = 0;
 function pass(name) {
@@ -109,7 +109,7 @@ try {
   ]);
   const after = await readJsonServers(target);
   const afterKeys = Object.keys(after);
-  afterKeys.sort();
+  afterKeys.sort(byCodeUnit);
   assert.deepEqual(afterKeys, ["one", "two"], "concurrent read-modify-write keeps both entries");
   assert.equal(await exists(target + ".mcp-project.lock"), false, "no lock left behind after concurrent writes");
   pass("concurrent updates serialize through the lock without losing entries");

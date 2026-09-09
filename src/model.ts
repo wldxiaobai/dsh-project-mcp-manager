@@ -30,6 +30,17 @@ export function isUrlOrEnvRef(value: string): boolean {
     return false;
   }
 }
+/**
+ * 字符串数组比较器：UTF-16 码元序，与 `Array#sort` 默认行为逐字节等价。
+ * 全仓凡排序结果 wire 可见（诊断/快照键集、告警门控签名、list 输出序）都必须
+ * 用显式比较器写死这个口径——默认序不经 locale collator，不随宿主区域设置漂移。
+ */
+export function byCodeUnit(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
 export const DEFAULT_TOOL_CALL_TIMEOUT_MS = 60000;
 export const DEFAULT_RECONNECT = {
   enabled: true,

@@ -7,6 +7,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MCP_BLOCK_BEGIN, MCP_BLOCK_END, extractManagedRows, updateManagedRows, writeManagedRows } from "../lib/mcp-file.js";
+import { byCodeUnit } from "../lib/model.js";
 
 let passed = 0;
 function pass(name) {
@@ -78,7 +79,7 @@ try {
     updateManagedRows(concurrentPath, (rows) => [...rows, row("two")], { createIfMissing: true })
   ]);
   const names = extractManagedRows(await readFile(concurrentPath, "utf8")).map((r) => r.config.serverName);
-  names.sort();
+  names.sort(byCodeUnit);
   assert.deepEqual(names, ["one", "two"], "concurrent adds both survive the lock: " + names.join(","));
 
   const guardedPath = join(dir, "guarded.yml");

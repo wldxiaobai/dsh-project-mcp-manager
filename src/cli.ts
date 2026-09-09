@@ -16,7 +16,7 @@ import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { mkdir, readdir } from "node:fs/promises";
 import { extractManagedRows, readPatchFile, updateManagedRows, type PatchRow } from "./mcp-file.js";
-import { mcpServerInputSchema, patchRowToView, rowNameOf, toPatchRow, type McpServerInput } from "./model.js";
+import { byCodeUnit, mcpServerInputSchema, patchRowToView, rowNameOf, toPatchRow, type McpServerInput } from "./model.js";
 import { CC_PROJECT_FILE, IGNORE_MCP_JSON_ENV, JSON_MCP_FILE, mcpJsonLayerEnabled, readDshJsonFile, readMcpJsonFile, type JsonReadResult, type McpRowSource, type SourcedRow } from "./json-file.js";
 import { MCP_YML_FILE, dshHomeFor, profileMcpJsonFile, userLayerPathsIn } from "./dsh-paths.js";
 import { readJsonServers, toJsonEntry, updateJsonServers } from "./json-write.js";
@@ -265,8 +265,8 @@ async function collectProfileLayers(profilesDir: string): Promise<LayerRows[]> {
     return [];
   }
   const out: LayerRows[] = [];
-  // profile 名都是字符串，默认字典序即等价于原先的手搓比较器
-  names.sort();
+  // profile 名按码元序排（byCodeUnit）：与 Array#sort 默认等价，比较器显式化声明口径。
+  names.sort(byCodeUnit);
   for (const name of names) {
     const path = profileMcpJsonFile(profilesDir, name);
     const layer = await readJsonLayer(path, "dsh-profile-user", "host", "", `profile (${name})`);
@@ -291,10 +291,10 @@ async function collectLayers(deps: CliDeps): Promise<LayerRows[]> {
     const cc = await readMcpJsonFile(ccPath, projectRoot);
     layers.push(makeLayer("cc-project", ccPath, cc.rows.map((r) => ({ name: r.rawName, row: r.row })), layerNote(cc)));
   }
-  // 4) profile 用户层（每个已存在的 profile 各一层）
-  layers.push(...await collectProfileLayers(userPaths.profilesDir));
-  // 5) 用户 <dshHome>/mcp.yml；6) 用户 <dshHome>/mcp.json
+  // 4) profile 用户层（每个已存在的 profile 各一层）；5) 用户 <dshHome>/mcp.yml；6) 用户 <dshHome>/mcp.json
+  // 单次 push：实参自左向右求值，层序（即影子优先序）与分开写完全一致。
   layers.push(
+    ...await collectProfileLayers(userPaths.profilesDir),
     await readNativeLayer(userPaths.mcpYml, "dsh-user-yml"),
     await readJsonLayer(userPaths.mcpJson, "dsh-user", "host", "")
   );

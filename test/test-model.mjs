@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   MAX_TIMER_DELAY_MS,
   SERVER_NAME_RE,
+  byCodeUnit,
   denySetFor,
   effectiveServerNames,
   expandEnvRefs,
@@ -84,7 +85,7 @@ const secretRow = toPatchRow(mcpServerInputSchema.parse({
 }));
 const view = patchRowToView(secretRow);
 const envKeys = [...view.envKeys];
-envKeys.sort();
+envKeys.sort(byCodeUnit);
 assert.deepEqual(envKeys, ["FOO", "GITHUB_TOKEN"]);
 assert.equal(JSON.stringify(view).includes("super-secret"), false);
 pass("patchRowToView redacts secret values");
@@ -126,7 +127,7 @@ pass("namespacedServerName produces valid, deterministic names");
 const mounted = [{ projectRoot: projA, effectiveNames: ["a1", "a2"] }, { projectRoot: projB, effectiveNames: ["b1"] }];
 assert.deepEqual(denySetFor(projA, mounted), ["b1"]);
 const denyAll = [...denySetFor(undefined, mounted)];
-denyAll.sort();
+denyAll.sort(byCodeUnit);
 assert.deepEqual(denyAll, ["a1", "a2", "b1"]);
 pass("denySetFor scopes visibility to the session's own project");
 
@@ -245,12 +246,10 @@ pass("jsonServerEntrySchema tolerates unknown keys and DSH passthrough, rejects 
 }
 
 // 17. rowNameOf：受管行 id 优先于 config.serverName（CLI 与装载器同口径）
-{
-  assert.equal(rowNameOf({ id: "panel-mcp-fromid", name: "@deepseek-ai/dsh-mcp-client", config: { serverName: "fromconfig" } }), "fromid", "row id wins over config.serverName");
-  assert.equal(rowNameOf({ name: "@deepseek-ai/dsh-mcp-client", config: { serverName: "onlyconfig" } }), "onlyconfig", "config.serverName is the fallback");
-  assert.equal(rowNameOf({ id: "other-prefix", name: "@deepseek-ai/dsh-mcp-client", config: {} }), undefined, "no name at all");
-  pass("rowNameOf prefers the managed row id");
-}
+assert.equal(rowNameOf({ id: "panel-mcp-fromid", name: "@deepseek-ai/dsh-mcp-client", config: { serverName: "fromconfig" } }), "fromid", "row id wins over config.serverName");
+assert.equal(rowNameOf({ name: "@deepseek-ai/dsh-mcp-client", config: { serverName: "onlyconfig" } }), "onlyconfig", "config.serverName is the fallback");
+assert.equal(rowNameOf({ id: "other-prefix", name: "@deepseek-ai/dsh-mcp-client", config: {} }), undefined, "no name at all");
+pass("rowNameOf prefers the managed row id");
 
 console.log("\n" + passed + " passed, 0 failed");
 console.log("ALL MCP MODEL TESTS PASSED");

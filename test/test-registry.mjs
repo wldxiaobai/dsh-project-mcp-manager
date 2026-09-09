@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ProjectMcpRegistry, projectMcpFile, mergeSourcedRows, profileNameFromConfigPath } from "../lib/registry.js";
 import { MCP_BLOCK_BEGIN, MCP_BLOCK_END, writeManagedRows } from "../lib/mcp-file.js";
+import { byCodeUnit } from "../lib/model.js";
 
 let passed = 0;
 function pass(name) {
@@ -116,7 +117,7 @@ function fakeAgent(id, cwd) {
       tools: {
         restrict({ deny }) {
           const denyNames = [...deny];
-          denyNames.sort();
+          denyNames.sort(byCodeUnit);
           denies.push(denyNames);
           return () => {};
         }
@@ -400,7 +401,7 @@ try {
 
     // 10. 装载集合：cc-project(alpha) 生效；beta 因缺变量跳过、bad(sse) 拒载
     const names10 = ctx2.mounts.map((config) => config.serverName);
-    names10.sort();
+    names10.sort(byCodeUnit);
     assert.deepEqual(names10, ["alpha"], "legacy .mcp.json rows mount; sse and missing-env rows do not");
     const alpha10 = ctx2.mounts.find((config) => config.serverName === "alpha");
     assert.equal(alpha10.cwd, dir2, "CC stdio cwd defaults to project root");
@@ -415,7 +416,7 @@ try {
     const ccPart11 = snap11.find((file) => file.source === "cc-project");
     assert.ok(ccPart11 !== undefined && ccPart11.project === dir2);
     const ccNames11 = ccPart11.servers.map((server) => server.serverName);
-    ccNames11.sort();
+    ccNames11.sort(byCodeUnit);
     assert.deepEqual(ccNames11, ["alpha", "beta"]);
     assert.ok(Array.isArray(ccPart11.entryErrors) && ccPart11.entryErrors.some((note) => note.includes("bad")));
     const betaView11 = ccPart11.servers.find((server) => server.serverName === "beta");

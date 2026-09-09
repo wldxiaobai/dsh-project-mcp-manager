@@ -60,6 +60,7 @@ import {
 } from "./json-file.js";
 import { findProjectRoot } from "./project-root.js";
 import {
+  byCodeUnit,
   denySetFor,
   effectiveServerNames,
   expandEnvRefs,
@@ -213,7 +214,7 @@ function canonicalConfig(config: Record<string, unknown> | undefined): string {
   return JSON.stringify(config ?? null, (key, value) => {
     if (value !== null && typeof value === "object" && !Array.isArray(value)) {
       const keys = Object.keys(value);
-      keys.sort();
+      keys.sort(byCodeUnit);
       return keys.reduce((acc: Record<string, unknown>, k) => {
         acc[k] = (value as Record<string, unknown>)[k];
         return acc;
@@ -396,15 +397,55 @@ function classifyShadow(item: SourcedRow, winner: SourcedRow, buckets: ShadowBuc
 /** 剔除集签名：排序后逐条 name\0winner\0reason\0source\0winnerSource 拼接，供「集合变了才告警」比较。 */
 function identityShadowSignature(shadows: IdentityShadow[]): string {
   const entries = shadows.map((shadow) => [shadow.name, shadow.winner, shadow.reason, shadow.source, shadow.winnerSource].join("\u0000"));
-  entries.sort();
+  entries.sort(byCodeUnit);
   return entries.join("\u0001");
 }
 
 /** 全局层内部遮蔽集签名（同上，供全局告警门控）。 */
 function globalShadowSignature(shadows: GlobalShadow[]): string {
   const entries = shadows.map((shadow) => [shadow.name, shadow.winner, shadow.source, shadow.winnerSource].join("\u0000"));
-  entries.sort();
+  entries.sort(byCodeUnit);
   return entries.join("\u0001");
+}
+
+/**
+ * scan 诊断载荷（纯函数，自 scanProject 抽出以降认知复杂度）：「干净且无配置」
+ * 返回 null——零配置项目不留痕。判定与载荷字段与原内联大 || 条件、条件展开逐一
+ * 等价：异常、或有项目自身行、或有遮蔽/坏条目事件才写。
+ */
+function buildScanDiag(input: {
+  yml: { ok: boolean; error: string | null };
+  projectJson: JsonReadResult;
+  cc: JsonReadResult;
+  ownRows: Array<{ rawName: string }>;
+  shadowedOwnCc: string[];
+  suppressed: Set<string>;
+  identityShadows: IdentityShadow[];
+  shadowChanged: boolean
+}): Record<string, unknown> | null {
+  const { yml, projectJson, cc, ownRows, shadowedOwnCc, suppressed, identityShadows, shadowChanged } = input;
+  const worthRecording = !yml.ok
+    || ownRows.length > 0
+    || projectJson.fileError !== undefined
+    || projectJson.entryErrors.length > 0
+    || cc.fileError !== undefined
+    || cc.entryErrors.length > 0
+    || shadowedOwnCc.length > 0
+    || suppressed.size > 0
+    || (identityShadows.length > 0 && shadowChanged);
+  if (!worthRecording) return null;
+  const payload: Record<string, unknown> = {
+    kind: "scan",
+    ok: yml.ok && projectJson.fileError === undefined && cc.fileError === undefined,
+    error: [yml.error, projectJson.fileError, cc.fileError].filter(Boolean).join(" ; ") || null,
+    rows: ownRows.map((row) => row.rawName)
+  };
+  if (shadowedOwnCc.length > 0) payload.shadowedByYml = shadowedOwnCc;
+  if (suppressed.size > 0) payload.shadowedByProject = [...suppressed];
+  if (identityShadows.length > 0) payload.shadowedIdentity = identityShadows;
+  if (projectJson.entryErrors.length > 0) payload.dshJsonEntryErrors = projectJson.entryErrors;
+  if (cc.entryErrors.length > 0) payload.ccEntryErrors = cc.entryErrors;
+  return payload;
 }
 
 /** 单行三键先到先得：命中已有影子键则归因剔除，否则注册进影子表（disabled 占名行也注册）。 */
@@ -676,7 +717,7 @@ export class ProjectMcpRegistry {
   private async syncWatcher() {
     const roots = await this.knownProjects();
     const keys = roots.map((root) => projectKeyOf(root));
-    keys.sort();
+    keys.sort(byCodeUnit);
     const same = this.watchedFiles.length === keys.length && keys.every((key, index) => key === this.watchedFiles[index]);
     if (same) return;
     const old = this.watcher;
@@ -819,10 +860,11 @@ export class ProjectMcpRegistry {
   private async syncUserWatcher(): Promise<void> {
     const paths = this.resolveUserLayerPaths();
     const targets = [paths.mcpYml, paths.mcpJson, ...(this.userLayer.profileJson === null ? [] : [this.userLayer.profileJson])];
-    // 排序只用于跨轮次相等性比较，须与 locale 无关保持稳定：Array#sort 默认即按 UTF-16
-    // 码元序比较字符串（不经 locale .collator），无需手搓比较器。
+    // 排序只用于跨轮次相等性比较，须与 locale 无关保持稳定：统一走 byCodeUnit
+    // （UTF-16 码元序，与 Array#sort 默认逐字节等价，不经 locale collator），
+    // 比较器显式化是静态分析要求，也是本仓的排序口径声明。
     const keys = targets.map((target) => normalizePathKey(target));
-    keys.sort();
+    keys.sort(byCodeUnit);
     const same = this.userWatchedPaths.length === keys.length && keys.every((key, index) => key === this.userWatchedPaths[index]);
     if (same) return;
     const old = this.userWatcher;
@@ -925,8 +967,31 @@ export class ProjectMcpRegistry {
     const identityShadows = merged.shadowedIdentity.filter((shadow) => isProjectLayerSource(shadow.source) || isProjectLayerSource(shadow.winnerSource));
     // 跨来源同服务去重告警：unityMCP 与 unity-mcp 这类「一个服务器两个名字」的
     // 冗余定义，只装载高优先级层一条，被剔除的必须可见，不能静默消失。
-    // 变更门控：剔除集与上次一致就沉默——否则任何文件事件都会让每个
-    // 已知项目各刷一遍同样的告警（规模 = 对账次数 × 项目数 × 重复行数）。
+    const shadowChanged = this.warnIdentityShadows(key, projectRoot, identityShadows);
+    const ownRows = merged.rows.filter((row) => isProjectLayerSource(row.source));
+    // 项目侧压制：被本项目自身行遮蔽的全局行，在本会话 deny 掉（全局实例仍只挂一条）。
+    // 只收本轮真会全局装载的名字：disabled 占名行与被宿主 patch 拒掉的名字都不会
+    // 产生全局实例，deny 它们只会命中项目自己（或宿主 patch）的同名工具。
+    const suppressed = new Set(merged.shadowedUser.filter((rawName) => globalMountable.has(rawName)));
+    this.suppressedGlobals.set(key, suppressed);
+    // 诊断只记有信息量的扫描：异常，或确实解析出了项目自身配置行。干净且无配置的
+    // 项目不写任何记录——用户层行落到每个项目不算该项目的事件。
+    const diag = buildScanDiag({ yml, projectJson, cc, ownRows, shadowedOwnCc: merged.shadowedOwnCc, suppressed, identityShadows, shadowChanged });
+    if (diag !== null) await this.writeDiag(projectRoot, diag);
+    this.warnFileIssues(key + "\u0000json", `项目 MCP（.dsh/${JSON_MCP_FILE}，${projectRoot}）`, projectJson.fileError, projectJson.entryErrors);
+    this.warnFileIssues(key + "\u0000cc", `项目 MCP（${CC_PROJECT_FILE}，${projectRoot}）`, cc.fileError, cc.entryErrors);
+    // 源级隔离：某个源坏了只清空该源的 rows（读取器已保证），其余源照常进
+    // desired。绝不能整项目一票否决——那会把坏文件的代价转嫁给好文件的行。
+    // 项目容器只装项目层行；用户层行由全局容器装载（见 reconcileGlobals）。
+    return { projectRoot, rows: ownRows };
+  }
+
+  /**
+   * 项目层同服务剔除的告警 + 变更门控：剔除集与上次一致就沉默——否则任何文件
+   * 事件都会让每个已知项目各刷一遍同样的告警（规模 = 对账次数 × 项目数 × 重复
+   * 行数）。返回 shadowChanged 供 scan 诊断写入条件（buildScanDiag）使用。
+   */
+  private warnIdentityShadows(key: string, projectRoot: string, identityShadows: IdentityShadow[]): boolean {
     const shadowSig = identityShadowSignature(identityShadows);
     const prevShadowSig = this.identityShadowSigs.get(key);
     const shadowChanged = shadowSig !== prevShadowSig;
@@ -937,33 +1002,7 @@ export class ProjectMcpRegistry {
         this.ctx.logger.warn(`项目 MCP（${projectRoot}）：跳过重复服务定义 "${shadow.name}"（与 "${shadow.winner}" 为同一服务，${shadow.reason === "normname" ? "归一化名称相同" : "命令与参数相同"}，按层优先级保留高优先级定义）；确属不同服务器请改名或调整命令与参数`);
       }
     }
-    const ownRows = merged.rows.filter((row) => isProjectLayerSource(row.source));
-    // 项目侧压制：被本项目自身行遮蔽的全局行，在本会话 deny 掉（全局实例仍只挂一条）。
-    // 只收本轮真会全局装载的名字：disabled 占名行与被宿主 patch 拒掉的名字都不会
-    // 产生全局实例，deny 它们只会命中项目自己（或宿主 patch）的同名工具。
-    const suppressed = new Set(merged.shadowedUser.filter((rawName) => globalMountable.has(rawName)));
-    this.suppressedGlobals.set(key, suppressed);
-    // 诊断只记有信息量的扫描：异常，或确实解析出了项目自身配置行。干净且无配置的
-    // 项目不写任何记录——用户层行落到每个项目不算该项目的事件。
-    if (!yml.ok || ownRows.length > 0 || projectJson.fileError !== undefined || projectJson.entryErrors.length > 0 || cc.fileError !== undefined || cc.entryErrors.length > 0 || merged.shadowedOwnCc.length > 0 || suppressed.size > 0 || (identityShadows.length > 0 && shadowChanged)) {
-      await this.writeDiag(projectRoot, {
-        kind: "scan",
-        ok: yml.ok && projectJson.fileError === undefined && cc.fileError === undefined,
-        error: [yml.error, projectJson.fileError, cc.fileError].filter(Boolean).join(" ; ") || null,
-        rows: ownRows.map((row) => row.rawName),
-        ...(merged.shadowedOwnCc.length > 0 ? { shadowedByYml: merged.shadowedOwnCc } : {}),
-        ...(suppressed.size > 0 ? { shadowedByProject: [...suppressed] } : {}),
-        ...(identityShadows.length > 0 ? { shadowedIdentity: identityShadows } : {}),
-        ...(projectJson.entryErrors.length > 0 ? { dshJsonEntryErrors: projectJson.entryErrors } : {}),
-        ...(cc.entryErrors.length > 0 ? { ccEntryErrors: cc.entryErrors } : {})
-      });
-    }
-    this.warnFileIssues(key + "\u0000json", `项目 MCP（.dsh/${JSON_MCP_FILE}，${projectRoot}）`, projectJson.fileError, projectJson.entryErrors);
-    this.warnFileIssues(key + "\u0000cc", `项目 MCP（${CC_PROJECT_FILE}，${projectRoot}）`, cc.fileError, cc.entryErrors);
-    // 源级隔离：某个源坏了只清空该源的 rows（读取器已保证），其余源照常进
-    // desired。绝不能整项目一票否决——那会把坏文件的代价转嫁给好文件的行。
-    // 项目容器只装项目层行；用户层行由全局容器装载（见 reconcileGlobals）。
-    return { projectRoot, rows: ownRows };
+    return shadowChanged;
   }
 
   /**
@@ -1031,7 +1070,7 @@ export class ProjectMcpRegistry {
     }
     // 告警门控：blocked 集合不变就沉默（skipReasons 照写，快照始终能看到原因）。
     const blockedNames = [...blocked];
-    blockedNames.sort();
+    blockedNames.sort(byCodeUnit);
     for (const rawName of blockedNames) {
       this.skipReasons.set(GLOBAL_SCOPE_KEY + "\u0000" + rawName, "name-taken");
     }
