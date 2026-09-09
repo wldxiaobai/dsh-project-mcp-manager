@@ -15,10 +15,10 @@
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readdir } from "node:fs/promises";
 import { extractManagedRows, readPatchFile, writeManagedRows, type PatchRow } from "./mcp-file.js";
 import { mcpServerInputSchema, patchRowToView, serverNameFromRowId, toPatchRow, type McpServerInput } from "./model.js";
-import { CC_PROJECT_FILE, IGNORE_MCP_JSON_ENV, mcpJsonLayerEnabled, readMcpJsonFile, type McpRowSource, type SourcedRow } from "./json-file.js";
+import { CC_PROJECT_FILE, IGNORE_MCP_JSON_ENV, JSON_MCP_FILE, mcpJsonLayerEnabled, readDshJsonFile, readMcpJsonFile, type JsonReadResult, type McpRowSource, type SourcedRow } from "./json-file.js";
 import { mergeSourcedRows, type IdentityShadow } from "./registry.js";
 import { findProjectRoot } from "./project-root.js";
 
@@ -179,10 +179,23 @@ interface LayerRows {
   path: string;
   rows: { name: string; row: PatchRow }[];
   note?: string;
+  /** 覆盖 SOURCE_LABEL 的展示名（profile 层需要带 profile 名）。 */
+  label?: string;
 }
 
-function makeLayer(source: McpRowSource, path: string, rows: LayerRows["rows"], note?: string): LayerRows {
-  return note === undefined ? { source, path, rows } : { source, path, rows, note };
+function makeLayer(source: McpRowSource, path: string, rows: LayerRows["rows"], note?: string, label?: string): LayerRows {
+  return {
+    source,
+    path,
+    rows,
+    ...(note === undefined ? {} : { note }),
+    ...(label === undefined ? {} : { label })
+  };
+}
+
+/** 层的展示名：profile 层用带名 label，其余走固定表。 */
+function sourceLabel(layer: LayerRows): string {
+  return layer.label ?? SOURCE_LABEL[layer.source];
 }
 
 async function resolveProjectRootFor(deps: CliDeps): Promise<string> {
@@ -213,6 +226,31 @@ function ccLayerNote(cc: { fileError?: string; entryErrors: string[] }): string 
   return undefined;
 }
 
+/** 读一个 DSH 自有 JSON 层（缺文件=空层）。 */
+async function readJsonLayer(path: string, source: McpRowSource, cwdPolicy: "project" | "host", projectRoot: string, label?: string): Promise<LayerRows> {
+  const result: JsonReadResult = await readDshJsonFile(path, { source, cwdPolicy, projectRoot });
+  return makeLayer(source, path, result.rows.map((r) => ({ name: r.rawName, row: r.row })), ccLayerNote(result), label);
+}
+
+/** 枚举 `~/.dsh/profiles/<name>/mcp.json`：每个存在的 profile 各一层。 */
+async function collectProfileLayers(home: string): Promise<LayerRows[]> {
+  const profilesDir = join(home, ".dsh", "profiles");
+  let names: string[] = [];
+  try {
+    names = (await readdir(profilesDir, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+  const out: LayerRows[] = [];
+  for (const name of names.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) {
+    const path = join(profilesDir, name, JSON_MCP_FILE);
+    const layer = await readJsonLayer(path, "dsh-profile-user", "host", "", `profile (${name})`);
+    if (layer.rows.length === 0 && layer.note === undefined) continue;
+    out.push(layer);
+  }
+  return out;
+}
+
 async function collectLayers(deps: CliDeps): Promise<LayerRows[]> {
   const projectRoot = await resolveProjectRootFor(deps);
   const home = deps.home ?? homedir();
@@ -221,16 +259,22 @@ async function collectLayers(deps: CliDeps): Promise<LayerRows[]> {
   const ymlPath = join(projectRoot, ".dsh", "mcp.yml");
   const ymlLayer = await readNativeLayer(ymlPath, "dsh-project");
   layers.push(makeLayer("dsh-project", ymlLayer.path, ymlLayer.rows, ymlLayer.note));
-  // 2) 项目 .mcp.json（遗留只读层；DSH_MCP_IGNORE_MCP_JSON=1 关闭后整层不出现）
+  // 2) 项目 .dsh/mcp.json（DSH 自有 JSON 方言）
+  layers.push(await readJsonLayer(join(projectRoot, ".dsh", JSON_MCP_FILE), "dsh-project-json", "project", projectRoot));
+  // 3) 项目 .mcp.json（遗留只读层；DSH_MCP_IGNORE_MCP_JSON=1 关闭后整层不出现）
   if (mcpJsonLayerEnabled()) {
     const ccPath = join(projectRoot, CC_PROJECT_FILE);
     const cc = await readMcpJsonFile(ccPath, projectRoot);
     layers.push(makeLayer("cc-project", ccPath, cc.rows.map((r) => ({ name: r.rawName, row: r.row })), ccLayerNote(cc)));
   }
-  // 3) 用户 ~/.dsh/mcp.yml
+  // 4) profile 用户层（每个已存在的 profile 各一层）
+  layers.push(...await collectProfileLayers(home));
+  // 5) 用户 ~/.dsh/mcp.yml
   const userYmlPath = join(home, ".dsh", "mcp.yml");
   const userLayer = await readNativeLayer(userYmlPath, "dsh-user-yml");
   layers.push(makeLayer("dsh-user-yml", userLayer.path, userLayer.rows, userLayer.note));
+  // 6) 用户 ~/.dsh/mcp.json
+  layers.push(await readJsonLayer(join(home, ".dsh", JSON_MCP_FILE), "dsh-user", "host", ""));
   return layers;
 }
 
@@ -289,7 +333,7 @@ function printLayerRows(layer: LayerRows, seen: Map<string, McpRowSource>, view:
     const winner = seen.get(name);
     if (winner === undefined) seen.set(name, layer.source);
     const disabled = row.disabled === true ? ", disabled" : "";
-    let shadow = SOURCE_LABEL[layer.source];
+    let shadow = sourceLabel(layer);
     if (winner !== undefined) shadow = `（已被 ${SOURCE_LABEL[winner]} 遮蔽）`;
     else if (row.disabled !== true && !view.effective.has(row)) {
       const loss = view.identityLosses.get(name);
@@ -368,7 +412,7 @@ function kvLine(label: string, keys: string[] | undefined): string | undefined {
 
 function printServerDetails(hit: { name: string; row: PatchRow; layer: LayerRows }, io: CliIo): void {
   io.out(`Name:     ${hit.name}`);
-  io.out(`Source:   ${SOURCE_LABEL[hit.layer.source]}`);
+  io.out(`Source:   ${sourceLabel(hit.layer)}`);
   io.out(`File:     ${hit.layer.path}`);
   const config = hit.row.config ?? {};
   io.out(`Transport: ${config.transport === "streamable-http" ? "http (streamable-http)" : "stdio"}`);
@@ -409,7 +453,7 @@ async function cmdGet(rest: string[], io: CliIo, deps: CliDeps): Promise<number>
       else if (view.shadowedUser.has(top.name)) io.out("注意：     该行未实际装载——已被项目自身配置的同名/同服务定义遮蔽。");
     }
   }
-  for (const loser of found.slice(1)) io.out(`注意：     ${SOURCE_LABEL[loser.layer.source]} 中的同名 "${name}" 被上面来源遮蔽。`);
+  for (const loser of found.slice(1)) io.out(`注意：     ${sourceLabel(loser.layer)} 中的同名 "${name}" 被上面来源遮蔽。`);
   return 0;
 }
 

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ProjectMcpRegistry, projectMcpFile, mergeSourcedRows } from "../lib/registry.js";
+import { ProjectMcpRegistry, projectMcpFile, mergeSourcedRows, profileNameFromConfigPath } from "../lib/registry.js";
 import { MCP_BLOCK_BEGIN, MCP_BLOCK_END, writeManagedRows } from "../lib/mcp-file.js";
 
 let passed = 0;
@@ -126,6 +126,16 @@ function fakeAgent(id, cwd) {
 
 const dir = await mkdtemp(join(tmpdir(), "dsh-project-mcp-manager-registry-"));
 
+// ── profile 名解析（纯函数，宿主内部路径形态）──────────────────────────────
+{
+  assert.equal(profileNameFromConfigPath("file:///C:/Users/x/.dsh/profiles/web/cordis.yml"), "web", "file URL config path");
+  assert.equal(profileNameFromConfigPath("C:\\Users\\x\\.dsh\\profiles\\headless\\cordis.snapshot.yml"), "headless", "windows path + replay basename");
+  assert.equal(profileNameFromConfigPath("file:///home/u/.dsh/profiles/tui/"), "tui", "baseUrl directory form");
+  assert.equal(profileNameFromConfigPath("/tmp/cordis.yml"), undefined, "unrelated path yields no profile");
+  assert.equal(profileNameFromConfigPath(undefined), undefined);
+  pass("profileNameFromConfigPath resolves the running profile from host-internal paths");
+}
+
 // ── 0. mergeSourcedRows 跨来源同服务去重（纯函数）──────────────────────────
 {
   const srow = (rawName, source, config, disabled = false) => ({
@@ -226,7 +236,7 @@ try {
   const registry = new ProjectMcpRegistry(ctx, {
     globalNames: async () => ["gitlab"], // 全局已占用 gitlab → 项目行必须改名
     // 用户层注入到不存在的目录：真实 home 的 ~/.dsh/mcp.yml 不得进入本套断言。
-    userLayerPaths: { mcpYml: join(dir, "nohome", ".dsh", "mcp.yml") }
+    userLayerPaths: { mcpYml: join(dir, "nohome", ".dsh", "mcp.yml"), mcpJson: join(dir, "nohome", ".dsh", "mcp.json"), profilesDir: join(dir, "nohome", ".dsh", "profiles") }
   });
   const agentA = fakeAgent("session-a", projectA);
   const agentB = fakeAgent("session-b", projectB);
@@ -374,7 +384,7 @@ try {
     const ctx2 = fakeCtx();
     const registry2 = new ProjectMcpRegistry(ctx2, {
       globalNames: async () => [],
-      userLayerPaths: { mcpYml: join(home2, ".dsh", "mcp.yml") }
+      userLayerPaths: { mcpYml: join(home2, ".dsh", "mcp.yml"), mcpJson: join(home2, ".dsh", "mcp.json"), profilesDir: join(home2, ".dsh", "profiles") }
     });
     ctx2.agentsList.push(fakeAgent("session-e", dir2));
     await registry2.reconcileNow();
@@ -697,6 +707,60 @@ try {
         ctx2.logger.warn = origWarn28;
       }
       pass("registry dedups the same service across layers and reports the shadowed twin");
+    }
+
+    // 29. DSH 自有 JSON 层：项目 .dsh/mcp.json、用户 ~/.dsh/mcp.json、profile json；
+    // 同项目内 yml 与 json 同名时 yml 胜出（逐行优先序），profile 名解析不出时降级。
+    {
+      const dir7 = join(dir2, "proj7");
+      await mkdir(join(dir7, ".dsh"), { recursive: true });
+      await writeManagedRows(projectMcpFile(dir7), [stdioRow("both")], { createIfMissing: true });
+      await writeFile(join(dir7, ".dsh", "mcp.json"), JSON.stringify({
+        mcpServers: {
+          both: { command: "node", args: ["from-json.js"] },
+          jsonproj: { command: "node", args: ["p.js"] }
+        }
+      }), "utf8");
+      await writeFile(join(home2, ".dsh", "mcp.json"), JSON.stringify({
+        mcpServers: { jsonuser: { command: "node", args: ["u.js"] } }
+      }), "utf8");
+      await mkdir(join(home2, ".dsh", "profiles", "web"), { recursive: true });
+      await writeFile(join(home2, ".dsh", "profiles", "web", "mcp.json"), JSON.stringify({
+        mcpServers: { jsonprofile: { command: "node", args: ["pr.js"] } }
+      }), "utf8");
+      const userPaths = {
+        mcpYml: join(home2, ".dsh", "mcp.yml"),
+        mcpJson: join(home2, ".dsh", "mcp.json"),
+        profilesDir: join(home2, ".dsh", "profiles")
+      };
+      const ctx3 = fakeCtx();
+      const registry3 = new ProjectMcpRegistry(ctx3, { globalNames: async () => [], activeProfile: async () => "web", userLayerPaths: userPaths });
+      ctx3.agentsList.push(fakeAgent("session-k", dir7));
+      await registry3.reconcileNow();
+      const names29 = ctx3.mounts.map((config) => config.serverName);
+      // 用户层行扇出到每个已知项目 → 同名冲突时生效名带 p<hash>_ 前缀。
+      const mounts29 = (name) => names29.some((mounted) => mounted === name || mounted.endsWith("_" + name));
+      for (const expected of ["jsonproj", "jsonprofile", "jsonuser"]) {
+        assert.ok(mounts29(expected), `${expected} mounts from its DSH json layer: ${names29.join(",")}`);
+      }
+      const both29 = ctx3.mounts.findLast((config) => config.serverName === "both");
+      assert.deepEqual(both29.args, ["srv-both.js"], "yml wins over .dsh/mcp.json for the same name");
+      const snap29 = await registry3.snapshot();
+      assert.ok(snap29.some((file) => file.source === "dsh-project-json" && file.project === dir7), "project json partition present");
+      assert.ok(snap29.some((file) => file.source === "dsh-user" && file.kind === "global"), "user json partition present");
+      assert.ok(snap29.some((file) => file.source === "dsh-profile-user" && file.kind === "global"), "profile json partition present");
+      // profile 名解析不出（无 activeProfile provider）→ 不读 profile 层，其余照常。
+      const ctx4 = fakeCtx();
+      const registry4 = new ProjectMcpRegistry(ctx4, { globalNames: async () => [], userLayerPaths: userPaths });
+      ctx4.agentsList.push(fakeAgent("session-l", dir7));
+      await registry4.reconcileNow();
+      assert.ok(!ctx4.mounts.some((config) => config.serverName.endsWith("jsonprofile")), "profile layer skipped when the profile name is unresolvable");
+      assert.ok(ctx4.mounts.some((config) => config.serverName.endsWith("jsonuser")), "other user layers unaffected by the profile fallback");
+      for (const disposer of [...ctx3.disposers, ...ctx4.disposers]) {
+        const cleanup = disposer();
+        if (typeof cleanup === "function") cleanup();
+      }
+      pass("DSH json layers mount for project/user/profile with yml precedence and profile fallback");
     }
 
     // 场景 24 的 unlink 会留下防抖后的迟到 reconcile 与 chokidar 内部重扫：

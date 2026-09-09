@@ -227,6 +227,25 @@ try {
     assert.ok(!getWin.lines.join("\n").includes("未实际装载"), "the effective winner gets no annotation");
     pass("cli list/get mark cross-layer same-service dedup with the registry's merge");
   }
+
+  // 15. DSH 自有 JSON 层：项目 .dsh/mcp.json、用户 ~/.dsh/mcp.json、profile json
+  // 都出现在 list；profile 层按 profile 名打标签，get 能命中。
+  {
+    await writeFile(join(project, ".dsh", "mcp.json"), JSON.stringify({ mcpServers: { pj: { command: "node", args: ["pj.js"] } } }), "utf8");
+    await writeFile(join(home, ".dsh", "mcp.json"), JSON.stringify({ mcpServers: { uj: { command: "node", args: ["uj.js"] } } }), "utf8");
+    await mkdir(join(home, ".dsh", "profiles", "web"), { recursive: true });
+    await writeFile(join(home, ".dsh", "profiles", "web", "mcp.json"), JSON.stringify({ mcpServers: { prj: { type: "http", url: "https://p/mcp" } } }), "utf8");
+    const cap = io();
+    assert.equal(await runCli(["list"], cap.io, deps), 0);
+    const text = cap.lines.join("\n");
+    assert.ok(text.includes("pj: node pj.js (stdio) -- project (.dsh/mcp.json)"), "project json layer listed: " + text);
+    assert.ok(text.includes("uj: node uj.js (stdio) -- user (~/.dsh/mcp.json)"), "user json layer listed: " + text);
+    assert.ok(text.includes("prj: https://p/mcp (streamable-http) -- profile (web)"), "profile layer labelled by name: " + text);
+    const getCap = io();
+    assert.equal(await runCli(["get", "prj"], getCap.io, deps), 0);
+    assert.ok(getCap.lines.join("\n").includes("Source:   profile (web)"), "get reports the profile layer");
+    pass("cli lists DSH json layers and labels profile layers by name");
+  }
 } finally {
   await rm(dir, { recursive: true, force: true });
 }
