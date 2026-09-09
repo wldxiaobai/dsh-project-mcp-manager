@@ -267,7 +267,9 @@ async function collectProfileLayers(home: string): Promise<LayerRows[]> {
     return [];
   }
   const out: LayerRows[] = [];
-  for (const name of names.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) {
+  // profile 名都是字符串，默认字典序即等价于原先的手搓比较器
+  names.sort();
+  for (const name of names) {
     const path = join(profilesDir, name, JSON_MCP_FILE);
     const layer = await readJsonLayer(path, "dsh-profile-user", "host", "", `profile (${name})`);
     if (layer.rows.length === 0 && layer.note === undefined) continue;
@@ -280,12 +282,11 @@ async function collectLayers(deps: CliDeps): Promise<LayerRows[]> {
   const projectRoot = await resolveProjectRootFor(deps);
   const home = deps.home ?? homedir();
   const layers: LayerRows[] = [];
-  // 1) 项目原生 yml
+  // 1) 项目原生 yml；2) 项目 .dsh/mcp.json（DSH 自有 JSON 方言）
   const ymlPath = join(projectRoot, ".dsh", "mcp.yml");
   const ymlLayer = await readNativeLayer(ymlPath, "dsh-project");
-  layers.push(makeLayer("dsh-project", ymlLayer.path, ymlLayer.rows, ymlLayer.note));
-  // 2) 项目 .dsh/mcp.json（DSH 自有 JSON 方言）
-  layers.push(await readJsonLayer(join(projectRoot, ".dsh", JSON_MCP_FILE), "dsh-project-json", "project", projectRoot));
+  const projectJsonLayer = await readJsonLayer(join(projectRoot, ".dsh", JSON_MCP_FILE), "dsh-project-json", "project", projectRoot);
+  layers.push(makeLayer("dsh-project", ymlLayer.path, ymlLayer.rows, ymlLayer.note), projectJsonLayer);
   // 3) 项目 .mcp.json（遗留只读层；DSH_MCP_IGNORE_MCP_JSON=1 关闭后整层不出现）
   if (mcpJsonLayerEnabled()) {
     const ccPath = join(projectRoot, CC_PROJECT_FILE);
@@ -294,12 +295,11 @@ async function collectLayers(deps: CliDeps): Promise<LayerRows[]> {
   }
   // 4) profile 用户层（每个已存在的 profile 各一层）
   layers.push(...await collectProfileLayers(home));
-  // 5) 用户 ~/.dsh/mcp.yml
+  // 5) 用户 ~/.dsh/mcp.yml；6) 用户 ~/.dsh/mcp.json
   const userYmlPath = join(home, ".dsh", "mcp.yml");
-  const userLayer = await readNativeLayer(userYmlPath, "dsh-user-yml");
-  layers.push(makeLayer("dsh-user-yml", userLayer.path, userLayer.rows, userLayer.note));
-  // 6) 用户 ~/.dsh/mcp.json
-  layers.push(await readJsonLayer(join(home, ".dsh", JSON_MCP_FILE), "dsh-user", "host", ""));
+  const userYmlLayer = await readNativeLayer(userYmlPath, "dsh-user-yml");
+  const userJsonLayer = await readJsonLayer(join(home, ".dsh", JSON_MCP_FILE), "dsh-user", "host", "");
+  layers.push(makeLayer("dsh-user-yml", userYmlLayer.path, userYmlLayer.rows, userYmlLayer.note), userJsonLayer);
   return layers;
 }
 
@@ -464,7 +464,8 @@ async function cmdAdd(parsed: ParsedArgs, rest: string[], io: CliIo, deps: CliDe
   const names = await existingNames(targetFile, io);
   if (!Array.isArray(names)) return fail(io, names.error);
   if (names.includes(name)) {
-    return fail(io, `"${name}" 已存在于 ${targetFile.path}；先 dsh-mcp remove ${name} --scope ${targetFile.scope}${parsed.profile === undefined ? "" : ` --profile ${parsed.profile}`}`);
+    const profileFlag = parsed.profile === undefined ? "" : ` --profile ${parsed.profile}`;
+    return fail(io, `"${name}" 已存在于 ${targetFile.path}；先 dsh-mcp remove ${name} --scope ${targetFile.scope}${profileFlag}`);
   }
   const serverInput = validated.data as McpServerInput;
   if (targetFile.format === "json") {
