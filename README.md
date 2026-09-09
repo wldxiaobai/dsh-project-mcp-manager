@@ -66,9 +66,9 @@ pins to a specific version.
 ## Build & test
 
 ```powershell
-npm install
-npm run build     # tsc → lib/
-npm test          # node test/test-model.mjs / test-mcp-file / test-cc-file / test-registry / test-cli
+pnpm install
+pnpm run build     # tsc → lib/
+pnpm test          # node test/test-model.mjs / test-mcp-file / test-json-file / test-json-write / test-registry / test-cli
 ```
 
 ## Configuration format

@@ -58,9 +58,9 @@ pnpm add link:<你的 dsh-mcp-project 源码目录>   # 例如 D:\dev\dsh-mcp-pr
 ## 构建与测试
 
 ```powershell
-npm install
-npm run build     # tsc → lib/
-npm test          # node 直跑 test/ 下五个 .mjs（model / mcp-file / cc-file / registry / cli）
+pnpm install
+pnpm run build     # tsc → lib/
+pnpm test          # node 直跑 test/ 下六个 .mjs（model / mcp-file / json-file / json-write / registry / cli）
 ```
 
 ## 配置格式

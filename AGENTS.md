@@ -26,10 +26,10 @@
 ## 常用命令
 
 ```bash
-npm install
-npm run build        # 先清空 lib 再 tsc -p tsconfig.json → lib/
-npm test             # 依次 node 跑 test/ 下六个 .mjs（pretest 先 build）
-npx tsc --noEmit     # 仅类型检查
+pnpm install           # 包管理器为 pnpm（pnpm-lock.yaml 是唯一锁文件）
+pnpm run build         # 先清空 lib 再 tsc -p tsconfig.json → lib/
+pnpm test              # 依次 node 跑 test/ 下六个 .mjs（pretest 先 build）
+npx tsc --noEmit       # 仅类型检查
 ```
 
 本地联调：`dsh plugin --profile <p> add link:<本仓库路径>`（或先 `pnpm link` 再跑一次任意 `dsh plugin --profile <p> <子命令>` 触发 bundle reconcile），junction 实时同步源码。dsh ≥ 0.1.2 只把 `dsh.profile.bundles` 里的包当作 profile 层，单纯 pnpm link 不会激活插件。
