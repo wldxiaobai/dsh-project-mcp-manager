@@ -3,6 +3,9 @@
 [← 返回 README](../README.zh.md) ｜ 相关：[v0.4.0 发布说明](../releases/v0.4.0.md) ·
 [JSON 配置层设计提案](../design/proposal-json-mcp-config.md)
 
+> **本文所列 H1-H4 / M1-M10 / L1-L12 与 T1-T9 已在 v0.4.1 全部落地**，
+> 逐项对应见 [v0.4.1 发布说明](../releases/v0.4.1.md) 与 `CHANGELOG.md` 的 `[0.4.1]` 段。
+
 **审查日期**：2026-09-10 ｜ **区间**：`v0.3.1..HEAD`（HEAD = `6022706`，`dev` 分支）
 **范围**：`src/*.ts` 全部修改——7 文件 `+1142 / −580`，即 v0.4.0 功能主体（DSH JSON 配置层、
 用户层全局装载、CLI 双格式与 profile 作用域、移除 Claude 用户态读取）加上标签后的
