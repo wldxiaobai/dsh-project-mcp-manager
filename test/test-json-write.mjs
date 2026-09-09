@@ -96,7 +96,9 @@ try {
     updateJsonServers(target, (servers) => { servers.two = { command: "node", args: ["2.js"] }; })
   ]);
   const after = await readJsonServers(target);
-  assert.deepEqual(Object.keys(after).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)), ["one", "two"], "concurrent read-modify-write keeps both entries");
+  const afterKeys = Object.keys(after);
+  afterKeys.sort();
+  assert.deepEqual(afterKeys, ["one", "two"], "concurrent read-modify-write keeps both entries");
   assert.equal(await exists(target + ".mcp-project.lock"), false, "no lock left behind after concurrent writes");
   pass("concurrent updates serialize through the lock without losing entries");
 } finally {

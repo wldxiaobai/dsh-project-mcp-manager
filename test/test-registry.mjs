@@ -115,7 +115,9 @@ function fakeAgent(id, cwd) {
     ctx: {
       tools: {
         restrict({ deny }) {
-          denies.push([...deny].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
+          const denyNames = [...deny];
+          denyNames.sort();
+          denies.push(denyNames);
           return () => {};
         }
       }
