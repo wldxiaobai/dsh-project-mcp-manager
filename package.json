@@ -37,7 +37,7 @@
     "build": "npm run clean && tsc -p tsconfig.json",
     "prepack": "npm run build",
     "pretest": "npm run build",
-    "test": "node test/test-model.mjs && node test/test-mcp-file.mjs && node test/test-json-file.mjs && node test/test-registry.mjs && node test/test-cli.mjs"
+    "test": "node test/test-model.mjs && node test/test-mcp-file.mjs && node test/test-json-file.mjs && node test/test-json-write.mjs && node test/test-registry.mjs && node test/test-cli.mjs"
   },
   "files": [
     "lib",
