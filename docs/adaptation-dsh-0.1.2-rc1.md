@@ -9,8 +9,10 @@ cordis-plugin-loader 1.0.3、cordis-plugin-include 1.0.7）
 
 > **状态更新（v0.4.0）**：1.1 的安装/激活流程已写入 `README.md`、`docs/README.zh.md`
 > 与 `AGENTS.md`（dsh ≥ 0.1.2 只把 `dsh.profile.bundles` 里的包当 profile 层，纯
-> `pnpm link` 不会激活）。1.2 的依赖漂移仍待处理（`@deepseek-ai/dsh-mcp-client`
-> 仍声明 `^0.1.1-rc.2`）。1.3 的首轮可见性未改动。
+> `pnpm link` 不会激活）。**1.2 的依赖漂移已解决**（commit `55bd07f`：
+> `@deepseek-ai/dsh-mcp-client` 升到 `^0.1.2-rc.1`，其 peer 全部解析到 0.1.2-rc.1，
+> `dsh-scope` 取代 `dsh-invariants`；另以 `pnpm-lock.yaml` 取代陈旧 `package-lock.json`）。
+> 1.3 的首轮可见性未改动。
 
 ---
 
@@ -44,19 +46,24 @@ dsh plugin --profile <p> list --depth 0
 `web` profile 只有 junction、`bundles` 里**没有**插件——即当前 GUI 宿主并未装载本插件
 （本会话看不到任何 `mcp__` 工具正是这个原因）。
 
-### 1.2 依赖版本漂移：插件仍在跑 mcp-client 0.1.1-rc.2
+### 1.2 依赖版本漂移：插件仍在跑 mcp-client 0.1.1-rc.2 —— 已解决
 
 **现象**：`package.json` 声明 `@deepseek-ai/dsh-mcp-client@^0.1.1-rc.2`，仓库
 `node_modules` 实际解析到 **0.1.1-rc.2**（连带 `dsh-agent` / `dsh-tools` / `dsh-session`
 等副本同为 0.1.1-rc.2），而宿主是 0.1.2-rc.1 → 同一进程内存在两份 dsh-* 代码。
 
-**影响**：实测能正常工作（工具注册到宿主 `ctx.tools`、调用成功），但吃不到 0.1.2 的
-改动（`Config` 入参放宽为 `z<ConfigInput, Config>`、`JsonValue` 类型来源改
-`dsh-util-values`、移除 `invariant.js`）。
+**关键更正**：`^0.1.1-rc.2` 这个范围**不会**升级到 0.1.2-rc.1——npm semver 要求
+带 prerelease 的候选版本与比较符的 major.minor.patch 元组相同，实测
+`npm view "@deepseek-ai/dsh-mcp-client@^0.1.1-rc.2" version` 只解析出 `0.1.1-rc.2`。
+所以必须显式改范围。
 
-**处置**：把依赖提到 `^0.1.2-rc.1` 并在 profile 里 `pnpm install` 重装，让插件解析到
-与宿主同版本的副本（可 dedupe 时即 dedupe）。改动属依赖升级，按 AGENTS 需同步
-`package.json` 与 `CHANGELOG.md`。
+**处置（已完成，commit `55bd07f`）**：升到 `^0.1.2-rc.1` 后重装，插件侧
+`dsh-mcp-client` 与其全部 peer（`dsh-attachment`/`dsh-llm`/`dsh-scope`/
+`dsh-subprocess`/`dsh-timeout`/`dsh-tools`）解析到 **0.1.2-rc.1**，cordis 4.0.2，
+与宿主同版；`dsh-scope` 取代 0.1.1 线的 `dsh-invariants`。同批还以
+`pnpm-lock.yaml` 取代了停留在 v0.1.1 的 `package-lock.json`（commit `dcbe846`），
+安装可复现。重装后 `pnpm test` 六套全绿，headless 实机复验
+`mcp__deps-probe__probe` → `pong:deps-probe`。
 
 ### 1.3 可选修复：交互会话首轮看不到项目 MCP
 

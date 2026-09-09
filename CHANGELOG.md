@@ -68,6 +68,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `npm run build` now clears `lib/` before compiling, so modules deleted from
   `src/` no longer linger as stale build output.
 
+### Dependencies
+
+- `@deepseek-ai/dsh-mcp-client` `^0.1.1-rc.2` → `^0.1.2-rc.1`: the old
+  prerelease range never resolves past the 0.1.1-rc.* line (npm semver requires
+  a matching major.minor.patch tuple for prerelease candidates), so the plugin
+  loaded its own 0.1.1-rc.2 copy plus 0.1.1-rc.2 peers inside a 0.1.2-rc.1 host.
+  It now resolves 0.1.2-rc.1 with the same peers as the host
+  (`dsh-scope` replaces `dsh-invariants`).
+- Dev dependency `@deepseek-ai/cordis` `^4.0.1` → `^4.0.2` (types only) to
+  match the host.
+- Package manager is now pnpm: `pnpm-lock.yaml` is committed and the stale
+  `package-lock.json` (still pinned at v0.1.1) is removed;
+  `package.json` declares `packageManager: pnpm@12.3.4`. Build/test docs use
+  `pnpm install`.
+
 ## [0.3.1] - 2026-09-04
 
 ### Fixed
