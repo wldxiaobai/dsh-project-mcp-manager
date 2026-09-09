@@ -89,7 +89,7 @@ export function profileNameFromConfigPath(raw: unknown): string | undefined {
       }
     }
   }
-  const normalized = path.replace(/\\/g, "/");
+  const normalized = path.replaceAll("\\", "/");
   const fileMatch = /\/profiles\/([^/]+)\/cordis(?:\.snapshot)?\.ya?ml$/.exec(normalized);
   if (fileMatch !== null) return fileMatch[1];
   // baseUrl 形态：`file:///…/profiles/<name>/`
