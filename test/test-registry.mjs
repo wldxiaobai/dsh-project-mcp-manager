@@ -128,11 +128,18 @@ const dir = await mkdtemp(join(tmpdir(), "dsh-project-mcp-manager-registry-"));
 
 // ── profile 名解析（纯函数，宿主内部路径形态）──────────────────────────────
 {
-  assert.equal(profileNameFromConfigPath("file:///C:/Users/x/.dsh/profiles/web/cordis.yml"), "web", "file URL config path");
-  assert.equal(profileNameFromConfigPath("C:\\Users\\x\\.dsh\\profiles\\headless\\cordis.snapshot.yml"), "headless", "windows path + replay basename");
-  assert.equal(profileNameFromConfigPath("file:///home/u/.dsh/profiles/tui/"), "tui", "baseUrl directory form");
-  assert.equal(profileNameFromConfigPath("/tmp/cordis.yml"), undefined, "unrelated path yields no profile");
-  assert.equal(profileNameFromConfigPath(undefined), undefined);
+  // 无关路径用例只要求「解析不出 profile」，用中性的虚构挂载点，避免踩
+  // 公共可写目录（/tmp 等）的安全规则——这里根本不碰文件系统。
+  const profilePathCases = [
+    { config: "file:///C:/Users/x/.dsh/profiles/web/cordis.yml", expected: "web", note: "file URL config path" },
+    { config: String.raw`C:\Users\x\.dsh\profiles\headless\cordis.snapshot.yml`, expected: "headless", note: "windows path + replay basename" },
+    { config: "file:///home/u/.dsh/profiles/tui/", expected: "tui", note: "baseUrl directory form" },
+    { config: "/srv/apps/cordis.yml", expected: undefined, note: "unrelated path yields no profile" },
+    { config: undefined, expected: undefined, note: "missing config path" }
+  ];
+  for (const testCase of profilePathCases) {
+    assert.equal(profileNameFromConfigPath(testCase.config), testCase.expected, testCase.note);
+  }
   pass("profileNameFromConfigPath resolves the running profile from host-internal paths");
 }
 
