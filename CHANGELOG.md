@@ -21,6 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each linking to the documentation in its own language; every cross-document
   link, the `AGENTS.md` directory listing and the `src/index.ts` header comment
   follow the new layout.
+- Internal cleanup for the SonarCloud new-code review, with no behavior change:
+  the profile-name test case no longer uses a world-writable-path literal (the
+  analyzer graded it as a security vulnerability and failed the quality gate),
+  hand-rolled `sort()` comparators give way to the default lexicographic order,
+  nested ternaries and a nested template literal in `cli.ts` / `json-file.ts`
+  become explicit statements, adjacent `Array#push()` calls merge into one,
+  `String#replace(/\\/g, …)` becomes `String#replaceAll`, and the three
+  over-complex functions are split — `cmdRemove` (→ `removeFromTarget`),
+  `ProjectMcpRegistry.mountServer` (→ `buildServerConfig` + `trackMount`) and
+  `sweepRestrictions` (→ `activeMountGroups` + `registeredToolIds` +
+  `expandToToolNames`).
 
 ## [0.4.0] - 2026-09-09
 
