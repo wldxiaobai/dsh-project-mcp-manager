@@ -81,23 +81,6 @@ export const mcpServerInputSchema = z.discriminatedUnion("transport", [stdioServ
 export type McpServerInput = z.infer<typeof mcpServerInputSchema>;
 export type McpTransport = McpServerInput["transport"];
 
-/**
- * Claude Code `.mcp.json` / `~/.claude.json` 单条目宽松 schema：未知字段
- * （timeout/scope 等 CC 附加键）容忍并忽略；`enabled:false` 条目由读取层
- * 静默跳过；`type` 缺省视为 stdio（有 url 无 command 时按 http 推断），
- * `type:"http"`/`"streamable-http"` 对应 streamable-http，`type:"sse"` 在归一层
- * 显式拒绝（dsh-mcp-client 仅支持 stdio | streamable-http，见 lib/types/index.d.ts）。
- */
-export const ccServerEntrySchema = z.looseObject({
-  type: z.enum(["stdio", "http", "streamable-http", "sse"]).optional(),
-  command: z.string().optional(),
-  args: z.array(z.string()).optional(),
-  env: z.record(z.string(), z.string()).optional(),
-  url: z.string().optional(),
-  headers: z.record(z.string(), z.string()).optional(),
-});
-
-export type CcServerEntry = z.infer<typeof ccServerEntrySchema>;
 export interface ReconnectConfig {
   enabled: boolean;
   initialDelayMs: number;

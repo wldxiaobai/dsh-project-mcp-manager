@@ -21,10 +21,12 @@
  * 会话”场景）。
  *
  * 配置来源（同一项目内合并=遮蔽优先序，先到先得；跨项目撞名仍走生效名改名）：
- *   1. <projectRoot>/.dsh/mcp.yml —— 原生受管块（主格式）
- *   2. <projectRoot>/.mcp.json    —— CC project scope（严格只读兼容层）
- *   3. ~/.dsh/mcp.yml             —— 用户层原生（dsh-mcp CLI --scope user 的落点）
- *   4. ~/.claude.json             —— CC user scope（allowlist 只读顶层 mcpServers）
+ *   1. <projectRoot>/.dsh/mcp.yml —— 原生受管块（主格式，source dsh-project）
+ *   2. <projectRoot>/.dsh/mcp.json —— DSH 自有 JSON 方言（dsh-project-json）
+ *   3. <projectRoot>/.mcp.json    —— Claude Code project 层（遗留只读，cc-project）
+ *   4. ~/.dsh/profiles/<p>/mcp.json —— profile 用户层（dsh-profile-user）
+ *   5. ~/.dsh/mcp.yml             —— 用户层原生（dsh-user-yml）
+ *   6. ~/.dsh/mcp.json            —— 通用用户层（dsh-user）
  * 用户层行进入每个项目的合并集，即每个项目各挂一条用户服务器连接（与项目行
  * 同模型）；被同名项目行遮蔽的项目不再见到用户层副本。${VAR} 占位在 mount
  * 时经 model.expandEnvRefs 用宿主进程环境运行时展开，缺失即跳过该条目。
@@ -37,18 +39,12 @@ import * as mcpClient from "@deepseek-ai/dsh-mcp-client";
 import { extractManagedRows, readPatchFile, type PatchRow } from "./mcp-file.js";
 import {
   CC_PROJECT_FILE,
-  CLAUDE_USER_FILE,
-  IGNORE_CLAUDE_JSON_ENV,
-  READ_CLAUDE_USER_ENV,
-  claudeUserLayerConflict,
-  claudeUserLayerEnabled,
   mcpJsonLayerEnabled,
-  readClaudeUserFile,
   readMcpJsonFile,
-  type CcReadResult,
+  type JsonReadResult,
   type McpRowSource,
   type SourcedRow
-} from "./cc-file.js";
+} from "./json-file.js";
 import { findProjectRoot } from "./project-root.js";
 import {
   denySetFor,
@@ -110,8 +106,8 @@ export interface ProjectFileState {
 export interface ProjectMcpRegistryOptions {
   /** 全局（profile patch）已装载 mcp-client 行的 serverName，用于生效名冲突判定。 */
   globalNames: () => Promise<string[]>;
-  /** 用户层文件路径注入点（测试用）；缺省 <home>/.dsh/mcp.yml 与 <home>/.claude.json。 */
-  userLayerPaths?: { mcpYml: string; claudeJson: string };
+  /** 用户层文件路径注入点（测试用）；缺省 <home>/.dsh/mcp.yml。 */
+  userLayerPaths?: { mcpYml: string };
 }
 
 interface ProjectEntry {
@@ -205,7 +201,16 @@ function normalizePathKey(path: string): string {
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
-const SOURCE_RANK: Record<McpRowSource, number> = { yml: 0, "cc-project": 1, "user-yml": 2, "cc-user": 3 };
+const SOURCE_RANK: Record<McpRowSource, number> = {
+  "dsh-project": 0,
+  "dsh-project-json": 1,
+  "cc-project": 2,
+  "dsh-profile-user": 3,
+  "dsh-user-yml": 4,
+  "dsh-user": 5
+};
+/** 项目层来源（按项目装载、按会话隔离）与用户层来源（宿主级全局装载）的分界。 */
+const PROJECT_LAYER_MAX_RANK = 2;
 
 /** 服务身份键：stdio 看「可执行文件 + 参数」，http 看 url。command/url 缺失或为空的行
  * 不注册身份键（disabled 占名行常无 config，只占名字不冒充服务）。Windows 下路径大小写
@@ -255,10 +260,10 @@ interface ShadowBuckets {
   shadowedIdentity: IdentityShadow[];
 }
 
-/** 被遮蔽行归因：项目 cc 行被项目 yml 遮蔽单列；被任一项目自身行遮蔽的用户层行入 shadowedUser。 */
+/** 被遮蔽行归因：项目 cc 行被任一 DSH 项目行遮蔽单列；被任一项目自身行遮蔽的用户层行入 shadowedUser。 */
 function classifyShadow(item: SourcedRow, winner: SourcedRow, buckets: ShadowBuckets): void {
-  if (item.source === "cc-project" && winner.source === "yml") pushUnique(buckets.shadowedOwnCc, item.rawName);
-  else if (SOURCE_RANK[item.source] >= 2 && SOURCE_RANK[winner.source] <= 1) pushUnique(buckets.shadowedUser, item.rawName);
+  if (item.source === "cc-project" && SOURCE_RANK[winner.source] < SOURCE_RANK["cc-project"]) pushUnique(buckets.shadowedOwnCc, item.rawName);
+  else if (SOURCE_RANK[item.source] > PROJECT_LAYER_MAX_RANK && SOURCE_RANK[winner.source] <= PROJECT_LAYER_MAX_RANK) pushUnique(buckets.shadowedUser, item.rawName);
 }
 
 /** 剔除集签名：排序后逐条 name\0winner\0reason 拼接，供「集合变了才告警」比较。 */
@@ -357,23 +362,15 @@ export class ProjectMcpRegistry {
   /** 用户层 watcher 当前盯的精确文件路径集合。 */
   private userWatcher?: ReturnType<typeof chokidar.watch>;
   private userWatchedPaths: string[] = [];
-  /** 最近一次读到的 ~/.claude.json mcpServers 子树规范化哈希（watcher 门控用）。 */
-  private claudeServersHash: string | undefined;
   /** 装载被跳过的行（key\0rawName → 原因）；快照按独立 skipReason 字段展示，fiberPhase 保持枚举。 */
   private readonly skipReasons = new Map<string, string>();
   /** 最近一次用户层读取结果（reconcile 与 snapshot 共享；首轮 reconcile 前为空）。 */
   private userLayer: {
     mcpYml: string;
-    claudeJson: string;
     ymlRows: SourcedRow[];
     ymlError: string | null;
-    cc: CcReadResult | null;
-  } = { mcpYml: "", claudeJson: "", ymlRows: [], ymlError: null, cc: null };
+  } = { mcpYml: "", ymlRows: [], ymlError: null };
   private reconcileCount = 0;
-  /** cc-user 扇出警示：内容由无行变有行后提示一次「每项目各挂一条」。 */
-  private ccUserFanoutWarned = false;
-  /** READ 与旧 IGNORE 同时置位：「IGNORE 胜出」只告警一次。 */
-  private claudeConflictWarned = false;
   /** identity 去重告警/诊断的变更门控：projectKey → 上次对账的剔除集签名。 */
   private readonly identityShadowSigs = new Map<string, string>();
   private timer: ReturnType<typeof setTimeout> | undefined;
@@ -529,13 +526,12 @@ export class ProjectMcpRegistry {
     this.watcher = watcher;
   }
 
-  // ── 用户层（~/.dsh/mcp.yml + ~/.claude.json allowlist）────────────────
+  // ── 用户层（~/.dsh/mcp.yml）─────────────────────────────────────────────
 
-  private resolveUserLayerPaths(): { mcpYml: string; claudeJson: string } {
+  private resolveUserLayerPaths(): { mcpYml: string } {
     const home = homedir();
     return this.providers.userLayerPaths ?? {
-      mcpYml: join(home, ".dsh", PROJECT_MCP_FILE),
-      claudeJson: join(home, CLAUDE_USER_FILE)
+      mcpYml: join(home, ".dsh", PROJECT_MCP_FILE)
     };
   }
 
@@ -568,47 +564,22 @@ export class ProjectMcpRegistry {
     return { rows, ok, error };
   }
 
-  /** 读用户层两来源并刷新 userLayer 缓存；坏条目只告警（无项目归属，不进逐项目 diag）。 */
+  /** 读用户层原生 yml 并刷新 userLayer 缓存；坏条目只告警（无项目归属，不进逐项目 diag）。 */
   private async readUserLayer(): Promise<void> {
     const paths = this.resolveUserLayerPaths();
-    const yml = await this.readNativeRows(paths.mcpYml, "user-yml", false);
-    let cc: CcReadResult | null = null;
-    // cc-user 默认关闭：CC 用户级配置是机器环境级外部状态，显式
-    // DSH_MCP_READ_CLAUDE_USER=1 才读；旧 IGNORE 开关强制关闭并胜出。
-    if (claudeUserLayerEnabled()) {
-      // 层恢复即视为冲突已解除：复位一次性告警闩，用户再设回 IGNORE 还能提示。
-      // 旧实现只在「READ 未置位且无冲突」分支复位，按告警清掉 IGNORE 的旅程
-      // 走不到复位路径，二次冲突会静默。
-      this.claudeConflictWarned = false;
-      cc = await readClaudeUserFile(paths.claudeJson);
-      if (cc.serversHash !== undefined) this.claudeServersHash = cc.serversHash;
-    } else if (claudeUserLayerConflict()) {
-      if (!this.claudeConflictWarned) {
-        this.claudeConflictWarned = true;
-        this.ctx.logger.warn(`用户层 MCP：${READ_CLAUDE_USER_ENV} 与 ${IGNORE_CLAUDE_JSON_ENV} 同时置位，强制关闭开关胜出，cc-user 层停用`);
-      }
-    } else {
-      // 冲突解除后重新武装：下一次再冲突还能提示一次。
-      this.claudeConflictWarned = false;
-    }
-    this.userLayer = { mcpYml: paths.mcpYml, claudeJson: paths.claudeJson, ymlRows: yml.rows, ymlError: yml.error, cc };
-    for (const note of cc?.entryErrors ?? []) this.ctx.logger.warn(`用户层 MCP（${CLAUDE_USER_FILE}）：${note}`);
-    if (cc?.fileError !== undefined) this.ctx.logger.warn(`用户层 MCP：${cc.fileError}`);
+    const yml = await this.readNativeRows(paths.mcpYml, "dsh-user-yml", false);
+    this.userLayer = { mcpYml: paths.mcpYml, ymlRows: yml.rows, ymlError: yml.error };
     if (yml.error !== null) this.ctx.logger.warn(`用户层 MCP（${paths.mcpYml}）：${yml.error}`);
   }
 
   /**
-   * 监听用户层两个具体文件（与项目层的精确路径过滤同构；不监视家目录递归：
+   * 监听用户层具体文件（与项目层的精确路径过滤同构；不监视家目录递归：
    * 探针实测 chokidar v5 盯「父目录已存在的缺失文件」能在创建时补发 add，而盯
-   * 不存在的目录则永久瞎——具体文件路径是更稳的监听形态）。~/.claude.json 事件
-   * 过 serversHash 门：CC 每次会话都重写整个状态文件，先解析并比对 mcpServers
-   * 子树的规范哈希，未变不触发 reconcile（不做 size/mtime 快路径：那会在
-   * 同刻同体积的真实改动上误杀，内容哈希才是唯一可靠门）。
+   * 不存在的目录则永久瞎——具体文件路径是更稳的监听形态）。
    */
   private async syncUserWatcher(): Promise<void> {
     const paths = this.resolveUserLayerPaths();
-    // 只监听这两个具体文件本身；未启用的 ~/.claude.json 连监听都不建。
-    const targets = claudeUserLayerEnabled() ? [paths.mcpYml, paths.claudeJson] : [paths.mcpYml];
+    const targets = [paths.mcpYml];
     // 码元序显式比较器：排序只用于跨轮次相等性比较，须与 locale 无关保持稳定。
     const keys = targets.map((target) => normalizePathKey(target)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     const same = this.userWatchedPaths.length === keys.length && keys.every((key, index) => key === this.userWatchedPaths[index]);
@@ -623,13 +594,7 @@ export class ProjectMcpRegistry {
       depth: 0
     });
     const onEvent = (path: string) => {
-      const target = normalizePathKey(path);
-      if (target === normalizePathKey(paths.claudeJson)) {
-        if (!claudeUserLayerEnabled()) return;
-        void this.claudeGateThenKick();
-        return;
-      }
-      if (target === normalizePathKey(paths.mcpYml)) this.kick();
+      if (normalizePathKey(path) === normalizePathKey(paths.mcpYml)) this.kick();
     };
     watcher.on("add", onEvent);
     watcher.on("change", onEvent);
@@ -638,26 +603,6 @@ export class ProjectMcpRegistry {
       // 保持监听；错误不炸宿主
     });
     this.userWatcher = watcher;
-  }
-
-  private async claudeGateThenKick(): Promise<void> {
-    if (this.disposed) return;
-    const { claudeJson } = this.resolveUserLayerPaths();
-    // 内容哈希门是唯一裁决：不缓存 size/mtime 走快路径——Windows 上两次不同
-    // 内容的重写可能落在同一 mtime 粒度且体积相仿，mtime 相等不等于内容相等。
-    let hash: string | undefined;
-    try {
-      hash = (await readClaudeUserFile(claudeJson)).serversHash;
-    } catch {
-      hash = undefined;
-    }
-    if (hash === undefined) {
-      this.kick(); // 读不动也要走一次 reconcile，让正式读取路径产出诊断
-      return;
-    }
-    if (hash === this.claudeServersHash) return; // 仅 CC 状态位变化：不惊动管线
-    this.claudeServersHash = hash;
-    this.kick();
   }
 
   // ── 核心 reconcile ───────────────────────────────────────────────────
@@ -674,26 +619,18 @@ export class ProjectMcpRegistry {
     await this.readUserLayer();
 
     const roots = await this.knownProjects();
-    // cc-user 扇出可见性：用户级行进入每个项目的合并集（每项目各挂一条连接），
-    // 启用时至少提示一次规模，让「为什么这个目录多了个 spawn」可解释。
-    const ccUserRows = this.userLayer.cc?.rows.length ?? 0;
-    if (ccUserRows === 0) this.ccUserFanoutWarned = false;
-    else if (!this.ccUserFanoutWarned) {
-      this.ccUserFanoutWarned = true;
-      this.ctx.logger.warn(`用户层 MCP：${CLAUDE_USER_FILE} 的 ${ccUserRows} 条服务器将并入 ${roots.length} 个已知项目各挂一条连接；不想要时取消 ${READ_CLAUDE_USER_ENV}，或在项目 .dsh/mcp.yml 用 disabled 占名行遮蔽`);
-    }
     const desiredByProject = new Map<string, { projectRoot: string; rows: DesiredProjectRow[] }>();
     for (const projectRoot of roots) {
       const key = projectKeyOf(projectRoot);
       // 只数 yml 来源的装载实例：用户层行同样落在 entry.servers 里，拿总数
       // 会把「纯用户层挂载」误判成「yml 装载后文件被删」，产生假 ENOENT 诊断。
-      const hasYmlMounts = [...(this.projects.get(key)?.servers.values() ?? [])].some((state) => state.source === "yml" || state.source === undefined);
-      const yml = await this.readNativeRows(projectMcpFile(projectRoot), "yml", hasYmlMounts);
-      const cc: CcReadResult = mcpJsonLayerEnabled()
+      const hasYmlMounts = [...(this.projects.get(key)?.servers.values() ?? [])].some((state) => state.source === "dsh-project" || state.source === undefined);
+      const yml = await this.readNativeRows(projectMcpFile(projectRoot), "dsh-project", hasYmlMounts);
+      const cc: JsonReadResult = mcpJsonLayerEnabled()
         ? await readMcpJsonFile(projectMcpJsonFile(projectRoot), projectRoot)
         : { rows: [], entryErrors: [] };
-      // 影子优先级：项目 mcp.yml > 项目 .mcp.json > 用户 ~/.dsh/mcp.yml > 用户 ~/.claude.json。
-      const merged = mergeSourcedRows([yml.rows, cc.rows, this.userLayer.ymlRows, this.userLayer.cc?.rows ?? []]);
+      // 影子优先级：项目 mcp.yml > 项目 .mcp.json > 用户 ~/.dsh/mcp.yml。
+      const merged = mergeSourcedRows([yml.rows, cc.rows, this.userLayer.ymlRows]);
       // 跨来源同服务去重告警：unityMCP 与 unity-mcp 这类「一个服务器两个名字」的
       // 冗余定义，只装载高优先级层一条，被剔除的必须可见，不能静默消失。
       // 变更门控：剔除集与上次一致就沉默——否则任何文件事件都会让每个
@@ -708,7 +645,7 @@ export class ProjectMcpRegistry {
           this.ctx.logger.warn(`项目 MCP（${projectRoot}）：跳过重复服务定义 "${shadow.name}"（与 "${shadow.winner}" 为同一服务，${shadow.reason === "normname" ? "归一化名称相同" : "命令与参数相同"}，按层优先级保留高优先级定义）；确属不同服务器请改名或调整命令与参数`);
         }
       }
-      const ownRows = merged.rows.filter((row) => row.source === "yml" || row.source === "cc-project");
+      const ownRows = merged.rows.filter((row) => row.source === "dsh-project" || row.source === "cc-project");
       // 源级隔离：某个源坏了只清空该源的 rows（读取器已保证），其余源照常进
       // desired。绝不能整项目一票否决——那会把坏文件的代价转嫁给好文件的行。
       desiredByProject.set(key, { projectRoot, rows: merged.rows });
@@ -836,9 +773,10 @@ export class ProjectMcpRegistry {
       if (input.transport === "stdio") {
         if (typeof input.cwd === "string" && input.cwd !== "") {
           configInput.cwd = resolve(project.projectRoot, input.cwd);
-        } else if (item.source === undefined || item.source === "yml" || item.source === "cc-project") {
-          // 文档语义：项目层空 cwd = 项目根（手写 yml 行可整个省略 cwd）；
-          // 用户层（user-yml / cc-user）空 cwd 保持继承宿主工作目录，不改写。
+        } else if (item.source === undefined || SOURCE_RANK[item.source] <= PROJECT_LAYER_MAX_RANK) {
+          // 文档语义：项目层空 cwd = 项目根（手写 yml/json 行可整个省略 cwd）；
+          // 用户层（dsh-profile-user / dsh-user-yml / dsh-user）空 cwd 保持继承
+          // 宿主工作目录，不改写。
           configInput.cwd = project.projectRoot;
         }
       }
@@ -1026,7 +964,7 @@ export class ProjectMcpRegistry {
     });
   }
 
-  /** 已执行的 reconcile 次数（测试用：验证 .claude.json 哈希门是否惊动管线）。 */
+  /** 已执行的 reconcile 次数（测试用：验证文件事件是否惊动管线）。 */
   get debugReconcileCount(): number {
     return this.reconcileCount;
   }
@@ -1043,12 +981,12 @@ export class ProjectMcpRegistry {
     return false;
   }
 
-  /** 行级 view 的逐层影子优先查找：项目 yml > 项目 .mcp.json > 用户 yml > cc-user > 装载残留态。 */
+  /** 行级 view 的逐层影子优先查找：项目 yml > 项目 .mcp.json > 用户 yml > 装载残留态。 */
   private async locateRow(projectRoot: string, rawName: string, state?: ProjectServerState): Promise<{ row?: PatchRow; source?: McpRowSource }> {
     try {
       const raw = await readPatchFile(projectMcpFile(projectRoot));
       const ymlRow = extractManagedRows(raw).find((candidate) => rowNameOf(candidate) === rawName);
-      if (ymlRow !== undefined) return { row: ymlRow, source: "yml" };
+      if (ymlRow !== undefined) return { row: ymlRow, source: "dsh-project" };
     } catch {
       // 落到后续层
     }
@@ -1058,9 +996,7 @@ export class ProjectMcpRegistry {
       if (found !== undefined) return { row: found.row, source: "cc-project" };
     }
     const uy = this.userLayer.ymlRows.find((candidate) => candidate.rawName === rawName);
-    if (uy !== undefined) return { row: uy.row, source: "user-yml" };
-    const uc = this.userLayer.cc?.rows.find((candidate) => candidate.rawName === rawName);
-    if (uc !== undefined) return { row: uc.row, source: "cc-user" };
+    if (uy !== undefined) return { row: uy.row, source: "dsh-user-yml" };
     if (state?.row !== undefined) return { row: state.row, source: state.source };
     return {};
   }
@@ -1088,7 +1024,7 @@ export class ProjectMcpRegistry {
     };
   }
 
-  /** 全量快照：每个已知项目一个 yml 分区 + 一个 .mcp.json 分区（有内容才出），外加两个用户层分区。 */
+  /** 全量快照：每个已知项目一个 yml 分区 + 一个 .mcp.json 分区（有内容才出），外加用户层分区。 */
   async snapshot(): Promise<ProjectFileState[]> {
     await this.enqueue(async () => {
       await this.reconcileAll();
@@ -1096,7 +1032,7 @@ export class ProjectMcpRegistry {
     const out: ProjectFileState[] = [];
     for (const [key, entry] of this.projects) {
       const path = projectMcpFile(entry.projectRoot);
-      const file: ProjectFileState = { project: entry.projectRoot, path, ok: true, error: null, source: "yml", servers: [] };
+      const file: ProjectFileState = { project: entry.projectRoot, path, ok: true, error: null, source: "dsh-project", servers: [] };
       let rows: PatchRow[] = [];
       let usable = true;
       let skipYmlPartition = false;
@@ -1106,7 +1042,7 @@ export class ProjectMcpRegistry {
         const message = error instanceof Error ? error.message : String(error);
         // yml 缺失且没有 yml 来源的装载：文件本就不存在，不出 yml 分区——
         // 用户层行也能让项目有装载实例，servers.size>0 不再等价「装载后文件被删」。
-        const ymlLive = [...entry.servers.values()].some((state) => state.source === "yml" || state.source === undefined);
+        const ymlLive = [...entry.servers.values()].some((state) => state.source === "dsh-project" || state.source === undefined);
         if (message.includes("ENOENT") && !ymlLive) {
           skipYmlPartition = true;
         } else {
@@ -1116,7 +1052,7 @@ export class ProjectMcpRegistry {
         }
       }
       if (!skipYmlPartition) {
-        if (usable) file.servers = this.partitionServers(entry, key, rows, "yml");
+        if (usable) file.servers = this.partitionServers(entry, key, rows, "dsh-project");
         out.push(file);
       }
       // ── 项目 .mcp.json 分区（被开关关闭时整分区不出，含残留装载的情形）──
@@ -1138,37 +1074,20 @@ export class ProjectMcpRegistry {
         }
       }
     }
-    // ── 用户层两个分区（无 fiberPhase：装载实例按项目分布，见各项目的 servers.state.source）──
+    // ── 用户层分区（无 fiberPhase：装载实例按项目分布，见各项目的 servers.state.source）──
     if (this.userLayer.mcpYml !== "" && (this.userLayer.ymlRows.length > 0 || this.userLayer.ymlError !== null)) {
       out.push({
         project: dirname(dirname(this.userLayer.mcpYml)),
         path: this.userLayer.mcpYml,
         kind: "global",
-        source: "user-yml",
+        source: "dsh-user-yml",
         ok: this.userLayer.ymlError === null,
         error: this.userLayer.ymlError,
         servers: this.userLayer.ymlRows
           .map((r) => patchRowToView(r.row, { kind: "global", path: this.userLayer.mcpYml, label: "user" }))
           .filter((v): v is NonNullable<typeof v> => v !== undefined)
-          .map((v) => ({ ...v, source: "user-yml" as const }))
+          .map((v) => ({ ...v, source: "dsh-user-yml" as const }))
       });
-    }
-    const ccUser = this.userLayer.cc;
-    if (ccUser !== null && ccUser !== undefined && (ccUser.rows.length > 0 || ccUser.fileError !== undefined || ccUser.entryErrors.length > 0)) {
-      const file: ProjectFileState = {
-        project: dirname(this.userLayer.claudeJson),
-        path: this.userLayer.claudeJson,
-        kind: "global",
-        source: "cc-user",
-        ok: ccUser.fileError === undefined,
-        error: ccUser.fileError ?? null,
-        servers: ccUser.rows
-          .map((r) => patchRowToView(r.row, { kind: "global", path: this.userLayer.claudeJson, label: "user" }))
-          .filter((v): v is NonNullable<typeof v> => v !== undefined)
-          .map((v) => ({ ...v, source: "cc-user" as const }))
-      };
-      if (ccUser.entryErrors.length > 0) (file as any).entryErrors = ccUser.entryErrors;
-      out.push(file);
     }
     return out;
   }

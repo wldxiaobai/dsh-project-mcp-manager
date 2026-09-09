@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import {
   MAX_TIMER_DELAY_MS,
   SERVER_NAME_RE,
-  ccServerEntrySchema,
   denySetFor,
   effectiveServerNames,
   expandEnvRefs,
@@ -18,6 +17,7 @@ import {
   toOfficialConfig,
   toPatchRow
 } from "../lib/model.js";
+import { jsonServerEntrySchema } from "../lib/json-file.js";
 
 let passed = 0;
 function pass(name) {
@@ -203,11 +203,13 @@ assert.equal(httpOk.input.headers.Authorization, "Bearer t"); // CC 常见写法
 assert.equal(httpOk.input.headers.X, "t");
 pass("http url/headers interpolate in-string refs incl. Bearer ${TOKEN}");
 
-// 15. ccServerEntrySchema 容忍 CC 附加字段
-assert.equal(ccServerEntrySchema.safeParse({ command: "npx", args: ["-y", "pkg"], timeout: 5000, scope: "project" }).success, true);
-assert.equal(ccServerEntrySchema.safeParse({ command: "npx", env: { A: 1 } }).success, false); // 非字符串 env 值拒绝
-assert.equal(ccServerEntrySchema.safeParse({}).success, true); // 空条目先容忍，缺 command/url 由归一层报错
-pass("ccServerEntrySchema tolerates unknown CC keys, rejects non-string secrets");
+// 15. jsonServerEntrySchema 容忍生态附加字段与 DSH 透传键
+assert.equal(jsonServerEntrySchema.safeParse({ command: "npx", args: ["-y", "pkg"], timeout: 5000, scope: "project" }).success, true);
+assert.equal(jsonServerEntrySchema.safeParse({ command: "npx", env: { A: 1 } }).success, false); // 非字符串 env 值拒绝
+assert.equal(jsonServerEntrySchema.safeParse({}).success, true); // 空条目先容忍，缺 command/url 由归一层报错
+assert.equal(jsonServerEntrySchema.safeParse({ command: "npx", toolCallTimeoutMs: 1000, disabled: true }).success, true);
+assert.equal(jsonServerEntrySchema.safeParse({ command: "npx", toolCallTimeoutMs: 0 }).success, false);
+pass("jsonServerEntrySchema tolerates unknown keys and DSH passthrough, rejects non-string secrets");
 
 console.log("\n" + passed + " passed, 0 failed");
 console.log("ALL MCP MODEL TESTS PASSED");

@@ -82,12 +82,8 @@ try {
     pass("cli rejects invalid names, sse transport, and explains local scope");
   }
 
-  // 共存边界基线：cc-user 默认关闭，场景 5+ 的四层视图需要显式 opt-in
-  //（场景 10/12 各自临时切换开关验证两态）。
-  process.env.DSH_MCP_READ_CLAUDE_USER = "1";
-  // 5. list：四个来源 + 遮蔽标注
+  // 5. list：三个来源 + 遮蔽标注
   await writeFile(join(project, ".mcp.json"), JSON.stringify({ mcpServers: { fs: { command: "node", args: ["shadowed.js"] }, ccserver: { command: "node", args: [] } } }), "utf8");
-  await writeFile(join(home, ".claude.json"), JSON.stringify({ oauth: {}, mcpServers: { ccuser: { type: "http", url: "https://u/mcp" } } }), "utf8");
   {
     const cap = io();
     assert.equal(await runCli(["list"], cap.io, deps), 0);
@@ -97,9 +93,8 @@ try {
     const fsLines = cap.lines.filter((line) => line.startsWith("  fs:"));
     assert.equal(fsLines.length, 2, "both fs rows listed (winner + shadowed)");
     assert.ok(fsLines.some((line) => line.includes("已被 project (.dsh/mcp.yml) 遮蔽")), "shadow annotation present");
-    assert.ok(text.includes("ccuser: https://u/mcp (streamable-http)"), "cc-user row listed with http target");
     assert.ok(text.includes("remote: https://example/mcp (streamable-http)"), "user yml row listed");
-    pass("cli list shows all four layers with shadow annotations");
+    pass("cli list shows every layer with shadow annotations");
   }
 
   // 6. get：优先层胜出 + 密钥只出键名 + 遮蔽提示
@@ -158,25 +153,6 @@ try {
     assert.ok(projRaw.includes("cwd: ."), "project-scope cwd is the dot literal");
     pass("cli default cwd is '.' for project scope and '' for user scope");
   }
-  // 10. DSH_MCP_IGNORE_CLAUDE_JSON=1：list 整个 cc-user 层消失（与 registry 同源开关）
-  {
-    process.env.DSH_MCP_IGNORE_CLAUDE_JSON = "1";
-    try {
-      const cap = io();
-      assert.equal(await runCli(["list"], cap.io, deps), 0);
-      const text = cap.lines.join("\n");
-      assert.ok(!text.includes("ccuser"), "ignored: cc-user rows must not be listed");
-      assert.ok(!text.includes(".claude.json"), "ignored: no cc-user layer label at all");
-      assert.ok(text.includes("psrv"), "ignored: other three layers still listed");
-    } finally {
-      delete process.env.DSH_MCP_IGNORE_CLAUDE_JSON;
-    }
-    const cap2 = io();
-    assert.equal(await runCli(["list"], cap2.io, deps), 0);
-    assert.ok(cap2.lines.join("\n").includes("ccuser"), "switch unset: cc-user layer is back");
-    pass("cli list honors DSH_MCP_IGNORE_CLAUDE_JSON");
-  }
-
   // 11. 未注入 resolveProjectRoot 时走真实 findProjectRoot：git 根向上命中 / 无 git 根退回 cwd
   {
     const originalCwd = process.cwd();
@@ -203,33 +179,8 @@ try {
     pass("cli resolves project root through real findProjectRoot (git hit and cwd fallback)");
   }
 
-  // 12. cc-user 默认关闭：不设 DSH_MCP_READ_CLAUDE_USER 时 list 无 ~/.claude.json 层，
-  // get 未命中时解释被停用的层；opt-in 恢复并给出扇出提示。
-  {
-    delete process.env.DSH_MCP_READ_CLAUDE_USER;
-    try {
-      const cap = io();
-      assert.equal(await runCli(["list"], cap.io, deps), 0);
-      const text = cap.lines.join("\n");
-      assert.ok(!text.includes("ccuser"), "cc-user rows hidden by default");
-      assert.ok(!text.includes(".claude.json"), "no cc-user layer label by default");
-      assert.ok(text.includes("psrv"), "the remaining layers still listed");
-      const cap2 = io();
-      assert.equal(await runCli(["get", "ccuser"], cap2.io, deps), 1);
-      assert.ok(cap2.errs.join("\n").includes("DSH_MCP_READ_CLAUDE_USER"), "not-found message explains the disabled layer");
-    } finally {
-      process.env.DSH_MCP_READ_CLAUDE_USER = "1";
-    }
-    const cap3 = io();
-    assert.equal(await runCli(["list"], cap3.io, deps), 0);
-    const text3 = cap3.lines.join("\n");
-    assert.ok(text3.includes("ccuser"), "opt-in brings the layer back");
-    assert.ok(text3.includes("提示：cc-user 层已启用"), "reminder printed while the layer is on");
-    pass("cli hides cc-user by default, explains it on miss, and reminds when enabled");
-  }
-
   // 13. DSH_MCP_IGNORE_MCP_JSON=1：list 失去项目 .mcp.json 层，get 对只存在于
-  // 该层的名字指明停用开关；cc-user 层不受牵连。
+  // 该层的名字指明停用开关；原生 yml 层不受牵连。
   {
     process.env.DSH_MCP_IGNORE_MCP_JSON = "1";
     try {
@@ -238,7 +189,6 @@ try {
       const text = cap.lines.join("\n");
       assert.ok(!text.includes("ccserver"), "cc-project rows hidden by the switch");
       assert.ok(text.includes("psrv"), "yml layers untouched");
-      assert.ok(text.includes("ccuser"), "cc-user layer not implicated");
       const cap2 = io();
       assert.equal(await runCli(["get", "ccserver"], cap2.io, deps), 1);
       assert.ok(cap2.errs.join("\n").includes("DSH_MCP_IGNORE_MCP_JSON"), "not-found names the stopped layer");
@@ -257,11 +207,8 @@ try {
   {
     const cap = io();
     assert.equal(await runCli(["add", "unityMCP", "node", "u-server.js"], cap.io, deps), 0, cap.errs.join("\n"));
-    const claudePath = join(home, ".claude.json");
-    const cu = JSON.parse(await readFile(claudePath, "utf8"));
-    cu.mcpServers["unity-mcp"] = { command: "node", args: ["--offline", "u-server.js"] };
-    cu.mcpServers["psrv-x"] = { command: "node", args: ["p.js"] };
-    await writeFile(claudePath, JSON.stringify(cu), "utf8");
+    assert.equal(await runCli(["add", "unity-mcp", "node", "--offline", "u-server.js", "--scope", "user"], cap.io, deps), 0, cap.errs.join("\n"));
+    assert.equal(await runCli(["add", "psrv-x", "node", "p.js", "--scope", "user"], cap.io, deps), 0, cap.errs.join("\n"));
     const listCap = io();
     assert.equal(await runCli(["list"], listCap.io, deps), 0);
     const lines = listCap.lines;
@@ -281,7 +228,6 @@ try {
     pass("cli list/get mark cross-layer same-service dedup with the registry's merge");
   }
 } finally {
-  delete process.env.DSH_MCP_READ_CLAUDE_USER;
   await rm(dir, { recursive: true, force: true });
 }
 
