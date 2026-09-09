@@ -23,6 +23,8 @@
 [v0.4.0 发布说明](releases/v0.4.0.md) ·
 [v0.3.1 发布说明](releases/v0.3.1.md)。
 
+代码审查记录（中文）：[v0.3.1 以来 TypeScript 变更审查](code-review/ts-review-since-v0.3.1.zh.md)。
+
 ## 安装（挂载到 profile）
 
 插件通过 **bundle patch** 挂载：把包加入 `dsh.profile.bundles` 后，dsh 启动时

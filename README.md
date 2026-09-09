@@ -26,6 +26,8 @@ Design and release records (Chinese): [dsh 0.1.2-rc.1 adaptation](docs/design/ad
 [v0.4.0 release notes](docs/releases/v0.4.0.md) ·
 [v0.3.1 release notes](docs/releases/v0.3.1.md).
 
+Code review records (Chinese): [TypeScript changes since v0.3.1](docs/code-review/ts-review-since-v0.3.1.zh.md).
+
 ## Installation (mount into a profile)
 
 The plugin is mounted through a **bundle patch**: once the package is added to
