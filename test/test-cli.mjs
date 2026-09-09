@@ -246,6 +246,56 @@ try {
     assert.ok(getCap.lines.join("\n").includes("Source:   profile (web)"), "get reports the profile layer");
     pass("cli lists DSH json layers and labels profile layers by name");
   }
+
+  // 16. --format / DSH_MCP_CLI_FORMAT / --scope profile：写入目标与 JSON 独占契约
+  {
+    const jsonPath = join(project, ".dsh", "mcp.json");
+    await rm(jsonPath, { force: true });
+    const cap = io();
+    assert.equal(await runCli(["add", "fj", "node", "f.js", "-e", "TOKEN=${FJ_TOKEN}", "--format", "json"], cap.io, deps), 0, cap.errs.join("\n"));
+    const doc = JSON.parse(await readFile(jsonPath, "utf8"));
+    assert.deepEqual(doc.mcpServers.fj, { command: "node", args: ["f.js"], env: { TOKEN: "${FJ_TOKEN}" } }, "json add keeps ${VAR} literal and omits default cwd");
+    assert.ok(!(await readFile(projectYml, "utf8")).includes("serverFJ"), "yml untouched by a json add");
+
+    // 环境变量等价于 --format json；显式 --format 优先。
+    process.env.DSH_MCP_CLI_FORMAT = "json";
+    try {
+      const capEnv = io();
+      assert.equal(await runCli(["add", "envj", "node", "e.js"], capEnv.io, deps), 0, capEnv.errs.join("\n"));
+      assert.ok(JSON.parse(await readFile(jsonPath, "utf8")).mcpServers.envj !== undefined, "DSH_MCP_CLI_FORMAT=json selects the json file");
+      const capFlag = io();
+      assert.equal(await runCli(["add", "flagyml", "node", "y.js", "--format", "yml"], capFlag.io, deps), 0, capFlag.errs.join("\n"));
+      assert.ok((await readFile(projectYml, "utf8")).includes("serverName: flagyml"), "--format beats the environment variable");
+      process.env.DSH_MCP_CLI_FORMAT = "toml";
+      const capBad = io();
+      assert.equal(await runCli(["add", "bad", "node", "b.js"], capBad.io, deps), 1, "unknown format value is rejected");
+      assert.ok(capBad.errs.join("\n").includes("DSH_MCP_CLI_FORMAT"), "error names the variable");
+    } finally {
+      delete process.env.DSH_MCP_CLI_FORMAT;
+    }
+
+    // remove 按优先序找文件：只存在于 json 的行从 json 删除。
+    const capRm = io();
+    assert.equal(await runCli(["remove", "envj"], capRm.io, deps), 0, capRm.errs.join("\n"));
+    assert.equal(JSON.parse(await readFile(jsonPath, "utf8")).mcpServers.envj, undefined, "json row removed from the json file");
+    assert.ok(capRm.lines.join("\n").includes(jsonPath), "removal reports the json file");
+
+    // profile 作用域：缺 --profile 报错列出可用 profile；不存在的 profile 报错；yml 格式被拒。
+    const capNoProfile = io();
+    assert.equal(await runCli(["add", "pp", "node", "p.js", "--scope", "profile"], capNoProfile.io, deps), 1);
+    assert.ok(capNoProfile.errs.join("\n").includes("web"), "missing --profile lists available profiles: " + capNoProfile.errs.join("\n"));
+    const capBadProfile = io();
+    assert.equal(await runCli(["add", "pp", "node", "p.js", "--scope", "profile", "--profile", "nope"], capBadProfile.io, deps), 1);
+    assert.ok(capBadProfile.errs.join("\n").includes("不存在"), "unknown profile is rejected");
+    const capYmlProfile = io();
+    assert.equal(await runCli(["add", "pp", "node", "p.js", "--scope", "profile", "--profile", "web", "--format", "yml"], capYmlProfile.io, deps), 1);
+    assert.ok(capYmlProfile.errs.join("\n").includes("只支持 json"), "profile scope rejects yml");
+    const capProfile = io();
+    assert.equal(await runCli(["add", "pp", "node", "p.js", "--scope", "profile", "--profile", "web"], capProfile.io, deps), 0, capProfile.errs.join("\n"));
+    const profileDoc = JSON.parse(await readFile(join(home, ".dsh", "profiles", "web", "mcp.json"), "utf8"));
+    assert.deepEqual(profileDoc.mcpServers.pp, { command: "node", args: ["p.js"] }, "profile row written to profiles/<name>/mcp.json");
+    pass("cli --format / DSH_MCP_CLI_FORMAT / --scope profile write to the right file");
+  }
 } finally {
   await rm(dir, { recursive: true, force: true });
 }
