@@ -9,12 +9,15 @@
  */
 import { Context } from "@deepseek-ai/cordis";
 import { MCP_PLUGIN_NAME } from "./mcp-file.js";
-import { ProjectMcpRegistry } from "./registry.js";
+import { ProjectMcpRegistry, profileNameFromConfigPath } from "./registry.js";
 
 export const name = "dsh-project-mcp-manager";
 /** agents 为硬依赖：宿主启动早期插件行先于 agents 服务装载时，等待其就绪后再 apply，
  *  保证构造时的 liveAgents 补扫能看到已恢复/已存在的会话。 */
 export const inject = ["tools", "agents"];
+
+/** 显式指定 profile 名的环境变量（覆盖自动解析；CLI/无 profile 启动场景用）。 */
+export const PROFILE_ENV = "DSH_MCP_PROFILE";
 
 export function apply(ctx: Context) {
   const registry = new ProjectMcpRegistry(ctx as any, {
@@ -43,6 +46,25 @@ export function apply(ctx: Context) {
       } catch {
         return [];
       }
+    },
+    /** 当前 profile 名：`DSH_MCP_PROFILE` 优先；否则从 loader 根 include 的
+     *  config.path（`<dshHome>/profiles/<name>/cordis.yml`）解析，再退回
+     *  `ctx.baseUrl`（同目录）。解析不出返回 undefined → 不读 profile 用户层。 */
+    activeProfile: async () => {
+      const override = process.env[PROFILE_ENV];
+      if (typeof override === "string" && override !== "") return override;
+      try {
+        const loader = (ctx as any).loader;
+        if (loader !== undefined && typeof loader.entries === "function") {
+          for (const entry of loader.entries()) {
+            const resolved = profileNameFromConfigPath(entry?.config?.path ?? entry?.options?.config?.path);
+            if (resolved !== undefined) return resolved;
+          }
+        }
+      } catch {
+        // 落到 baseUrl 兜底
+      }
+      return profileNameFromConfigPath((ctx as any).baseUrl);
     }
   });
 

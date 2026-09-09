@@ -7,6 +7,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-09
+
+### Added
+
+- **DSH-native JSON configuration** in the ecosystem-standard
+  `{"mcpServers": { … }}` dialect (Cursor / Claude Code shape) at
+  `<projectRoot>/.dsh/mcp.json`, `~/.dsh/mcp.json` and
+  `~/.dsh/profiles/<name>/mcp.json`. Entries accept `command`/`args`/`env`/`cwd`,
+  `url`/`headers`, optional `type` (`stdio`|`http`|`streamable-http`; `sse`
+  rejected per entry), the DSH passthrough keys `toolCallTimeoutMs` /
+  `failOnStartupError` / `reconnect`, `enabled: false` (silent skip, does not
+  hold the name) and `disabled: true` (holds the name, not mounted), plus
+  `${VAR}` interpolation at mount time.
+- `dsh-mcp --format yml|json` with the `DSH_MCP_CLI_FORMAT` default
+  (`yml`|`json`, defaults to `yml`); `--scope profile --profile <name>` writes
+  `~/.dsh/profiles/<name>/mcp.json` (JSON only); `remove` searches the yml then
+  the json file. The JSON file is CLI-owned: writes preserve other top-level
+  keys and key order, refuse to overwrite an unparsable file, and run inside the
+  existing lock + atomic write.
+- `DSH_MCP_PROFILE` overrides the profile name used to locate
+  `~/.dsh/profiles/<name>/mcp.json`; otherwise it is derived from the loader
+  root include's `config.path` / `ctx.baseUrl`, and the layer is skipped when it
+  cannot be resolved.
+- `skipReason: "name-taken"` when a user-layer row collides with a
+  profile patch-row global server (the row is skipped, not renamed).
+
+### Changed
+
+- **BREAKING** — user layers are now mounted **globally**: one host-wide
+  `mcp-client` instance per row instead of one per known project. They are
+  visible to every session and no longer take part in per-project visibility.
+  A project's own row (same name, normalized name, or service identity) now
+  suppresses the global server **for that project's sessions only** (per-session
+  `tools.restrict`), while the global instance stays mounted.
+- **BREAKING** — source/layer names are DSH-native:
+  `yml` → `dsh-project`, `user-yml` → `dsh-user-yml`, plus new
+  `dsh-project-json`, `dsh-profile-user`, `dsh-user`; the legacy Claude Code
+  project file keeps its `cc-project` name. Diagnostics, snapshots and CLI
+  labels report the new names.
+- Layer precedence (first wins, per row) is now
+  `.dsh/mcp.yml` > `.dsh/mcp.json` > `.mcp.json` > profile json > `~/.dsh/mcp.yml`
+  > `~/.dsh/mcp.json`. Project rows keep the `p<hash>_` rename on conflicts;
+  global rows never rename.
+- User-layer diagnostics moved to `$DSH_HOME/.mcp-diag.json` (project
+  diagnostics stay at `<projectRoot>/.dsh/.mcp-diag.json`).
+
+### Removed
+
+- **BREAKING** — `~/.claude.json` is no longer read at all. The cc-user layer,
+  `DSH_MCP_READ_CLAUDE_USER`, `DSH_MCP_IGNORE_CLAUDE_JSON`, the
+  `mcpServers`-subtree content hash gate and `canonicalJsonString` are gone.
+  Migrate those rows to `~/.dsh/mcp.json` or
+  `~/.dsh/profiles/<name>/mcp.json`.
+- `DSH_MCP_IGNORE_MCP_JSON` still disables the legacy project `.mcp.json` layer
+  only.
+
+### Fixed
+
+- `npm run build` now clears `lib/` before compiling, so modules deleted from
+  `src/` no longer linger as stale build output.
+
+### Dependencies
+
+- `@deepseek-ai/dsh-mcp-client` `^0.1.1-rc.2` → `^0.1.2-rc.1`: the old
+  prerelease range never resolves past the 0.1.1-rc.* line (npm semver requires
+  a matching major.minor.patch tuple for prerelease candidates), so the plugin
+  loaded its own 0.1.1-rc.2 copy plus 0.1.1-rc.2 peers inside a 0.1.2-rc.1 host.
+  It now resolves 0.1.2-rc.1 with the same peers as the host
+  (`dsh-scope` replaces `dsh-invariants`).
+- Dev dependency `@deepseek-ai/cordis` `^4.0.1` → `^4.0.2` (types only) to
+  match the host.
+- Package manager is now pnpm: `pnpm-lock.yaml` is committed and the stale
+  `package-lock.json` (still pinned at v0.1.1) is removed;
+  `package.json` declares `packageManager: pnpm@12.3.4`. Build/test docs use
+  `pnpm install`.
+
 ## [0.3.1] - 2026-09-04
 
 ### Fixed

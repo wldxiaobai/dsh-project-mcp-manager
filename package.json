@@ -1,7 +1,8 @@
 {
   "name": "dsh-project-mcp-manager",
-  "version": "0.3.1",
-  "description": "dsh-project-mcp-manager: per-project MCP server loading for DSH. Reads <projectRoot>/.dsh/mcp.yml (plus read-only Claude Code compat via .mcp.json and ~/.claude.json), mounts each server as an @deepseek-ai/dsh-mcp-client instance with ${VAR} env expansion at mount time, hot-reloads on file change, scopes tool visibility per session, and ships a dsh-mcp CLI for native config management.",
+  "version": "0.4.0",
+  "packageManager": "pnpm@12.3.4",
+  "description": "dsh-project-mcp-manager: per-project and global MCP server loading for DSH. Reads <projectRoot>/.dsh/mcp.yml or .dsh/mcp.json (plus the read-only Claude Code project file .mcp.json), mounts project rows per project and user-layer rows (~/.dsh/mcp.yml, ~/.dsh/mcp.json, ~/.dsh/profiles/<name>/mcp.json) globally as @deepseek-ai/dsh-mcp-client instances with ${VAR} env expansion at mount time, hot-reloads on file change, scopes tool visibility per session, and ships a dsh-mcp CLI that writes either native yml or DSH JSON.",
   "type": "module",
   "main": "lib/index.js",
   "bin": {
@@ -27,16 +28,17 @@
     "cordis"
   ],
   "dependencies": {
-    "@deepseek-ai/dsh-mcp-client": "^0.1.1-rc.2",
+    "@deepseek-ai/dsh-mcp-client": "^0.1.2-rc.1",
     "chokidar": "^5.0.0",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "clean": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
     "prepack": "npm run build",
     "pretest": "npm run build",
-    "test": "node test/test-model.mjs && node test/test-mcp-file.mjs && node test/test-cc-file.mjs && node test/test-registry.mjs && node test/test-cli.mjs"
+    "test": "node test/test-model.mjs && node test/test-mcp-file.mjs && node test/test-json-file.mjs && node test/test-json-write.mjs && node test/test-registry.mjs && node test/test-cli.mjs"
   },
   "files": [
     "lib",
@@ -46,7 +48,7 @@
     "LICENSE"
   ],
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/cordis": "^4.0.2",
     "@types/node": "^26.2.0",
     "typescript": "^7.0.2"
   }
