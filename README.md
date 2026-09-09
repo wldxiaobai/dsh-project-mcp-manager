@@ -12,14 +12,14 @@ visibility is scoped per session cwd. No UI — core functionality only.
 
 Feature documentation lives in `docs/`, English and Chinese side by side:
 
-- [Configuration format](docs/configuration-format.md) — native YAML managed
+- [Configuration format](docs/guide/format.md) — native YAML managed
   block, JSON dialect, divergences from the cordis dialect.
-- [Configuration sources and layers](docs/configuration-layers.md) — the
+- [Configuration sources and layers](docs/guide/layers.md) — the
   six-layer source model, shadow priority, global vs project mounting, and the
   read-only legacy Claude Code layer.
-- [`${VAR}` expansion](docs/env-expansion.md) — mount-time interpolation and
+- [`${VAR}` expansion](docs/guide/env-expansion.md) — mount-time interpolation and
   its diagnostics.
-- [CLI `dsh-mcp`](docs/cli.md) — scopes, write formats, ownership contract.
+- [CLI `dsh-mcp`](docs/guide/cli.md) — scopes, write formats, ownership contract.
 
 Design and release records (Chinese): [dsh 0.1.2-rc.1 adaptation](docs/adaptation-dsh-0.1.2-rc1.md) ·
 [JSON config layer proposal](docs/proposal-json-mcp-config.md) ·
@@ -100,7 +100,7 @@ pnpm test          # node test/test-model.mjs / test-mcp-file / test-json-file /
   registers it into the global tool layer; multiple sessions inside the same
   project share a single connection. **Every user-layer row mounts exactly one
   instance** (global, independent of the number of projects) — see
-  [configuration sources and layers](docs/configuration-layers.md).
+  [configuration sources and layers](docs/guide/layers.md).
 - **Hot reload**: chokidar watches each project root (depth 2, ignoring
   node_modules/.git/.hg/.svn), but only edits to the **exact** config files of
   known project roots — `<projectRoot>/.dsh/mcp.yml`,

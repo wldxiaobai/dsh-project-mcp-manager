@@ -1,14 +1,14 @@
 # 配置格式
 
-[English](configuration-format.md) | 中文
+[English](format.md) | 中文
 
-[← 返回 README](README.zh.md) ｜ 相关：[配置来源与分层](configuration-layers.zh.md) · [`${VAR}` 展开](env-expansion.zh.md) · [CLI `dsh-mcp`](cli.zh.md)
+[← 返回 README](../README.zh.md) ｜ 相关：[配置来源与分层](layers.zh.md) · [`${VAR}` 展开](env-expansion.zh.md) · [CLI `dsh-mcp`](cli.zh.md)
 
 插件读取两种方言：**原生 YAML 受管块**（`<projectRoot>/.dsh/mcp.yml`）与
 **JSON 方言**（`<projectRoot>/.dsh/mcp.json`、`~/.dsh/mcp.json`、
 `~/.dsh/profiles/<name>/mcp.json`，以及只读的遗留 Claude Code 项目文件
 `<projectRoot>/.mcp.json`）。哪个文件属于哪一层见
-[配置来源与分层](configuration-layers.zh.md)。
+[配置来源与分层](layers.zh.md)。
 
 ## 原生 YAML：`<projectRoot>/.dsh/mcp.yml`
 

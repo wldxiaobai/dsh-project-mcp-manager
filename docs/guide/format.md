@@ -1,14 +1,14 @@
 # Configuration format
 
-English | [中文](configuration-format.zh.md)
+English | [中文](format.zh.md)
 
-[← README](../README.md) ｜ Related: [configuration sources and layers](configuration-layers.md) · [`${VAR}` expansion](env-expansion.md) · [CLI `dsh-mcp`](cli.md)
+[← README](../../README.md) ｜ Related: [configuration sources and layers](layers.md) · [`${VAR}` expansion](env-expansion.md) · [CLI `dsh-mcp`](cli.md)
 
 Two dialects are read by the plugin: the **native YAML managed block**
 (`<projectRoot>/.dsh/mcp.yml`) and the **JSON dialect** (`<projectRoot>/.dsh/mcp.json`,
 `~/.dsh/mcp.json`, `~/.dsh/profiles/<name>/mcp.json`, plus the read-only legacy
 Claude Code project file `<projectRoot>/.mcp.json`). Which file belongs to which
-layer is described in [configuration sources and layers](configuration-layers.md).
+layer is described in [configuration sources and layers](layers.md).
 
 ## Native YAML: `<projectRoot>/.dsh/mcp.yml`
 

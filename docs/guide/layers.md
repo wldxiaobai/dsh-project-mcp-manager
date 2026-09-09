@@ -1,8 +1,8 @@
 # Configuration sources and layers (six layers)
 
-English | [中文](configuration-layers.zh.md)
+English | [中文](layers.zh.md)
 
-[← README](../README.md) ｜ Related: [configuration format](configuration-format.md) · [`${VAR}` expansion](env-expansion.md) · [CLI `dsh-mcp`](cli.md)
+[← README](../../README.md) ｜ Related: [configuration format](format.md) · [`${VAR}` expansion](env-expansion.md) · [CLI `dsh-mcp`](cli.md)
 
 The plugin reads six sources and merges them **first-come-first-served**. The
 first three are **project layers** (mounted per project, isolated per session);
@@ -19,7 +19,7 @@ the last three are **user layers** (host-level **global mounting**):
 
 Layer 4 is dynamic: the profile name is resolved at runtime, so no profile name
 is ever hardcoded. The file syntax of layers 1/2 and of the JSON user layers is
-described in [configuration format](configuration-format.md).
+described in [configuration format](format.md).
 
 **Global mounting vs project mounting**:
 

@@ -2,7 +2,7 @@
 
 [English](cli.md) | 中文
 
-[← 返回 README](README.zh.md) ｜ 相关：[配置格式](configuration-format.zh.md) · [配置来源与分层](configuration-layers.zh.md) · [`${VAR}` 展开](env-expansion.zh.md)
+[← 返回 README](../README.zh.md) ｜ 相关：[配置格式](format.zh.md) · [配置来源与分层](layers.zh.md) · [`${VAR}` 展开](env-expansion.zh.md)
 
 原生配置文件命令行管理（**只写** `.dsh/mcp.yml` 或 `.dsh/mcp.json`——从不写遗留的
 `.mcp.json`；不连接运行中的 dsh 宿主，宿主经文件监听自动收敛）：

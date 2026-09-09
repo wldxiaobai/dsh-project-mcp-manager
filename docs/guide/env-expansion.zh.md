@@ -2,7 +2,7 @@
 
 [English](env-expansion.md) | 中文
 
-[← 返回 README](README.zh.md) ｜ 相关：[配置格式](configuration-format.zh.md) · [配置来源与分层](configuration-layers.zh.md) · [CLI `dsh-mcp`](cli.zh.md)
+[← 返回 README](../README.zh.md) ｜ 相关：[配置格式](format.zh.md) · [配置来源与分层](layers.zh.md) · [CLI `dsh-mcp`](cli.zh.md)
 
 以上任一来源中，`command`、`args[*]`、`env[*]`、`cwd`、`url`、`headers[*]` 里的
 `${VAR}` 引用（正则 `\$\{[A-Za-z_][A-Za-z0-9_]*\}`，允许出现在字符串任意

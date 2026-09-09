@@ -2,7 +2,7 @@
 
 English | [中文](env-expansion.zh.md)
 
-[← README](../README.md) ｜ Related: [configuration format](configuration-format.md) · [configuration sources and layers](configuration-layers.md) · [CLI `dsh-mcp`](cli.md)
+[← README](../../README.md) ｜ Related: [configuration format](format.md) · [configuration sources and layers](layers.md) · [CLI `dsh-mcp`](cli.md)
 
 `${VAR}` references (matching `\$\{[A-Za-z_][A-Za-z0-9_]*\}` anywhere in the
 string) in `command`, `args[*]`, `env[*]`, `cwd`, `url` and `headers[*]` — from

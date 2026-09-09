@@ -11,12 +11,12 @@
 
 功能说明已拆分到 `docs/`，中英双版并存：
 
-- [配置格式](configuration-format.zh.md)——原生 YAML 受管块、JSON 方言、与
+- [配置格式](guide/format.zh.md)——原生 YAML 受管块、JSON 方言、与
   cordis 方言的差异。
-- [配置来源与分层](configuration-layers.zh.md)——六层来源模型、影子优先序、
+- [配置来源与分层](guide/layers.zh.md)——六层来源模型、影子优先序、
   全局装载 vs 项目装载，以及只读的遗留 Claude Code 层。
-- [`${VAR}` 展开](env-expansion.zh.md)——装载时插值与对应诊断。
-- [CLI `dsh-mcp`](cli.zh.md)——作用域、写入格式与独占契约。
+- [`${VAR}` 展开](guide/env-expansion.zh.md)——装载时插值与对应诊断。
+- [CLI `dsh-mcp`](guide/cli.zh.md)——作用域、写入格式与独占契约。
 
 设计与发布记录（中文）：[dsh 0.1.2-rc.1 适配记录](adaptation-dsh-0.1.2-rc1.md) ·
 [JSON 配置层设计提案](proposal-json-mcp-config.md) ·
@@ -86,7 +86,7 @@ pnpm test          # node 直跑 test/ 下六个 .mjs（model / mcp-file / json-
 - **装载**：项目层每个 `(项目, serverName)` 在宿主 ctx 上装载一个
   `@deepseek-ai/dsh-mcp-client` 实例（`ctx.plugin`），注册进全局工具层，同一
   项目内多会话共享同一连接；**用户层每行只装载一个实例**（全局，与项目数无关）
-  ——详见[配置来源与分层](configuration-layers.zh.md)。
+  ——详见[配置来源与分层](guide/layers.zh.md)。
 - **热重载**：chokidar 监听各项目根（depth 2，忽略 node_modules/.git/.hg/
   .svn），但只有**已知项目根的精确配置文件**（`<projectRoot>/.dsh/mcp.yml`、
   `<projectRoot>/.dsh/mcp.json` 与 `<projectRoot>/.mcp.json`）的改动经 150ms

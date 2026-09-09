@@ -2,7 +2,7 @@
 
 English | [中文](cli.zh.md)
 
-[← README](../README.md) ｜ Related: [configuration format](configuration-format.md) · [configuration sources and layers](configuration-layers.md) · [`${VAR}` expansion](env-expansion.md)
+[← README](../../README.md) ｜ Related: [configuration format](format.md) · [configuration sources and layers](layers.md) · [`${VAR}` expansion](env-expansion.md)
 
 Command-line management for the **native** config files (writes only
 `.dsh/mcp.yml` or `.dsh/mcp.json` — never the legacy `.mcp.json`; it does not

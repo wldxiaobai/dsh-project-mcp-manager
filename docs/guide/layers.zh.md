@@ -1,8 +1,8 @@
 # 配置来源与分层（六层）
 
-[English](configuration-layers.md) | 中文
+[English](layers.md) | 中文
 
-[← 返回 README](README.zh.md) ｜ 相关：[配置格式](configuration-format.zh.md) · [`${VAR}` 展开](env-expansion.zh.md) · [CLI `dsh-mcp`](cli.zh.md)
+[← 返回 README](../README.zh.md) ｜ 相关：[配置格式](format.zh.md) · [`${VAR}` 展开](env-expansion.zh.md) · [CLI `dsh-mcp`](cli.zh.md)
 
 插件读取六个来源，按**先到先得**合并。前三层属于**项目层**（按项目装载、按会话
 隔离），后三层属于**用户层**（宿主级**全局装载**）：
@@ -17,7 +17,7 @@
 | 6 | `dsh-user` | `~/.dsh/mcp.json` | **全局**（JSON 用户层） |
 
 第 4 层是动态层：profile 名在运行时解析，插件里不硬编码任何 profile 名。第
-1/2 层与 JSON 用户层的文件写法见 [配置格式](configuration-format.zh.md)。
+1/2 层与 JSON 用户层的文件写法见 [配置格式](format.zh.md)。
 
 **全局装载 vs 项目装载**：
 
