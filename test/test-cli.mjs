@@ -297,6 +297,36 @@ try {
     pass("cli --format / DSH_MCP_CLI_FORMAT / --scope profile write to the right file");
   }
 
+  // 19. yml 与 json 同名（H3/M8）：add 提示新行会被遮蔽 + 另一方言还有条目；
+  // remove 首个命中即删，但要说清「另一方言的同名行将接管生效」，二次 remove 才清空。
+  {
+    const ymlPath = projectMcpFile(project);
+    const jsonPath = join(project, ".dsh", "mcp.json");
+    await rm(ymlPath, { force: true });
+    await rm(jsonPath, { force: true });
+    const capYml = io();
+    assert.equal(await runCli(["add", "twin", "node", "y.js"], capYml.io, deps), 0, capYml.errs.join("\n"));
+    const capJson = io();
+    assert.equal(await runCli(["add", "twin", "node", "j.js", "--format", "json"], capJson.io, deps), 0, capJson.errs.join("\n"));
+    const jsonOut = capJson.lines.join("\n");
+    assert.ok(jsonOut.includes("不会装载"), "add warns that the shadowed row will not mount: " + jsonOut);
+    assert.ok(jsonOut.includes(ymlPath), "the warning names the shadowing yml layer");
+    assert.ok(jsonOut.includes("提示：同作用域"), "add points at the other dialect file: " + jsonOut);
+
+    const capRm1 = io();
+    assert.equal(await runCli(["remove", "twin"], capRm1.io, deps), 0, capRm1.errs.join("\n"));
+    const rm1 = capRm1.lines.join("\n");
+    assert.ok(rm1.includes(ymlPath), "the first remove hits the yml layer");
+    assert.ok(rm1.includes("接管生效"), "the first remove announces the json takeover: " + rm1);
+    assert.ok(rm1.includes(jsonPath), "the takeover notice names the json file");
+    assert.ok(JSON.parse(await readFile(jsonPath, "utf8")).mcpServers.twin !== undefined, "the json row is still there after the first remove");
+    const capRm2 = io();
+    assert.equal(await runCli(["remove", "twin"], capRm2.io, deps), 0, capRm2.errs.join("\n"));
+    assert.equal(JSON.parse(await readFile(jsonPath, "utf8")).mcpServers.twin, undefined, "the second remove clears the json row");
+    assert.ok(!capRm2.lines.join("\n").includes("接管生效"), "no takeover notice when nothing is left");
+    pass("cli add flags shadowed writes and remove announces cross-dialect takeover");
+  }
+
   // 18. mcpServers 里的非对象坏条目：add/remove 不得顺手删掉它（此前读-改-写
   // 会过滤非对象条目，任何一次写入都让用户手写的 `"legacy": "node x.js"` 永久消失）；
   // 坏条目占的名字要能被判重看见，指名 remove 能清掉。

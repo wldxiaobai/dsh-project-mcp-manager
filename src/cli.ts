@@ -491,7 +491,42 @@ async function cmdAdd(parsed: ParsedArgs, rest: string[], io: CliIo, deps: CliDe
   }
   io.out(`已添加 ${parsed.transport === "stdio" ? "stdio" : "http"} 服务器 "${name}" → ${targetFile.path}`);
   io.out("运行中的 dsh 会话会经文件监听自动收敛（宿主未运行时下次启动生效）。");
+  await warnAddShadowed(name, targetFile, io, deps);
   return 0;
+}
+
+/**
+ * 写入成功后按装载器口径复核：新行是否会被更高优先层遮蔽（同名或同服务），
+ * 以及同一作用域的另一方言文件里是否也有条目（"双真相"提示）。
+ * 只提示不失败——文件已经写成功了。
+ */
+async function warnAddShadowed(name: string, target: WriteTarget, io: CliIo, deps: CliDeps): Promise<void> {
+  const layers = await collectLayers(deps);
+  const hit = layers.find((layer) => isSameLayerFile(layer.path, target.path))?.rows.find((row) => row.name === name);
+  if (hit !== undefined) {
+    const view = shadowViewOf(layers);
+    if (!view.effective.has(hit.row)) {
+      const loss = view.identityLosses.get(name);
+      if (loss !== undefined) io.out(`注意：该行不会装载——${identityShadowNote(loss)}；确属不同服务器请改名或调整命令与参数。`);
+      else {
+        const winner = layers.find((layer) => !isSameLayerFile(layer.path, target.path) && layer.rows.some((row) => row.name === name));
+        const where = winner === undefined ? "更高优先层" : sourceLabel(winner);
+        io.out(`注意：该行不会装载——已被 ${where} 的同名定义遮蔽。`);
+      }
+    }
+  }
+  // 同作用域另一方言：两份文件同时有内容时，改错文件是常见事故（设计提案自述的「双真相」）。
+  const other = target.format === "json"
+    ? { path: join(dirname(target.path), MCP_YML_FILE), label: "yml" }
+    : { path: join(dirname(target.path), JSON_MCP_FILE), label: "json" };
+  const otherRows = layers.find((layer) => isSameLayerFile(layer.path, other.path))?.rows.length ?? 0;
+  if (otherRows > 0) io.out(`提示：同作用域的 ${other.path} 还有 ${otherRows} 条服务器定义（本次写入 ${target.path}）。`);
+}
+
+/** 层文件路径比较（Windows 大小写不敏感）。 */
+function isSameLayerFile(left: string, right: string): boolean {
+  const norm = (path: string) => (process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path));
+  return norm(left) === norm(right);
 }
 
 async function cmdList(parsed: ParsedArgs, io: CliIo, deps: CliDeps): Promise<number> {
@@ -610,14 +645,29 @@ async function cmdRemove(parsed: ParsedArgs, rest: string[], io: CliIo, deps: Cl
   if (name === undefined) return fail(io, "用法：dsh-mcp remove <name> [--scope project|user|profile]");
   const targets = await removeTargets(parsed, deps);
   if ("error" in targets) return fail(io, targets.error);
-  for (const target of targets) {
-    const outcome = await removeFromTarget(target, name, io);
-    if (outcome === "removed") return 0;
+  for (let index = 0; index < targets.length; index++) {
+    const outcome = await removeFromTarget(targets[index], name, io);
+    if (outcome === "removed") {
+      // 「首个命中即删」语义保留，但必须说清后果：另一方言里的同名行原本被
+      // 遮蔽，删掉高优先层之后它会接管生效——静默顶替是最难查的一类事故。
+      await warnRemoveTakeover(name, targets.slice(index + 1), io);
+      return 0;
+    }
     if (outcome !== "absent") return fail(io, outcome.error);
   }
   const readOnlyHit = await findReadOnlyLayerHit(name, deps);
   if (readOnlyHit !== undefined) return fail(io, `"${name}" 只在只读兼容层 ${readOnlyHit.path} 中；本 CLI 不改写 CC 格式文件，请直接编辑该文件`);
   return fail(io, `"${name}" 不在 ${targets.map((target) => target.path).join("、")} 中`);
+}
+
+/** 删除成功后，检查剩余候选目标里是否还有同名行会接管生效（只提示不失败）。 */
+async function warnRemoveTakeover(name: string, remaining: WriteTarget[], io: CliIo): Promise<void> {
+  for (const other of remaining) {
+    const names = await existingNames(other);
+    if (Array.isArray(names) && names.includes(name)) {
+      io.out(`注意：${other.path} 中还有同名 "${name}"，删除后将由该定义接管生效。`);
+    }
+  }
 }
 
 async function findReadOnlyLayerHit(name: string, deps: CliDeps): Promise<LayerRows | undefined> {
