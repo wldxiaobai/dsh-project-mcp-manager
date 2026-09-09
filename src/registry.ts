@@ -963,55 +963,70 @@ export class ProjectMcpRegistry {
     const effectiveName = container.effectiveNameOf(item.rawName);
     if (effectiveName === undefined) return undefined;
     await container.diag({ kind: "attempt", rawName: item.rawName, effectiveName });
-    let config: Record<string, unknown>;
+    let built: { config: Record<string, unknown> } | { skip: string };
     try {
-      let input = inputFromPatchRow(item.row);
-      // ${VAR} 串内插值展开对所有来源统一（CLI 按生态习惯写进原生文件的
-      // Bearer ${TOKEN} 也要生效）；值不含 ${NAME} 引用的行行为不变。
-      const expanded = expandEnvRefs(input, process.env);
-      if (!expanded.ok) {
-        await container.diag({ kind: "env-missing", rawName: item.rawName, effectiveName, missingVar: expanded.missingVar });
-        this.ctx.logger.warn(`${container.label} "${item.rawName}" 未装载：环境变量 \${${expanded.missingVar}} 未设置`);
-        return "env-missing";
-      }
-      input = expanded.input;
-      // 展开后的值可能不再合法（占位 `${URL}` 骗过了装载前 schema），补跑一次校验，
-      // 让错误在这里以诊断形式落地，而不是留给 ctx.plugin 炸 plugin-throw。
-      const revalidated = mcpServerInputSchema.safeParse(input);
-      if (!revalidated.success) {
-        const note = revalidated.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ");
-        await container.diag({ kind: "env-invalid", rawName: item.rawName, effectiveName, error: note });
-        this.ctx.logger.warn(`${container.label} "${item.rawName}" 配置无效：\${VAR} 展开后校验失败（${note}）`);
-        return "env-invalid";
-      }
-      input = revalidated.data;
-      const configInput: any = { ...input, serverName: effectiveName };
-      if (input.transport === "stdio") {
-        if (typeof input.cwd === "string" && input.cwd !== "") {
-          // 项目层相对 cwd 以项目根为基准；全局层以宿主工作目录为基准。
-          configInput.cwd = resolve(container.projectRoot === "" ? process.cwd() : container.projectRoot, input.cwd);
-        } else if (container.scope === "project") {
-          // 文档语义：项目层空 cwd = 项目根（手写 yml/json 行可整个省略 cwd）；
-          // 全局层空 cwd 保持继承宿主工作目录，不改写。
-          configInput.cwd = container.projectRoot;
-        }
-      }
-      config = toOfficialConfig(configInput);
+      built = await this.buildServerConfig(container, item, effectiveName);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       await container.diag({ kind: "config-invalid", rawName: item.rawName, error: message });
       this.ctx.logger.warn(`${container.label} "${item.rawName}" 配置无效：${message}`);
       return "config-invalid";
     }
+    if ("skip" in built) return built.skip;
     let fiber: any;
     try {
-      fiber = this.ctx.plugin(mcpClient as any, config);
+      fiber = this.ctx.plugin(mcpClient as any, built.config);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       await container.diag({ kind: "plugin-throw", effectiveName, error: message });
       this.ctx.logger.error(`${container.label} "${effectiveName}" 装载失败：${message}`);
       return "plugin-throw";
     }
+    this.trackMount(container, item, effectiveName, fiber);
+    return undefined;
+  }
+
+  /**
+   * 期望行 → dsh-mcp-client 配置。返回 `{ skip }` 表示已记诊断、不发起装载；
+   * 行本身读不出或展开后仍不合法则抛出，由 mountServer 落 config-invalid。
+   */
+  private async buildServerConfig(container: MountContainer, item: DesiredProjectRow, effectiveName: string): Promise<{ config: Record<string, unknown> } | { skip: string }> {
+    let input = inputFromPatchRow(item.row);
+    // ${VAR} 串内插值展开对所有来源统一（CLI 按生态习惯写进原生文件的
+    // Bearer ${TOKEN} 也要生效）；值不含 ${NAME} 引用的行行为不变。
+    const expanded = expandEnvRefs(input, process.env);
+    if (!expanded.ok) {
+      await container.diag({ kind: "env-missing", rawName: item.rawName, effectiveName, missingVar: expanded.missingVar });
+      this.ctx.logger.warn(`${container.label} "${item.rawName}" 未装载：环境变量 \${${expanded.missingVar}} 未设置`);
+      return { skip: "env-missing" };
+    }
+    input = expanded.input;
+    // 展开后的值可能不再合法（占位 `${URL}` 骗过了装载前 schema），补跑一次校验，
+    // 让错误在这里以诊断形式落地，而不是留给 ctx.plugin 炸 plugin-throw。
+    const revalidated = mcpServerInputSchema.safeParse(input);
+    if (!revalidated.success) {
+      const note = revalidated.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ");
+      await container.diag({ kind: "env-invalid", rawName: item.rawName, effectiveName, error: note });
+      this.ctx.logger.warn(`${container.label} "${item.rawName}" 配置无效：\${VAR} 展开后校验失败（${note}）`);
+      return { skip: "env-invalid" };
+    }
+    input = revalidated.data;
+    const configInput: any = { ...input, serverName: effectiveName };
+    if (input.transport === "stdio") {
+      if (typeof input.cwd === "string" && input.cwd !== "") {
+        // 项目层相对 cwd 以项目根为基准；全局层以宿主工作目录为基准。
+        configInput.cwd = resolve(container.projectRoot === "" ? process.cwd() : container.projectRoot, input.cwd);
+      } else if (container.scope === "project") {
+        // 文档语义：项目层空 cwd = 项目根（手写 yml/json 行可整个省略 cwd）；
+        // 全局层空 cwd 保持继承宿主工作目录，不改写。
+        configInput.cwd = container.projectRoot;
+      }
+    }
+    return { config: toOfficialConfig(configInput) };
+  }
+
+  /** 登记装载中状态，并把 fiber 的 settle 结果回写到状态、诊断与会话过滤。 */
+  private trackMount(container: MountContainer, item: DesiredProjectRow, effectiveName: string, fiber: any) {
     const state: ProjectServerState = {
       projectRoot: container.projectRoot,
       scope: container.scope,
@@ -1045,7 +1060,6 @@ export class ProjectMcpRegistry {
         this.kickSweep();
       }
     );
-    return undefined;
   }
 
   private async unmountServer(container: MountContainer, rawName: string) {
