@@ -33,6 +33,12 @@ There is no `local` scope — `--scope local`
 fails with an explanation. `--transport` accepts `stdio` (default) and `http`;
 `sse` is refused (unsupported by the backend).
 
+**Reserved short flags**: besides `-s`/`-t`/`-e`/`-H`/`-c`/`-h`, since v0.4.0
+`-f` (`--format`) and `-p` (`--profile`) are CLI options too. Both consume the
+next token as their value, so pass them to the spawned server command after `--`
+(everything after `--` is treated as a positional argument). Any other unknown
+`-` token is still forwarded to the server command line verbatim.
+
 **Ownership contract**: JSON files belong exclusively to this CLI (the host
 plugin never writes them). Writes keep other top-level keys and key order,
 refuse to overwrite a file that fails to parse, and are atomic; `${VAR}`
