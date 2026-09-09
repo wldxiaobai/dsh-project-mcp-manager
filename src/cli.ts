@@ -576,29 +576,39 @@ async function removeTargets(parsed: ParsedArgs, deps: CliDeps): Promise<WriteTa
   return [yml, json];
 }
 
+/** remove 的单个目标处理结果：`removed` 已删、`absent` 该文件没有这行、`{ error }` 需上报。 */
+type RemoveOutcome = "removed" | "absent" | { error: string };
+
+/** 在一个目标文件里删掉 name；不拥有该 name 时返回 `absent` 让调用方继续找下一个目标。 */
+async function removeFromTarget(target: WriteTarget, name: string, io: CliIo): Promise<RemoveOutcome> {
+  const names = await existingNames(target, io);
+  if (!Array.isArray(names)) return { error: names.error };
+  if (!names.includes(name)) return "absent";
+  try {
+    if (target.format === "json") {
+      await updateJsonServers(target.path, (servers) => {
+        delete servers[name];
+      });
+    } else {
+      const rows = extractManagedRows(await readPatchFile(target.path));
+      await writeManagedRows(target.path, rows.filter((row) => nameOf(row) !== name));
+    }
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+  io.out(`已移除 "${name}"（${target.path}）。`);
+  return "removed";
+}
+
 async function cmdRemove(parsed: ParsedArgs, rest: string[], io: CliIo, deps: CliDeps): Promise<number> {
   const name = rest[0];
   if (name === undefined) return fail(io, "用法：dsh-mcp remove <name> [--scope project|user|profile]");
   const targets = await removeTargets(parsed, deps);
   if ("error" in targets) return fail(io, targets.error);
   for (const target of targets) {
-    const names = await existingNames(target, io);
-    if (!Array.isArray(names)) return fail(io, names.error);
-    if (!names.includes(name)) continue;
-    try {
-      if (target.format === "json") {
-        await updateJsonServers(target.path, (servers) => {
-          delete servers[name];
-        });
-      } else {
-        const rows = extractManagedRows(await readPatchFile(target.path));
-        await writeManagedRows(target.path, rows.filter((row) => nameOf(row) !== name));
-      }
-    } catch (error) {
-      return fail(io, error instanceof Error ? error.message : String(error));
-    }
-    io.out(`已移除 "${name}"（${target.path}）。`);
-    return 0;
+    const outcome = await removeFromTarget(target, name, io);
+    if (outcome === "removed") return 0;
+    if (outcome !== "absent") return fail(io, outcome.error);
   }
   const readOnlyHit = await findReadOnlyLayerHit(name, deps);
   if (readOnlyHit !== undefined) return fail(io, `"${name}" 只在只读兼容层 ${readOnlyHit.path} 中；本 CLI 不改写 CC 格式文件，请直接编辑该文件`);
