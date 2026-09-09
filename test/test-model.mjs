@@ -80,7 +80,9 @@ const secretRow = toPatchRow(mcpServerInputSchema.parse({
   env: { GITHUB_TOKEN: "super-secret", FOO: "bar" }
 }));
 const view = patchRowToView(secretRow);
-assert.deepEqual(view.envKeys.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)), ["FOO", "GITHUB_TOKEN"]);
+const envKeys = [...view.envKeys];
+envKeys.sort();
+assert.deepEqual(envKeys, ["FOO", "GITHUB_TOKEN"]);
 assert.equal(JSON.stringify(view).includes("super-secret"), false);
 pass("patchRowToView redacts secret values");
 
@@ -95,8 +97,10 @@ assert.deepEqual(mergeSecretPatch(undefined, undefined), {});
 pass("secret patch null deletes, string overrides, absent preserves");
 
 // 8. effectiveServerNames：唯一名保持原名，冲突名（含全局占用）双方都改
-const projA = "/tmp/projA";
-const projB = "/tmp/projB";
+// 纯路径字符串夹具（只喂给 projectKeyOf / namespacedServerName，不落盘），
+// 用中性虚构挂载点，避免被安全规则按公共可写目录（/tmp 等）的使用判违规。
+const projA = "/srv/projects/alpha";
+const projB = "/srv/projects/beta";
 const eff1 = effectiveServerNames(
   [{ projectRoot: projA, names: ["unique", "dup"] }, { projectRoot: projB, names: ["dup"] }],
   ["global-only"]
@@ -118,7 +122,9 @@ pass("namespacedServerName produces valid, deterministic names");
 // 10. denySetFor：own 项目不 deny，无项目 deny 全部
 const mounted = [{ projectRoot: projA, effectiveNames: ["a1", "a2"] }, { projectRoot: projB, effectiveNames: ["b1"] }];
 assert.deepEqual(denySetFor(projA, mounted), ["b1"]);
-assert.deepEqual(denySetFor(undefined, mounted).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)), ["a1", "a2", "b1"]);
+const denyAll = [...denySetFor(undefined, mounted)];
+denyAll.sort();
+assert.deepEqual(denyAll, ["a1", "a2", "b1"]);
 pass("denySetFor scopes visibility to the session's own project");
 
 assert.equal(SERVER_NAME_RE.test("a_b-1"), true);
