@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-09-16
+
+Code-quality release: clears all 15 findings that held the PR #7 Sonar gate at
+"Reliability Rating on New Code = D". **No user-visible behaviour changes** —
+every fix is either an explicit restatement of what the code already did, or an
+internal decomposition.
+
+### Fixed
+
+- **Every string sort now passes an explicit comparator.** New
+  `byCodeUnit(a, b)` in `src/model.ts` — UTF-16 code-unit order, byte-identical
+  to `Array.prototype.sort`'s default and deliberately *not* locale collation
+  (`localeCompare` would let the host's locale decide the order of wire-visible
+  sequences: diagnostic and snapshot key sets, warning-gate signatures, `list`
+  output). Applied at all 15 call sites across `src/registry.ts`, `src/cli.ts`
+  and the test suite; ordering is unchanged, so no expectations moved.
+
+### Changed
+
+- **Internal decomposition of `scanProject`** (cognitive-complexity finding):
+  the duplicate-service shadow warning with its change gate moved into
+  `warnIdentityShadows`, and the scan-diagnostic payload into a pure
+  `buildScanDiag` that returns `null` for a clean, config-free project. The
+  zero-config-no-trace rule and every warning/diagnostic set are identical.
+- `collectLayers` pushes its three trailing layers in a single call (left-to-right
+  evaluation keeps the layer precedence unchanged), and one test helper block lost
+  its redundant braces.
+- **Lockfile metadata**: `pnpm-lock.yaml` now records the `@deepseek-ai/cordis`
+  specifier `^4.0.2` that `package.json` has declared since v0.4.1 (resolved
+  version was already `4.0.2`); `pnpm` no longer demands a re-lock on every run.
+
 ## [0.4.1] - 2026-09-16
 
 Follow-up on the code review of every TypeScript change since v0.3.1
@@ -503,7 +534,8 @@ carry an explicit `type`.
 Security note: `stdio` lines in `.dsh/mcp.yml` spawn their `command` inside the dsh host
 process, so project files are executable-code carriers — add them only in trusted projects.
 
-[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.1...HEAD
+[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.3.0...v0.3.1

@@ -2,7 +2,7 @@
 
 ## 项目概览
 
-`dsh-project-mcp-manager`（v0.4.1）是一个 **DSH 插件**（无 UI）：为每个项目自动装载 MCP 服务器。项目配置放 `<projectRoot>/.dsh/mcp.yml`（原生受管块）或 `<projectRoot>/.dsh/mcp.json`（JSON 方言），dsh 会话在该项目开启时自动经 `@deepseek-ai/dsh-mcp-client` 装载，文件改动热重载，工具可见性按会话 cwd 隔离。用户层（`~/.dsh/mcp.yml`、`~/.dsh/mcp.json`、`~/.dsh/profiles/<name>/mcp.json`）为**全局装载**（宿主级一条连接）。遗留 Claude Code 项目文件 `<projectRoot>/.mcp.json` 只读兼容；`~/.claude.json` 自 v0.4.0 起不再读取。`dsh-mcp` CLI 可写原生 yml 或 DSH JSON。
+`dsh-project-mcp-manager`（v0.4.2）是一个 **DSH 插件**（无 UI）：为每个项目自动装载 MCP 服务器。项目配置放 `<projectRoot>/.dsh/mcp.yml`（原生受管块）或 `<projectRoot>/.dsh/mcp.json`（JSON 方言），dsh 会话在该项目开启时自动经 `@deepseek-ai/dsh-mcp-client` 装载，文件改动热重载，工具可见性按会话 cwd 隔离。用户层（`~/.dsh/mcp.yml`、`~/.dsh/mcp.json`、`~/.dsh/profiles/<name>/mcp.json`）为**全局装载**（宿主级一条连接）。遗留 Claude Code 项目文件 `<projectRoot>/.mcp.json` 只读兼容；`~/.claude.json` 自 v0.4.0 起不再读取。`dsh-mcp` CLI 可写原生 yml 或 DSH JSON。
 
 - 语言：TypeScript（ESM，`"type": "module"`），`target ES2022` / `module NodeNext`，`strict: true`（`noImplicitAny: false`）。
 - 编译产物：`src/` → `lib/`（`main: lib/index.js`）。
@@ -13,7 +13,7 @@
 
 - `src/index.ts`：插件入口。`apply(ctx)` 构造 `ProjectMcpRegistry`，并提供 `globalNames()`（从 loader entries 的 `config.patches` 提取全局已装载 mcp-client 行的 serverName，供冲突判定）与 `activeProfile()`（`DSH_MCP_PROFILE` 优先，否则从根 include 的 `config.path`/`ctx.baseUrl` 推导 profile 名）。
 - `src/registry.ts`：核心。`ProjectMcpRegistry` 类——项目发现、chokidar 文件监听（150ms 防抖；项目 `.dsh/mcp.yml` + `.dsh/mcp.json` + `.mcp.json` 与用户层三个精确路径均按**精确文件路径** kick，已无 `~/.claude.json` 哈希门）、`reconcileAll()` 全量对账（六层 shadow 合并 `mergeSourcedRows`：dsh-project > dsh-project-json > cc-project > dsh-profile-user > dsh-user-yml > dsh-user；三把先到先得影子键——精确原名、归一化名（小写去非字母数字，`unityMCP`=`unity-mcp`）、服务身份（stdio command+args，Windows 下 command 小写；http url）——跨来源同服务只装高优先级一条，被剔除方进 `shadowedIdentity` 诊断并告警；原生 `disabled: true` 占名行三键全占不装载，JSON `enabled:false` 静默跳过不占名）、装载/卸载（`MountContainer` 抽象：项目层按项目、全局层宿主级一条；挂载时 `expandEnvRefs` 做 `${VAR}` 串内插值，未定义/空串→`env-missing`，展开后复验失败→`env-invalid`）、按会话 `tools.restrict({ deny })`（含项目侧压制全局服务器）、`snapshot()`/`serverView()`/`globalState()` 状态查询（snapshot 按 source 分区；`fiberPhase` 为生命周期枚举，跳过原因走独立 `skipReason`，含 `name-taken`）。纯函数 `planProjectChanges()` 计算 toMount/toUnmount、`profileNameFromConfigPath()` 解析 profile 名。
-- `src/model.ts`：配置模型（纯函数 + zod schema）。`effectiveServerNames()`（全局目录内唯一则保持原名，冲突改 `p<sha256(projectKey)前6hex>_<原名>`，截 32 字符）、`denySetFor()`、`toOfficialConfig()`、`toPatchRow()`、`patchRowToView()`（脱敏）、`inputFromPatchRow()`、`expandEnvRefs(input, env)`（`${NAME}` 串内插值，EMBEDDED_ENV_REF_RE；空串按缺失）。
+- `src/model.ts`：配置模型（纯函数 + zod schema）。`effectiveServerNames()`（全局目录内唯一则保持原名，冲突改 `p<sha256(projectKey)前6hex>_<原名>`，截 32 字符）、`denySetFor()`、`toOfficialConfig()`、`toPatchRow()`、`patchRowToView()`（脱敏）、`inputFromPatchRow()`、`expandEnvRefs(input, env)`（`${NAME}` 串内插值，EMBEDDED_ENV_REF_RE；空串按缺失）、`rowNameOf()`（受管行 id 优先于 `config.serverName`，装载器与 CLI 共用口径）、`byCodeUnit(a, b)`（字符串排序统一比较器：UTF-16 码元序，与 `Array#sort` 默认逐字节等价、不经 locale collator）。
 - `src/json-file.ts`：JSON 方言读取器（只读）。`readJsonRows(path, {source, cwdPolicy, projectRoot})` 解析 `{mcpServers:{…}}`；`jsonServerEntrySchema`（looseObject，容忍生态未知键 + DSH 透传键）、`jsonEntryToInput`、`parseJsonServersValue`；`readDshJsonFile`（缺 `mcpServers` = 空层）、`readMcpJsonFile`（遗留 `.mcp.json`，缺 `mcpServers` 报错）；`McpRowSource` 六值枚举、`SourcedRow`、`JsonReadResult`；`mcpJsonLayerEnabled`（`DSH_MCP_IGNORE_MCP_JSON=1` 停用遗留项目 `.mcp.json` 层）。
 - `src/json-write.ts`：JSON 写入器（**仅 CLI 用**）。`readJsonDocument`/`readJsonServers`/`updateJsonServers`（锁内读-改-写）/`writeJsonServers`/`toJsonEntry`。CLI 独占契约：只认 `mcpServers`、保留其他顶层键与键序、解析失败拒绝覆盖（错误不含文件内容）、原子写。
 - `src/cli.ts`：`dsh-mcp` CLI（package.json `bin`）。`add`/`list`/`get`/`remove`，`--scope project|user|profile`、`--format yml|json`（env `DSH_MCP_CLI_FORMAT`，缺省 yml）、`--profile <name>`；`runCli(argv, io, deps)` 供进程内测试；手搓 argv 解析，不识别的 `-x` 视为服务器参数（positional），`--` 透传。
@@ -23,7 +23,7 @@
 - `src/dsh-paths.ts`：dsh 家目录与用户层路径的唯一解析口径（registry 与 CLI 共用）。`dshHomeDir(home, env)`（`DSH_HOME` 非空则 `resolve` 它，否则 `<home>/.dsh`）、`dshHomeFor(home|undefined, env)`（**注入的 home 优先于 env**，测试才能隔离真实用户配置）、`userLayerPathsIn(dshHome)`（`mcp.yml`/`mcp.json`/`profiles`）、`profileMcpJsonFile(profilesDir, profile)`、`isValidProfileName`（`PROFILE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/`，显式拒绝 `.`/`..`）、常量 `DSH_HOME_ENV`/`PROFILE_ENV`/`DSH_DIR`/`MCP_YML_FILE`/`DIAG_FILE`。
 - `test/`：`test-model.mjs`、`test-mcp-file.mjs`、`test-json-file.mjs`、`test-json-write.mjs`、`test-registry.mjs`、`test-cli.mjs`（node 直接跑，无测试框架）。
 - `README.md` / `docs/README.zh.md`：项目介绍、安装/构建、工作原理与安全边界（中英双版，各自链接同语言文档）。
-- `docs/`：按用途分目录——`guide/`（功能文档中英双版：`format.md`/`.zh.md` 配置格式、`layers.md`/`.zh.md` 六层来源与影子优先序、`env-expansion.md`/`.zh.md` `${VAR}` 展开、`cli.md`/`.zh.md` `dsh-mcp` CLI）、`releases/`（`v0.3.1.md`、`v0.4.0.md`、`v0.4.1.md` 发布说明）、`design/`（`adaptation-dsh-0.1.2-rc1.md` 宿主适配记录、`proposal-json-mcp-config.md` JSON 层设计提案）；`docs/README.zh.md` 为中文 README。
+- `docs/`：按用途分目录——`guide/`（功能文档中英双版：`format.md`/`.zh.md` 配置格式、`layers.md`/`.zh.md` 六层来源与影子优先序、`env-expansion.md`/`.zh.md` `${VAR}` 展开、`cli.md`/`.zh.md` `dsh-mcp` CLI）、`releases/`（`v0.3.1.md`、`v0.4.0.md`、`v0.4.1.md`、`v0.4.2.md` 发布说明）、`design/`（`adaptation-dsh-0.1.2-rc1.md` 宿主适配记录、`proposal-json-mcp-config.md` JSON 层设计提案）；`docs/README.zh.md` 为中文 README。
 - `CHANGELOG.md`：版本变更记录（`[Unreleased]` 起累积）。
 
 ## 常用命令
