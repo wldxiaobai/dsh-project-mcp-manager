@@ -165,7 +165,7 @@ const dir = await mkdtemp(join(tmpdir(), "dsh-project-mcp-manager-registry-"));
       [srow("unity-mcp", "dsh-user", stdioCfg("unity-mcp", String.raw`C:\uvx.exe`, ["--offline", "--from", "mcpforunityserver==10.1.0", "mcp-for-unity", "--transport", "stdio"]))]
     ]);
     assert.deepEqual(m.rows.map((r) => r.rawName), ["unityMCP"], "normname dup drops the low-priority twin");
-    assert.deepEqual(m.shadowedIdentity, [{ name: "unity-mcp", winner: "unityMCP", reason: "normname" }], "identity shadow reports the incident pair");
+    assert.deepEqual(m.shadowedIdentity, [{ name: "unity-mcp", winner: "unityMCP", reason: "normname", source: "dsh-user", winnerSource: "dsh-project" }], "identity shadow reports the incident pair with both layers");
     assert.deepEqual(m.shadowedUser, ["unity-mcp"], "the dropped user-layer row also counts as project-shadowed user row");
   }
   // 0.2 完全相同的 command+args（名字归一后不同）→ 身份键命中
@@ -176,7 +176,7 @@ const dir = await mkdtemp(join(tmpdir(), "dsh-project-mcp-manager-registry-"));
       [srow("pencil-user", "dsh-user-yml", stdioCfg("pencil-user", String.raw`C:\pencil\mcp-server.exe`, ["--agent", "cli"]))]
     ]);
     assert.deepEqual(m.rows.map((r) => r.rawName), ["pencilA"], "identity dup keeps the yml row");
-    assert.deepEqual(m.shadowedIdentity, [{ name: "pencil-user", winner: "pencilA", reason: "identity" }]);
+    assert.deepEqual(m.shadowedIdentity, [{ name: "pencil-user", winner: "pencilA", reason: "identity", source: "dsh-user-yml", winnerSource: "dsh-project" }]);
   }
   // 0.3 同 command 不同 args 是不同服务：node a.js 与 node b.js 不许互杀
   {
@@ -195,7 +195,7 @@ const dir = await mkdtemp(join(tmpdir(), "dsh-project-mcp-manager-registry-"));
       [srow("remote2", "dsh-user", httpCfg("remote2", "https://mcp.example/api"))]
     ]);
     assert.deepEqual(m.rows.map((r) => r.rawName), ["remote"]);
-    assert.deepEqual(m.shadowedIdentity, [{ name: "remote2", winner: "remote", reason: "identity" }]);
+    assert.deepEqual(m.shadowedIdentity, [{ name: "remote2", winner: "remote", reason: "identity", source: "dsh-user", winnerSource: "dsh-project" }]);
   }
   // 0.5 disabled 占名行注册归一名键：给用户层行提供占名退出手段
   {
@@ -206,7 +206,7 @@ const dir = await mkdtemp(join(tmpdir(), "dsh-project-mcp-manager-registry-"));
       [srow("Gamma", "dsh-user", stdioCfg("Gamma", "node", ["g.js"]))]
     ]);
     assert.equal(m.rows.length, 0, "disabled placeholder mounts nothing and its normname twin stays shadowed");
-    assert.deepEqual(m.shadowedIdentity, [{ name: "Gamma", winner: "gamma", reason: "normname" }]);
+    assert.deepEqual(m.shadowedIdentity, [{ name: "Gamma", winner: "gamma", reason: "normname", source: "dsh-user", winnerSource: "dsh-project" }]);
   }
   // 0.6 空 command 的行不注册身份键（两行都无 config 时不得互杀）
   {
@@ -857,6 +857,167 @@ try {
         if (savedHome === undefined) delete process.env.DSH_HOME;
         else process.env.DSH_HOME = savedHome;
         await rmRetry(relocated);
+      }
+    }
+
+    // 32. 项目侧压制只针对「真会全局装载」的名字（H1）：
+    //  a) 用户层 disabled 占名行 + 项目同名行 → 该项目不得 deny 自己的工具；
+    //  b) 宿主 patch 占名 + 用户层同名行被拒（name-taken）+ 项目同名行 → 不得 deny 宿主 patch 的工具。
+    {
+      const home32 = await mkdtemp(join(tmpdir(), "dsh-project-mcp-manager-h1-"));
+      const proj32 = join(dir2, "proj32");
+      try {
+        await mkdir(proj32, { recursive: true });
+        const userPaths32 = { mcpYml: join(home32, "mcp.yml"), mcpJson: join(home32, "mcp.json"), profilesDir: join(home32, "profiles") };
+        // a) 用户层 yml 里 selfx 是 disabled 占名行（占名遮蔽下层，但自身不装载）
+        await writeManagedRows(userPaths32.mcpYml, [{ id: "panel-mcp-selfx", name: "@deepseek-ai/dsh-mcp-client", disabled: true }], { createIfMissing: true });
+        await writeManagedRows(projectMcpFile(proj32), [stdioRow("selfx")], { createIfMissing: true });
+        const ctxA = fakeCtx();
+        const registryA = new ProjectMcpRegistry(ctxA, { globalNames: async () => [], userLayerPaths: userPaths32 });
+        ctxA.agentsList.push(fakeAgent("session-h1a", proj32));
+        await registryA.reconcileNow();
+        assert.ok(await registryA.waitForState(proj32, "selfx", (state) => state?.phase === "active", 5000), "the project row mounts under its own name");
+        const mountedA = ctxA.mounts.map((config) => config.serverName);
+        assert.ok(mountedA.includes("selfx"), "a disabled user placeholder does not claim the global name: " + mountedA.join(","));
+        assert.equal(registryA.globalState("selfx"), undefined, "the disabled placeholder mounts nothing globally");
+        ctxA.schemas.push({ id: "mcp__selfx__ping" });
+        await registryA.reconcileNow();
+        const agentA = ctxA.agentsList[0];
+        assert.ok(agentA.denies.every((deny) => !deny.includes("mcp__selfx__ping")), "the project must not deny its own tools: " + JSON.stringify(agentA.denies));
+        const viewA = await registryA.serverView(proj32, "selfx");
+        assert.equal(viewA.fiberPhase, "active", "the project row stays active");
+
+        // b) 宿主 patch 占名 hostx：用户层 hostx 被 name-taken 拒掉，项目 hostx 改名
+        await writeManagedRows(userPaths32.mcpYml, [{
+          id: "panel-mcp-hostx",
+          name: "@deepseek-ai/dsh-mcp-client",
+          config: { serverName: "hostx", transport: "stdio", command: "node", args: ["u-hostx.js"], env: {}, cwd: "", toolCallTimeoutMs: 60000, failOnStartupError: false, reconnect: { enabled: true, initialDelayMs: 500, maxDelayMs: 30000, maxAttempts: 10 } }
+        }]);
+        await writeManagedRows(projectMcpFile(proj32), [stdioRow("hostx")]);
+        const ctxB = fakeCtx();
+        const registryB = new ProjectMcpRegistry(ctxB, { globalNames: async () => ["hostx"], userLayerPaths: userPaths32 });
+        ctxB.agentsList.push(fakeAgent("session-h1b", proj32));
+        await registryB.reconcileNow();
+        assert.equal(registryB.globalState("hostx"), undefined, "the user row is blocked by the host patch name");
+        const projectEffective = ctxB.mounts.map((config) => config.serverName).find((name) => name.endsWith("_hostx"));
+        assert.ok(projectEffective !== undefined, "the project row is namespaced around the host patch name: " + ctxB.mounts.map((c) => c.serverName).join(","));
+        ctxB.schemas.push({ id: "mcp__hostx__ping" }, { id: `mcp__${projectEffective}__ping` });
+        await registryB.reconcileNow();
+        const agentB = ctxB.agentsList[0];
+        assert.ok(agentB.denies.every((deny) => !deny.includes("mcp__hostx__ping")), "a blocked user row must not make the project deny the host patch tools: " + JSON.stringify(agentB.denies));
+        for (const disposer of [...ctxA.disposers, ...ctxB.disposers]) {
+          const cleanup = disposer();
+          if (typeof cleanup === "function") cleanup();
+        }
+        pass("project-side suppression only denies globals that actually mount");
+      } finally {
+        await rmRetry(home32);
+        await rmRetry(proj32);
+      }
+    }
+
+    // 33. 纯用户层内部冲突按全局归因（M3/M4）：零配置项目不写 .mcp-diag.json，
+    // 同名/同服务遮蔽只在全局层告警一次并写全局诊断。
+    {
+      const home33 = await mkdtemp(join(tmpdir(), "dsh-project-mcp-manager-m4-"));
+      const proj33 = join(dir2, "proj33");
+      try {
+        await mkdir(proj33, { recursive: true });
+        const userPaths33 = { mcpYml: join(home33, "mcp.yml"), mcpJson: join(home33, "mcp.json"), profilesDir: join(home33, "profiles") };
+        // 用户 yml 与用户 json 定义同一个服务（command+args 相同 → 身份键命中），
+        // 外加一对精确同名行（yml 胜出）。两类冲突都只属于全局层。
+        await writeManagedRows(userPaths33.mcpYml, [{
+          id: "panel-mcp-twin-yml",
+          name: "@deepseek-ai/dsh-mcp-client",
+          config: { serverName: "twin-yml", transport: "stdio", command: "node", args: ["twin.js"], env: {}, cwd: "", toolCallTimeoutMs: 60000, failOnStartupError: false, reconnect: { enabled: true, initialDelayMs: 500, maxDelayMs: 30000, maxAttempts: 10 } }
+        }, {
+          id: "panel-mcp-samename",
+          name: "@deepseek-ai/dsh-mcp-client",
+          config: { serverName: "samename", transport: "stdio", command: "node", args: ["s-yml.js"], env: {}, cwd: "", toolCallTimeoutMs: 60000, failOnStartupError: false, reconnect: { enabled: true, initialDelayMs: 500, maxDelayMs: 30000, maxAttempts: 10 } }
+        }], { createIfMissing: true });
+        await writeFile(userPaths33.mcpJson, JSON.stringify({
+          mcpServers: {
+            "twin-json": { command: "node", args: ["twin.js"] },
+            samename: { command: "node", args: ["s-json.js"] }
+          }
+        }), "utf8");
+        const ctx33 = fakeCtx();
+        const warns33 = [];
+        ctx33.logger.warn = (msg) => { warns33.push(String(msg)); };
+        const registry33 = new ProjectMcpRegistry(ctx33, { globalNames: async () => [], userLayerPaths: userPaths33 });
+        ctx33.agentsList.push(fakeAgent("session-m4", proj33));
+        await registry33.reconcileNow();
+        assert.equal(await pathExists(diagFile(proj33)), false, "a zero-config project stays free of .mcp-diag.json");
+        const globalDiag = JSON.parse(await readFile(join(home33, ".mcp-diag.json"), "utf8"));
+        assert.ok(globalDiag.some((row) => row.kind === "shadow" && Array.isArray(row.shadowedIdentity)
+          && row.shadowedIdentity.some((s) => s.name === "twin-json" && s.winner === "twin-yml")), "global diag records the user-layer identity shadow: " + JSON.stringify(globalDiag.slice(-2)));
+        assert.ok(globalDiag.some((row) => row.kind === "shadow" && Array.isArray(row.shadowedByHigherLayer)
+          && row.shadowedByHigherLayer.some((s) => s.name === "samename" && s.winnerSource === "dsh-user-yml")), "global diag records the same-name shadow between user layers");
+        const dupWarns = warns33.filter((w) => w.includes('跳过重复服务定义 "twin-json"'));
+        assert.equal(dupWarns.length, 1, "the user-layer dedup warns once, globally: " + JSON.stringify(warns33));
+        assert.ok(warns33.every((w) => !w.includes(proj33)), "no warning is attributed to the zero-config project");
+        await registry33.reconcileNow();
+        await registry33.reconcileNow();
+        assert.equal(warns33.filter((w) => w.includes('跳过重复服务定义 "twin-json"')).length, 1, "a stable global shadow set stays silent");
+        for (const disposer of ctx33.disposers) {
+          const cleanup = disposer();
+          if (typeof cleanup === "function") cleanup();
+        }
+        pass("user-layer-only shadows are attributed globally and leave zero-config projects untouched");
+      } finally {
+        await rmRetry(home33);
+        await rmRetry(proj33);
+      }
+    }
+
+    // 34. 告警变更门控（M1/M2）：持续存在的坏条目与持续被拒的 name-taken 行，
+    // 多次对账只在集合变化时各告警一次（此前每次文件事件都重刷）。
+    {
+      const home34 = await mkdtemp(join(tmpdir(), "dsh-project-mcp-manager-gate-"));
+      const proj34 = join(dir2, "proj34");
+      try {
+        await mkdir(join(proj34, ".dsh"), { recursive: true });
+        const userPaths34 = { mcpYml: join(home34, "mcp.yml"), mcpJson: join(home34, "mcp.json"), profilesDir: join(home34, "profiles") };
+        await writeFile(userPaths34.mcpJson, JSON.stringify({
+          mcpServers: {
+            taken34: { command: "node", args: ["t.js"] },
+            bad34: { type: "sse", url: "https://x/mcp" }
+          }
+        }), "utf8");
+        await writeFile(join(proj34, ".dsh", "mcp.json"), JSON.stringify({
+          mcpServers: { projbad34: { type: "sse", url: "https://y/mcp" } }
+        }), "utf8");
+        const ctx34 = fakeCtx();
+        const warns34 = [];
+        ctx34.logger.warn = (msg) => { warns34.push(String(msg)); };
+        const registry34 = new ProjectMcpRegistry(ctx34, { globalNames: async () => ["taken34"], userLayerPaths: userPaths34 });
+        ctx34.agentsList.push(fakeAgent("session-gate", proj34));
+        await registry34.reconcileNow();
+        await registry34.reconcileNow();
+        await registry34.reconcileNow();
+        const count = (needle) => warns34.filter((w) => w.includes(needle)).length;
+        assert.equal(count('"bad34": sse transport'), 1, "the user-layer bad entry warns once across reconciles: " + JSON.stringify(warns34));
+        assert.equal(count('"projbad34": sse transport'), 1, "the project bad entry warns once across reconciles");
+        assert.equal(count('"taken34" 未装载'), 1, "the name-taken warning is gated too");
+        assert.ok(warns34.some((w) => w.includes("宿主全局 patch 行")), "the name-taken warning names host global patch rows, not just profile patches");
+        assert.equal((await registry34.serverView(proj34, "taken34")).skipReason, "name-taken", "skipReason still reports the collision every round");
+        // 集合变化（坏条目修好）后再坏一次 → 重新告警一次。
+        await writeFile(userPaths34.mcpJson, JSON.stringify({ mcpServers: { taken34: { command: "node", args: ["t.js"] } } }), "utf8");
+        await registry34.reconcileNow();
+        assert.equal(count('"bad34": sse transport'), 1, "fixing an entry does not warn");
+        await writeFile(userPaths34.mcpJson, JSON.stringify({
+          mcpServers: { taken34: { command: "node", args: ["t.js"] }, bad34: { type: "sse", url: "https://x/mcp" } }
+        }), "utf8");
+        await registry34.reconcileNow();
+        assert.equal(count('"bad34": sse transport'), 2, "a re-appearing bad entry warns again");
+        for (const disposer of ctx34.disposers) {
+          const cleanup = disposer();
+          if (typeof cleanup === "function") cleanup();
+        }
+        pass("entry-error and name-taken warnings are gated on set changes");
+      } finally {
+        await rmRetry(home34);
+        await rmRetry(proj34);
       }
     }
 

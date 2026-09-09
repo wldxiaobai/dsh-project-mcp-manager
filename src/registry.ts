@@ -67,7 +67,8 @@ import {
   patchRowToView,
   projectKeyOf,
   rowNameOf,
-  toOfficialConfig
+  toOfficialConfig,
+  type McpScopeInfo
 } from "./model.js";
 import { mcpToolCount } from "./status.js";
 
@@ -248,8 +249,9 @@ export function planProjectChanges(
       toUnmount.push(state.rawName);
     }
   }
+  const currentByName = new Map(current.map((state) => [state.rawName, state]));
   for (const item of desired) {
-    const state = current.find((candidate) => candidate.rawName === item.rawName);
+    const state = currentByName.get(item.rawName);
     if (state === undefined) {
       toMount.push(item);
       continue;
@@ -331,11 +333,24 @@ function normalizedNameKey(rawName: string): string | undefined {
   return norm === "" ? undefined : norm;
 }
 
-/** 被身份/归一名去重剔除的行：loser 原名、winner 原名、命中维度。 */
+/** 被身份/归一名去重剔除的行：loser 原名、winner 原名、命中维度、两侧来源。
+ *  来源字段用于归因过滤：纯用户层之间的冲突不该记到每个项目的诊断里。 */
 export interface IdentityShadow {
   name: string;
   winner: string;
   reason: "identity" | "normname";
+  /** 被剔除方（loser）的来源层。 */
+  source: McpRowSource;
+  /** 胜出方（winner）的来源层。 */
+  winnerSource: McpRowSource;
+}
+
+/** 用户层之间被同名/同服务遮蔽的行（全局层内部冲突，按全局归因）。 */
+export interface GlobalShadow {
+  name: string;
+  winner: string;
+  source: McpRowSource;
+  winnerSource: McpRowSource;
 }
 
 /** 影子键的条件 get：键为 undefined 直接不查，免调用点三元。 */
@@ -347,22 +362,45 @@ function pushUnique(list: string[], name: string): void {
   if (!list.includes(name)) list.push(name);
 }
 
-/** 跨层遮蔽诊断的三个收集桶。 */
+/** 跨层遮蔽诊断的四个收集桶。 */
 interface ShadowBuckets {
   shadowedOwnCc: string[];
   shadowedUser: string[];
+  shadowedGlobal: GlobalShadow[];
   shadowedIdentity: IdentityShadow[];
 }
 
-/** 被遮蔽行归因：项目 cc 行被任一 DSH 项目行遮蔽单列；被任一项目自身行遮蔽的用户层行入 shadowedUser。 */
+/**
+ * 被遮蔽行归因：
+ *  - 项目 cc 行被任一 DSH 项目行遮蔽 → shadowedOwnCc；
+ *  - 用户层行被项目层行遮蔽 → shadowedUser（项目侧压制的候选）；
+ *  - 用户层行被另一条用户层行遮蔽 → shadowedGlobal（全局层内部冲突，此前零可见性）。
+ */
 function classifyShadow(item: SourcedRow, winner: SourcedRow, buckets: ShadowBuckets): void {
-  if (item.source === "cc-project" && SOURCE_RANK[winner.source] < SOURCE_RANK["cc-project"]) pushUnique(buckets.shadowedOwnCc, item.rawName);
-  else if (SOURCE_RANK[item.source] > PROJECT_LAYER_MAX_RANK && SOURCE_RANK[winner.source] <= PROJECT_LAYER_MAX_RANK) pushUnique(buckets.shadowedUser, item.rawName);
+  if (item.source === "cc-project" && SOURCE_RANK[winner.source] < SOURCE_RANK["cc-project"]) {
+    pushUnique(buckets.shadowedOwnCc, item.rawName);
+    return;
+  }
+  if (SOURCE_RANK[item.source] <= PROJECT_LAYER_MAX_RANK) return;
+  if (SOURCE_RANK[winner.source] <= PROJECT_LAYER_MAX_RANK) {
+    pushUnique(buckets.shadowedUser, item.rawName);
+    return;
+  }
+  if (!buckets.shadowedGlobal.some((shadow) => shadow.name === item.rawName)) {
+    buckets.shadowedGlobal.push({ name: item.rawName, winner: winner.rawName, source: item.source, winnerSource: winner.source });
+  }
 }
 
-/** 剔除集签名：排序后逐条 name\0winner\0reason 拼接，供「集合变了才告警」比较。 */
+/** 剔除集签名：排序后逐条 name\0winner\0reason\0source\0winnerSource 拼接，供「集合变了才告警」比较。 */
 function identityShadowSignature(shadows: IdentityShadow[]): string {
-  const entries = shadows.map((shadow) => shadow.name + "\u0000" + shadow.winner + "\u0000" + shadow.reason);
+  const entries = shadows.map((shadow) => [shadow.name, shadow.winner, shadow.reason, shadow.source, shadow.winnerSource].join("\u0000"));
+  entries.sort();
+  return entries.join("\u0001");
+}
+
+/** 全局层内部遮蔽集签名（同上，供全局告警门控）。 */
+function globalShadowSignature(shadows: GlobalShadow[]): string {
+  const entries = shadows.map((shadow) => [shadow.name, shadow.winner, shadow.source, shadow.winnerSource].join("\u0000"));
   entries.sort();
   return entries.join("\u0001");
 }
@@ -381,7 +419,7 @@ function mergeOneRow(item: SourcedRow, byName: Map<string, SourcedRow>, byNorm: 
   const dupWinner = normWinner ?? idWinner;
   if (dupWinner !== undefined) {
     const reason: IdentityShadow["reason"] = normWinner !== undefined ? "normname" : "identity";
-    buckets.shadowedIdentity.push({ name: item.rawName, winner: dupWinner.rawName, reason });
+    buckets.shadowedIdentity.push({ name: item.rawName, winner: dupWinner.rawName, reason, source: item.source, winnerSource: dupWinner.source });
     classifyShadow(item, dupWinner, buckets);
     return;
   }
@@ -408,19 +446,21 @@ function skipReasonFor(skipReasons: Map<string, string>, key: string, rawName: s
  * （serviceIdentityKey）。disabled 占名行照样注册三键——给低层行提供
  * 「占名退出」手段，但本身不进 rows。
  * shadowedOwnCc：被项目 yml 遮蔽的项目 .mcp.json 行；shadowedUser：被任一项目
- * 自身行遮蔽的用户层行（含身份/归一名命中）；shadowedIdentity：被归一名或
- * 身份键去重剔除的行明细。纯函数，供测试。
+ * 自身行遮蔽的用户层行（含身份/归一名命中）；shadowedGlobal：被另一条用户层行
+ * 遮蔽的用户层行；shadowedIdentity：被归一名或身份键去重剔除的行明细（带两侧
+ * 来源，供归因过滤）。纯函数，供测试。
  */
 export function mergeSourcedRows(candidates: SourcedRow[][]): {
   rows: DesiredProjectRow[];
   shadowedOwnCc: string[];
   shadowedUser: string[];
+  shadowedGlobal: GlobalShadow[];
   shadowedIdentity: IdentityShadow[];
 } {
   const byName = new Map<string, SourcedRow>();
   const byNorm = new Map<string, SourcedRow>();
   const byIdentity = new Map<string, SourcedRow>();
-  const buckets: ShadowBuckets = { shadowedOwnCc: [], shadowedUser: [], shadowedIdentity: [] };
+  const buckets: ShadowBuckets = { shadowedOwnCc: [], shadowedUser: [], shadowedGlobal: [], shadowedIdentity: [] };
   for (const list of candidates) {
     for (const item of list) mergeOneRow(item, byName, byNorm, byIdentity, buckets);
   }
@@ -430,6 +470,7 @@ export function mergeSourcedRows(candidates: SourcedRow[][]): {
       .map((item) => ({ rawName: item.rawName, row: item.row, source: item.source })),
     shadowedOwnCc: buckets.shadowedOwnCc,
     shadowedUser: buckets.shadowedUser,
+    shadowedGlobal: buckets.shadowedGlobal,
     shadowedIdentity: buckets.shadowedIdentity
   };
 }
@@ -488,6 +529,12 @@ export class ProjectMcpRegistry {
   private reconcileCount = 0;
   /** identity 去重告警/诊断的变更门控：projectKey → 上次对账的剔除集签名。 */
   private readonly identityShadowSigs = new Map<string, string>();
+  /**
+   * 告警变更门控：门控键 → 上次告警的签名。签名不变就沉默——否则任何文件事件
+   * 都会让每类告警重刷一遍（规模 = 对账次数 × 项目数 × 坏条目数）。
+   * 键前缀区分关注点：`entries\0<path|projectKey>`、`blocked\0global`、`gshadow\0global`。
+   */
+  private readonly warnGates = new Map<string, string>();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private chain: Promise<void> = Promise.resolve();
   private disposed = false;
@@ -575,6 +622,17 @@ export class ProjectMcpRegistry {
         await this.reconcileAll();
       }).catch(() => {});
     }, 150);
+  }
+
+  /**
+   * 变更门控告警：签名与上次相同则不 emit；空签名表示「该 scope 无异常」，清掉门控
+   * （下次再出现同样的问题仍会告警一次）。
+   */
+  private warnGated(key: string, signature: string, emit: () => void): void {
+    const previous = this.warnGates.get(key);
+    if (signature === "") this.warnGates.delete(key);
+    else this.warnGates.set(key, signature);
+    if (signature !== previous) emit();
   }
 
   private liveAgents(): any[] {
@@ -696,7 +754,10 @@ export class ProjectMcpRegistry {
    */
   private async readUserLayer(): Promise<void> {
     const paths = this.resolveUserLayerPaths();
-    this.activeProfileName = this.providers.activeProfile === undefined ? undefined : await this.providers.activeProfile().catch(() => undefined);
+    // Promise.resolve 包一层：注入的 activeProfile 若同步抛错，裸 .catch 会先 TypeError。
+    this.activeProfileName = this.providers.activeProfile === undefined
+      ? undefined
+      : await Promise.resolve(this.providers.activeProfile()).catch(() => undefined);
     const yml = await this.readNativeRows(paths.mcpYml, "dsh-user-yml", false);
     const json = await readDshJsonFile(paths.mcpJson, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" });
     const profileJson = this.activeProfileName === undefined ? null : profileMcpJsonFile(paths.profilesDir, this.activeProfileName);
@@ -714,11 +775,21 @@ export class ProjectMcpRegistry {
       profileRows: profile.rows,
       profileError: profile.fileError ?? null
     };
-    if (yml.error !== null) this.ctx.logger.warn(`用户层 MCP（${paths.mcpYml}）：${yml.error}`);
-    if (json.fileError !== undefined) this.ctx.logger.warn(`用户层 MCP（${paths.mcpJson}）：${json.fileError}`);
-    for (const note of json.entryErrors) this.ctx.logger.warn(`用户层 MCP（${paths.mcpJson}）：${note}`);
-    if (profileJson !== null && profile.fileError !== undefined) this.ctx.logger.warn(`用户层 MCP（${profileJson}）：${profile.fileError}`);
-    for (const note of profile.entryErrors) this.ctx.logger.warn(`用户层 MCP（${profileJson}）：${note}`);
+    // 告警按「文件 + 问题集合」门控：同一个坏条目不随每次文件事件重刷。
+    this.warnFileIssues(paths.mcpYml, `用户层 MCP（${paths.mcpYml}）`, yml.error ?? undefined, []);
+    this.warnFileIssues(paths.mcpJson, `用户层 MCP（${paths.mcpJson}）`, json.fileError, json.entryErrors);
+    if (profileJson !== null) this.warnFileIssues(profileJson, `用户层 MCP（${profileJson}）`, profile.fileError, profile.entryErrors);
+  }
+
+  /**
+   * 一个配置文件的文件级错误 + 坏条目告警（门控：集合不变则沉默）。
+   * gateKey 只用于门控归属（不出现在文案里），label 是完整的告警前缀。
+   */
+  private warnFileIssues(gateKey: string, label: string, fileError: string | undefined, entryErrors: string[]): void {
+    const notes = [...(fileError === undefined ? [] : [fileError]), ...entryErrors];
+    this.warnGated("entries\u0000" + gateKey, notes.join("\u0001"), () => {
+      for (const note of notes) this.ctx.logger.warn(`${label}：${note}`);
+    });
   }
 
   /**
@@ -772,74 +843,20 @@ export class ProjectMcpRegistry {
     await this.syncUserWatcher();
 
     const roots = await this.knownProjects();
-    const userPaths = this.resolveUserLayerPaths();
-    const desiredByProject = new Map<string, { projectRoot: string; rows: DesiredProjectRow[] }>();
-    for (const projectRoot of roots) {
-      const key = projectKeyOf(projectRoot);
-      // 只数 yml 来源的装载实例：用户层行同样落在 entry.servers 里，拿总数
-      // 会把「纯用户层挂载」误判成「yml 装载后文件被删」，产生假 ENOENT 诊断。
-      const hasYmlMounts = [...(this.projects.get(key)?.servers.values() ?? [])].some((state) => state.source === "dsh-project" || state.source === undefined);
-      // 家目录（或 DSH_HOME 所在目录）本身就是已知项目时，<home>/.dsh/mcp.yml|json
-      // 与用户层文件是同一份文件：项目层必须跳过，否则同一行会被挂两次
-      // （全局一条 + 该项目一条 p<hash>_…）。
-      const ymlPath = projectMcpFile(projectRoot);
-      const jsonPath = projectDshJsonFile(projectRoot);
-      const yml = isSameFilePath(ymlPath, userPaths.mcpYml)
-        ? { rows: [], ok: true, error: null }
-        : await this.readNativeRows(ymlPath, "dsh-project", hasYmlMounts);
-      const projectJson: JsonReadResult = isSameFilePath(jsonPath, userPaths.mcpJson)
-        ? { rows: [], entryErrors: [] }
-        : await readDshJsonFile(jsonPath, { source: "dsh-project-json", cwdPolicy: "project", projectRoot });
-      const cc: JsonReadResult = mcpJsonLayerEnabled()
-        ? await readMcpJsonFile(projectMcpJsonFile(projectRoot), projectRoot)
-        : { rows: [], entryErrors: [] };
-      // 影子优先级：.dsh/mcp.yml > .dsh/mcp.json > .mcp.json > profile json > 用户 yml > 用户 json。
-      const merged = mergeSourcedRows([yml.rows, projectJson.rows, cc.rows, this.userLayer.profileRows, this.userLayer.ymlRows, this.userLayer.jsonRows]);
-      // 跨来源同服务去重告警：unityMCP 与 unity-mcp 这类「一个服务器两个名字」的
-      // 冗余定义，只装载高优先级层一条，被剔除的必须可见，不能静默消失。
-      // 变更门控：剔除集与上次一致就沉默——否则任何文件事件都会让每个
-      // 已知项目各刷一遍同样的告警（规模 = 对账次数 × 项目数 × 重复行数）。
-      const shadowSig = identityShadowSignature(merged.shadowedIdentity);
-      const prevShadowSig = this.identityShadowSigs.get(key);
-      const shadowChanged = shadowSig !== prevShadowSig;
-      if (shadowSig === "") this.identityShadowSigs.delete(key);
-      else this.identityShadowSigs.set(key, shadowSig);
-      if (shadowChanged) {
-        for (const shadow of merged.shadowedIdentity) {
-          this.ctx.logger.warn(`项目 MCP（${projectRoot}）：跳过重复服务定义 "${shadow.name}"（与 "${shadow.winner}" 为同一服务，${shadow.reason === "normname" ? "归一化名称相同" : "命令与参数相同"}，按层优先级保留高优先级定义）；确属不同服务器请改名或调整命令与参数`);
-        }
-      }
-      const ownRows = merged.rows.filter((row) => isProjectLayerSource(row.source));
-      // 源级隔离：某个源坏了只清空该源的 rows（读取器已保证），其余源照常进
-      // desired。绝不能整项目一票否决——那会把坏文件的代价转嫁给好文件的行。
-      // 项目容器只装项目层行；用户层行由全局容器装载（见 reconcileGlobals）。
-      desiredByProject.set(key, { projectRoot, rows: ownRows });
-      // 项目侧压制：被本项目自身行遮蔽的全局行，在本会话 deny 掉（全局实例仍只挂一条）。
-      this.suppressedGlobals.set(key, new Set(merged.shadowedUser));
-      // 诊断只记有信息量的扫描：异常，或确实解析出了项目自身配置行。干净且无配置的
-      // 项目不写任何记录——用户层行落到每个项目不算该项目的事件。
-      if (!yml.ok || ownRows.length > 0 || projectJson.fileError !== undefined || projectJson.entryErrors.length > 0 || cc.fileError !== undefined || cc.entryErrors.length > 0 || merged.shadowedOwnCc.length > 0 || merged.shadowedUser.length > 0 || (merged.shadowedIdentity.length > 0 && shadowChanged)) {
-        await this.writeDiag(projectRoot, {
-          kind: "scan",
-          ok: yml.ok && projectJson.fileError === undefined && cc.fileError === undefined,
-          error: [yml.error, projectJson.fileError, cc.fileError].filter(Boolean).join(" ; ") || null,
-          rows: ownRows.map((row) => row.rawName),
-          ...(merged.shadowedOwnCc.length > 0 ? { shadowedByYml: merged.shadowedOwnCc } : {}),
-          ...(merged.shadowedUser.length > 0 ? { shadowedByProject: merged.shadowedUser } : {}),
-          ...(merged.shadowedIdentity.length > 0 ? { shadowedIdentity: merged.shadowedIdentity } : {}),
-          ...(projectJson.entryErrors.length > 0 ? { dshJsonEntryErrors: projectJson.entryErrors } : {}),
-          ...(cc.entryErrors.length > 0 ? { ccEntryErrors: cc.entryErrors } : {})
-        });
-      }
-      for (const note of projectJson.entryErrors) this.ctx.logger.warn(`项目 MCP（.dsh/${JSON_MCP_FILE}，${projectRoot}）：${note}`);
-      if (projectJson.fileError !== undefined) this.ctx.logger.warn(`项目 MCP（.dsh/${JSON_MCP_FILE}，${projectRoot}）：${projectJson.fileError}`);
-      for (const note of cc.entryErrors) this.ctx.logger.warn(`项目 MCP（${CC_PROJECT_FILE}，${projectRoot}）：${note}`);
-      if (cc.fileError !== undefined) this.ctx.logger.warn(`项目 MCP（${CC_PROJECT_FILE}，${projectRoot}）：${cc.fileError}`);
-    }
-
-    // 全局层（用户层）合并：三层之间按同一套三键规则去重；行保持原名。
+    // 全局层（用户层）合并先算：三层之间按同一套三键规则去重；行保持原名。
+    // 必须先于项目循环——项目侧压制只允许 deny「本轮真会全局装载的名字」，
+    // 否则 disabled 占名行/被宿主 patch 拒掉的名字会让项目 deny 到自己的工具。
     const globalMerged = mergeSourcedRows([this.userLayer.profileRows, this.userLayer.ymlRows, this.userLayer.jsonRows]);
     const hostGlobalNames = await this.providers.globalNames().catch(() => []);
+    const hostTaken = new Set(hostGlobalNames);
+    const globalMountable = new Set(globalMerged.rows.map((row) => row.rawName).filter((rawName) => !hostTaken.has(rawName)));
+
+    const desiredByProject = new Map<string, { projectRoot: string; rows: DesiredProjectRow[] }>();
+    for (const projectRoot of roots) {
+      desiredByProject.set(projectKeyOf(projectRoot), await this.scanProject(projectRoot, globalMountable));
+    }
+    // 用户层内部冲突按全局归因：告警一次并写全局诊断，不污染任何项目。
+    await this.reportGlobalShadows(globalMerged.shadowedGlobal, globalMerged.shadowedIdentity);
 
     const catalogProjects = [...desiredByProject.values()].map((entry) => ({
       projectRoot: entry.projectRoot,
@@ -853,7 +870,118 @@ export class ProjectMcpRegistry {
       await this.reconcileProject(key, entry);
     }
     await this.reconcileGlobals(globalMerged.rows, hostGlobalNames);
+    this.prunePerProjectState(new Set(desiredByProject.keys()));
     await this.sweepRestrictions();
+  }
+
+  /**
+   * 单个项目的扫描：读三个项目层来源 → 与用户层行合并 → 记诊断/告警 → 返回该项目
+   * 的期望行。项目侧压制集合（suppressedGlobals）在这里落库，只收「本轮真会全局
+   * 装载的名字」。
+   */
+  private async scanProject(projectRoot: string, globalMountable: Set<string>): Promise<{ projectRoot: string; rows: DesiredProjectRow[] }> {
+    const key = projectKeyOf(projectRoot);
+    const userPaths = this.resolveUserLayerPaths();
+    // 只数 yml 来源的装载实例：用户层行同样落在 entry.servers 里，拿总数
+    // 会把「纯用户层挂载」误判成「yml 装载后文件被删」，产生假 ENOENT 诊断。
+    const hasYmlMounts = [...(this.projects.get(key)?.servers.values() ?? [])].some((state) => state.source === "dsh-project" || state.source === undefined);
+    // 家目录（或 DSH_HOME 所在目录）本身就是已知项目时，<home>/.dsh/mcp.yml|json
+    // 与用户层文件是同一份文件：项目层必须跳过，否则同一行会被挂两次
+    // （全局一条 + 该项目一条 p<hash>_…）。
+    const ymlPath = projectMcpFile(projectRoot);
+    const jsonPath = projectDshJsonFile(projectRoot);
+    const yml = isSameFilePath(ymlPath, userPaths.mcpYml)
+      ? { rows: [], ok: true, error: null }
+      : await this.readNativeRows(ymlPath, "dsh-project", hasYmlMounts);
+    const projectJson: JsonReadResult = isSameFilePath(jsonPath, userPaths.mcpJson)
+      ? { rows: [], entryErrors: [] }
+      : await readDshJsonFile(jsonPath, { source: "dsh-project-json", cwdPolicy: "project", projectRoot });
+    const cc: JsonReadResult = mcpJsonLayerEnabled()
+      ? await readMcpJsonFile(projectMcpJsonFile(projectRoot), projectRoot)
+      : { rows: [], entryErrors: [] };
+    // 影子优先级：.dsh/mcp.yml > .dsh/mcp.json > .mcp.json > profile json > 用户 yml > 用户 json。
+    const merged = mergeSourcedRows([yml.rows, projectJson.rows, cc.rows, this.userLayer.profileRows, this.userLayer.ymlRows, this.userLayer.jsonRows]);
+    // 归因过滤：纯用户层之间的重复定义与本项目无关（否则零配置项目也会被写
+    // .dsh/.mcp-diag.json、各刷一遍同样的告警），只保留至少一侧是项目层行的条目。
+    const identityShadows = merged.shadowedIdentity.filter((shadow) => isProjectLayerSource(shadow.source) || isProjectLayerSource(shadow.winnerSource));
+    // 跨来源同服务去重告警：unityMCP 与 unity-mcp 这类「一个服务器两个名字」的
+    // 冗余定义，只装载高优先级层一条，被剔除的必须可见，不能静默消失。
+    // 变更门控：剔除集与上次一致就沉默——否则任何文件事件都会让每个
+    // 已知项目各刷一遍同样的告警（规模 = 对账次数 × 项目数 × 重复行数）。
+    const shadowSig = identityShadowSignature(identityShadows);
+    const prevShadowSig = this.identityShadowSigs.get(key);
+    const shadowChanged = shadowSig !== prevShadowSig;
+    if (shadowSig === "") this.identityShadowSigs.delete(key);
+    else this.identityShadowSigs.set(key, shadowSig);
+    if (shadowChanged) {
+      for (const shadow of identityShadows) {
+        this.ctx.logger.warn(`项目 MCP（${projectRoot}）：跳过重复服务定义 "${shadow.name}"（与 "${shadow.winner}" 为同一服务，${shadow.reason === "normname" ? "归一化名称相同" : "命令与参数相同"}，按层优先级保留高优先级定义）；确属不同服务器请改名或调整命令与参数`);
+      }
+    }
+    const ownRows = merged.rows.filter((row) => isProjectLayerSource(row.source));
+    // 项目侧压制：被本项目自身行遮蔽的全局行，在本会话 deny 掉（全局实例仍只挂一条）。
+    // 只收本轮真会全局装载的名字：disabled 占名行与被宿主 patch 拒掉的名字都不会
+    // 产生全局实例，deny 它们只会命中项目自己（或宿主 patch）的同名工具。
+    const suppressed = new Set(merged.shadowedUser.filter((rawName) => globalMountable.has(rawName)));
+    this.suppressedGlobals.set(key, suppressed);
+    // 诊断只记有信息量的扫描：异常，或确实解析出了项目自身配置行。干净且无配置的
+    // 项目不写任何记录——用户层行落到每个项目不算该项目的事件。
+    if (!yml.ok || ownRows.length > 0 || projectJson.fileError !== undefined || projectJson.entryErrors.length > 0 || cc.fileError !== undefined || cc.entryErrors.length > 0 || merged.shadowedOwnCc.length > 0 || suppressed.size > 0 || (identityShadows.length > 0 && shadowChanged)) {
+      await this.writeDiag(projectRoot, {
+        kind: "scan",
+        ok: yml.ok && projectJson.fileError === undefined && cc.fileError === undefined,
+        error: [yml.error, projectJson.fileError, cc.fileError].filter(Boolean).join(" ; ") || null,
+        rows: ownRows.map((row) => row.rawName),
+        ...(merged.shadowedOwnCc.length > 0 ? { shadowedByYml: merged.shadowedOwnCc } : {}),
+        ...(suppressed.size > 0 ? { shadowedByProject: [...suppressed] } : {}),
+        ...(identityShadows.length > 0 ? { shadowedIdentity: identityShadows } : {}),
+        ...(projectJson.entryErrors.length > 0 ? { dshJsonEntryErrors: projectJson.entryErrors } : {}),
+        ...(cc.entryErrors.length > 0 ? { ccEntryErrors: cc.entryErrors } : {})
+      });
+    }
+    this.warnFileIssues(key + "\u0000json", `项目 MCP（.dsh/${JSON_MCP_FILE}，${projectRoot}）`, projectJson.fileError, projectJson.entryErrors);
+    this.warnFileIssues(key + "\u0000cc", `项目 MCP（${CC_PROJECT_FILE}，${projectRoot}）`, cc.fileError, cc.entryErrors);
+    // 源级隔离：某个源坏了只清空该源的 rows（读取器已保证），其余源照常进
+    // desired。绝不能整项目一票否决——那会把坏文件的代价转嫁给好文件的行。
+    // 项目容器只装项目层行；用户层行由全局容器装载（见 reconcileGlobals）。
+    return { projectRoot, rows: ownRows };
+  }
+
+  /**
+   * 用户层内部遮蔽的全局归因：同名（shadowedGlobal）与同服务/归一名
+   * （shadowedIdentity 的两侧都是用户层）都只告警一次并写全局诊断。
+   * 此前同名遮蔽零可见性、同服务遮蔽按项目重复归因。
+   */
+  private async reportGlobalShadows(shadowedGlobal: GlobalShadow[], shadowedIdentity: IdentityShadow[]): Promise<void> {
+    const identityGlobal = shadowedIdentity.filter((shadow) => !isProjectLayerSource(shadow.source) && !isProjectLayerSource(shadow.winnerSource));
+    const signature = globalShadowSignature(shadowedGlobal) + "\u0002" + identityShadowSignature(identityGlobal);
+    let changed = false;
+    this.warnGated("gshadow\u0000global", shadowedGlobal.length === 0 && identityGlobal.length === 0 ? "" : signature, () => {
+      changed = true;
+      for (const shadow of shadowedGlobal) {
+        this.ctx.logger.warn(`全局用户层 MCP "${shadow.name}"（${shadow.source}）未装载：同名服务器已由更高优先层 ${shadow.winnerSource} 的 "${shadow.winner}" 占用`);
+      }
+      for (const shadow of identityGlobal) {
+        this.ctx.logger.warn(`全局用户层 MCP：跳过重复服务定义 "${shadow.name}"（${shadow.source}，与 ${shadow.winnerSource} 的 "${shadow.winner}" 为同一服务，${shadow.reason === "normname" ? "归一化名称相同" : "命令与参数相同"}）；确属不同服务器请改名或调整命令与参数`);
+      }
+    });
+    if (changed && (shadowedGlobal.length > 0 || identityGlobal.length > 0)) {
+      await this.writeGlobalDiag({
+        kind: "shadow",
+        ...(shadowedGlobal.length > 0 ? { shadowedByHigherLayer: shadowedGlobal } : {}),
+        ...(identityGlobal.length > 0 ? { shadowedIdentity: identityGlobal } : {})
+      });
+    }
+  }
+
+  /** 逐项目状态表按本轮已知项目剪枝（projects 的保留是有意为之，见 reconcileProject）。 */
+  private prunePerProjectState(knownKeys: Set<string>): void {
+    for (const key of this.suppressedGlobals.keys()) {
+      if (!knownKeys.has(key)) this.suppressedGlobals.delete(key);
+    }
+    for (const key of this.identityShadowSigs.keys()) {
+      if (!knownKeys.has(key)) this.identityShadowSigs.delete(key);
+    }
   }
 
   private async reconcileProject(key: string, entry: { projectRoot: string; rows: DesiredProjectRow[] }) {
@@ -882,10 +1010,17 @@ export class ProjectMcpRegistry {
       }
       desired.push(row);
     }
-    for (const rawName of blocked) {
+    // 告警门控：blocked 集合不变就沉默（skipReasons 照写，快照始终能看到原因）。
+    const blockedNames = [...blocked];
+    blockedNames.sort();
+    for (const rawName of blockedNames) {
       this.skipReasons.set(GLOBAL_SCOPE_KEY + "\u0000" + rawName, "name-taken");
-      this.ctx.logger.warn(`全局用户层 MCP "${rawName}" 未装载：同名服务器已由 profile patch 行（全局层）占用；请改名或从用户层移除`);
     }
+    this.warnGated("blocked\u0000global", blockedNames.join("\u0000"), () => {
+      for (const rawName of blockedNames) {
+        this.ctx.logger.warn(`全局用户层 MCP "${rawName}" 未装载：同名服务器已由宿主全局 patch 行（bundle 层或 profile patch 层）占用；请改名或从用户层移除`);
+      }
+    });
     await this.reconcileContainer({
       scope: "global",
       key: GLOBAL_SCOPE_KEY,
@@ -1113,7 +1248,13 @@ export class ProjectMcpRegistry {
       const hidden = [...denySetFor(project, groups)];
       // 项目侧压制：本项目自身行遮蔽过的全局服务器，在本会话 deny 其工具
       // （全局实例仍只挂一条，只有该项目的会话看不见）。
-      if (project !== undefined) hidden.push(...(this.suppressedGlobals.get(project) ?? []));
+      // 守卫 globalServers.has：没有全局实例的名字一律不 deny——`mcp__<name>__*`
+      // 前缀会命中项目自己（生效名未改名时）或宿主 patch 行的工具，等于自杀式 deny。
+      if (project !== undefined) {
+        for (const rawName of this.suppressedGlobals.get(project) ?? []) {
+          if (this.globalServers.has(rawName)) hidden.push(rawName);
+        }
+      }
       this.applyRestriction(agent, expandToToolNames(hidden, toolIds));
     }
   }
@@ -1249,33 +1390,36 @@ export class ProjectMcpRegistry {
   }
 
   /** 行级 view 的逐层影子优先查找：项目 yml > 项目 .dsh/mcp.json > .mcp.json > profile json > 用户 yml > 用户 json > 装载残留态。 */
-  private async locateRow(projectRoot: string, rawName: string, state?: ProjectServerState): Promise<{ row?: PatchRow; source?: McpRowSource }> {
+  private async locateRow(projectRoot: string, rawName: string, state?: ProjectServerState): Promise<{ row?: PatchRow; source?: McpRowSource; path?: string }> {
     const userPaths = this.resolveUserLayerPaths();
-    if (!isSameFilePath(projectMcpFile(projectRoot), userPaths.mcpYml)) {
+    const ymlPath = projectMcpFile(projectRoot);
+    if (!isSameFilePath(ymlPath, userPaths.mcpYml)) {
       try {
-        const raw = await readPatchFile(projectMcpFile(projectRoot));
+        const raw = await readPatchFile(ymlPath);
         const ymlRow = extractManagedRows(raw).find((candidate) => rowNameOf(candidate) === rawName);
-        if (ymlRow !== undefined) return { row: ymlRow, source: "dsh-project" };
+        if (ymlRow !== undefined) return { row: ymlRow, source: "dsh-project", path: ymlPath };
       } catch {
         // 落到后续层
       }
     }
-    if (!isSameFilePath(projectDshJsonFile(projectRoot), userPaths.mcpJson)) {
-      const projectJson = await readDshJsonFile(projectDshJsonFile(projectRoot), { source: "dsh-project-json", cwdPolicy: "project", projectRoot });
+    const jsonPath = projectDshJsonFile(projectRoot);
+    if (!isSameFilePath(jsonPath, userPaths.mcpJson)) {
+      const projectJson = await readDshJsonFile(jsonPath, { source: "dsh-project-json", cwdPolicy: "project", projectRoot });
       const projectJsonRow = projectJson.rows.find((candidate) => candidate.rawName === rawName);
-      if (projectJsonRow !== undefined) return { row: projectJsonRow.row, source: "dsh-project-json" };
+      if (projectJsonRow !== undefined) return { row: projectJsonRow.row, source: "dsh-project-json", path: jsonPath };
     }
     if (mcpJsonLayerEnabled()) {
-      const cc = await readMcpJsonFile(projectMcpJsonFile(projectRoot), projectRoot);
+      const ccPath = projectMcpJsonFile(projectRoot);
+      const cc = await readMcpJsonFile(ccPath, projectRoot);
       const found = cc.rows.find((candidate) => candidate.rawName === rawName);
-      if (found !== undefined) return { row: found.row, source: "cc-project" };
+      if (found !== undefined) return { row: found.row, source: "cc-project", path: ccPath };
     }
     const profileRow = this.userLayer.profileRows.find((candidate) => candidate.rawName === rawName);
-    if (profileRow !== undefined) return { row: profileRow.row, source: "dsh-profile-user" };
+    if (profileRow !== undefined) return { row: profileRow.row, source: "dsh-profile-user", path: this.userLayer.profileJson ?? undefined };
     const uy = this.userLayer.ymlRows.find((candidate) => candidate.rawName === rawName);
-    if (uy !== undefined) return { row: uy.row, source: "dsh-user-yml" };
+    if (uy !== undefined) return { row: uy.row, source: "dsh-user-yml", path: userPaths.mcpYml };
     const uj = this.userLayer.jsonRows.find((candidate) => candidate.rawName === rawName);
-    if (uj !== undefined) return { row: uj.row, source: "dsh-user" };
+    if (uj !== undefined) return { row: uj.row, source: "dsh-user", path: userPaths.mcpJson };
     if (state?.row !== undefined) return { row: state.row, source: state.source };
     return {};
   }
@@ -1286,10 +1430,16 @@ export class ProjectMcpRegistry {
     const state = this.projects.get(key)?.servers.get(rawName) ?? this.globalServers.get(rawName);
     const located = await this.locateRow(projectRoot, rawName, state);
     if (located.row === undefined) return undefined;
-    const view = patchRowToView(located.row, { kind: "workspace", path: projectRoot });
+    // 用户层行报全局作用域 + 层文件路径（与快照的 pushGlobal 同口径）：报
+    // workspace/项目根会让消费方以为这是项目行、误导「改哪个文件」。
+    const isUserLayerRow = located.source !== undefined && !isProjectLayerSource(located.source);
+    const scope: McpScopeInfo = isUserLayerRow
+      ? { kind: "global", path: located.path ?? "", label: "user" }
+      : { kind: "workspace", path: projectRoot };
+    const view = patchRowToView(located.row, scope);
     if (view === undefined) return undefined;
     const globalState = this.globalServers.get(rawName);
-    const effectiveName = located.source !== undefined && !isProjectLayerSource(located.source)
+    const effectiveName = isUserLayerRow
       ? globalState?.effectiveName ?? rawName
       : this.effective.get(key + "\u0000" + rawName);
     // owned：装载实例确实来自这条行所在的那个源（与分区视图 partitionServers 的
@@ -1297,7 +1447,7 @@ export class ProjectMcpRegistry {
     // 本行是被遮蔽方——phase 走 null，toolCount 不借用别源的装载数据。
     const owned = state?.source === located.source;
     // 跳过原因按「行所在层」的作用域查（被跳过的全局行没有 state，不能靠 state.scope 判）。
-    const scopeKey = located.source !== undefined && !isProjectLayerSource(located.source) ? GLOBAL_SCOPE_KEY : key;
+    const scopeKey = isUserLayerRow ? GLOBAL_SCOPE_KEY : key;
     return {
       ...view,
       ...(located.source === undefined ? {} : { source: located.source }),
