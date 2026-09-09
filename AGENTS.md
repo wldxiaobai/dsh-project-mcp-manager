@@ -21,7 +21,9 @@
 - `src/project-root.ts`：`findProjectRoot(cwd)` —— 向上找最近含 `.git` 的祖先目录，找不到退回 cwd（与 dsh 官方 skills 发现规则一致）。
 - `src/status.ts`：`mcpToolCount(ctx, serverName)`，按 `mcp__<serverName>__` 前缀数全局工具层里的注册数。
 - `test/`：`test-model.mjs`、`test-mcp-file.mjs`、`test-json-file.mjs`、`test-json-write.mjs`、`test-registry.mjs`、`test-cli.mjs`（node 直接跑，无测试框架）。
-- `README.md` / `docs/README.zh.md` / `CHANGELOG.md`：装载模型与配置格式的权威说明；`docs/proposal-json-mcp-config.md` 为 JSON 层设计提案。
+- `README.md` / `docs/README.zh.md`：项目介绍、安装/构建、工作原理与安全边界（中英双版，各自链接同语言文档）。
+- `docs/`：功能文档中英双版——`configuration-format.md`/`.zh.md`（配置格式：原生 YAML 受管块 + JSON 方言）、`configuration-layers.md`/`.zh.md`（六层来源、影子优先序、全局 vs 项目装载、遗留 CC 层）、`env-expansion.md`/`.zh.md`（`${VAR}` 展开）、`cli.md`/`.zh.md`（`dsh-mcp` CLI）。记录类文档：`adaptation-dsh-0.1.2-rc1.md`、`proposal-json-mcp-config.md`、`release-notes-v0.3.1.md`、`release-notes-v0.4.0.md`。
+- `CHANGELOG.md`：版本变更记录（`[Unreleased]` 起累积）。
 
 ## 常用命令
 

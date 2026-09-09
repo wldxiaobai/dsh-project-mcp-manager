@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Documentation restructured: the feature write-ups moved out of the READMEs
+  into `docs/` as English/Chinese pairs —
+  `configuration-format.md`/`.zh.md` (native YAML managed block, JSON dialect,
+  divergences from the cordis dialect), `configuration-layers.md`/`.zh.md`
+  (six-layer sources, shadow priority, global vs project mounting, legacy
+  Claude Code layer), `env-expansion.md`/`.zh.md` (`${VAR}` expansion) and
+  `cli.md`/`.zh.md` (`dsh-mcp`). `README.md` and `docs/README.zh.md` now keep
+  only the introduction, installation/build, how it works and the security
+  boundary, each linking to the documentation in its own language.
+
 ## [0.4.0] - 2026-09-09
 
 ### Added
