@@ -59,12 +59,23 @@ try {
   await assert.rejects(() => writeJsonServers(target, {}), /顶层必须是 JSON 对象/);
   pass("unparsable or non-object files are refused without leaking content");
 
-  // 4. 空文件按空文档处理；readJsonServers 过滤非对象条目
+  // 4. 空文件按空文档处理；非对象条目在读-改-写全程原样保留（过滤会让任何
+  // add/remove 顺手永久删掉用户手写的坏条目），且能被指名删除。
   await writeFile(target, "   \n", "utf8");
   assert.deepEqual(await readJsonDocument(target), {});
   await writeFile(target, JSON.stringify({ mcpServers: { good: { command: "node" }, bad: "nope" } }), "utf8");
-  assert.deepEqual(Object.keys(await readJsonServers(target)), ["good"]);
-  pass("blank files read as empty and non-object entries are skipped");
+  assert.deepEqual(Object.keys(await readJsonServers(target)), ["good", "bad"], "bad entries stay visible to the CLI");
+  await updateJsonServers(target, (servers) => {
+    servers.added = { command: "node", args: ["a.js"] };
+  });
+  const afterAdd = JSON.parse(await readFile(target, "utf8"));
+  assert.equal(afterAdd.mcpServers.bad, "nope", "a non-object entry survives an unrelated add");
+  assert.deepEqual(Object.keys(afterAdd.mcpServers), ["good", "bad", "added"], "key order preserved, bad entry kept");
+  await updateJsonServers(target, (servers) => {
+    delete servers.bad;
+  });
+  assert.equal(JSON.parse(await readFile(target, "utf8")).mcpServers.bad, undefined, "a named bad entry can be removed");
+  pass("blank files read as empty and non-object entries survive read-modify-write");
 
   // 5. 条目映射：缺省值不落盘、${VAR} 字面保留、透传键按需写入
   const stdio = mcpServerInputSchema.parse({ serverName: "s", transport: "stdio", command: "node", args: [], env: { TOKEN: "${GH_TOKEN}" }, cwd: "." });

@@ -14,7 +14,12 @@ import { basename } from "node:path";
 import { writeFileAtomic, withPatchLock } from "./mcp-file.js";
 import { DEFAULT_RECONNECT, DEFAULT_TOOL_CALL_TIMEOUT_MS, type McpServerInput } from "./model.js";
 
-export type JsonServers = Record<string, Record<string, unknown>>;
+/**
+ * `mcpServers` 映射。值类型是 unknown 而非对象：文件里可能存在非对象条目
+ * （`"legacy": "node x.js"` 这类手写错误），读-改-写必须原样带过，不能顺手删。
+ * 写入方（CLI）只新增/删除自己指名的键。
+ */
+export type JsonServers = Record<string, unknown>;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -44,17 +49,17 @@ export async function readJsonDocument(path: string): Promise<Record<string, unk
   return parsed;
 }
 
-/** 读现有 `mcpServers` 映射（缺失/非对象 → 空映射）。 */
+/**
+ * 读现有 `mcpServers` 映射（缺失/null → 空映射；顶层非对象 → 抛错）。
+ * 条目一律保留（含非对象的坏条目）：CLI 的判重要能看见坏条目占用的名字，
+ * `remove <坏条目名>` 也才能把它清掉。装载侧的坏条目过滤在 json-file.ts。
+ */
 export async function readJsonServers(path: string): Promise<JsonServers> {
   const doc = await readJsonDocument(path);
   const servers = doc.mcpServers;
   if (servers === undefined || servers === null) return {};
   if (!isPlainObject(servers)) throw new Error(`${basename(path)} 的 mcpServers 必须是对象`);
-  const out: JsonServers = {};
-  for (const [name, entry] of Object.entries(servers)) {
-    if (isPlainObject(entry)) out[name] = entry;
-  }
-  return out;
+  return { ...servers };
 }
 
 /**
@@ -64,12 +69,9 @@ export async function readJsonServers(path: string): Promise<JsonServers> {
 export async function updateJsonServers(path: string, mutate: (servers: JsonServers) => JsonServers | void): Promise<JsonServers> {
   return withPatchLock(path, async () => {
     const doc = await readJsonDocument(path);
-    const current: JsonServers = {};
-    if (isPlainObject(doc.mcpServers)) {
-      for (const [name, entry] of Object.entries(doc.mcpServers)) {
-        if (isPlainObject(entry)) current[name] = entry;
-      }
-    }
+    // 非对象条目原样带过：过滤掉的话任何 add/remove 都会顺手永久删除它们
+    // （用户手写的 `"legacy": "node x.js"` 会静默消失）。
+    const current: JsonServers = isPlainObject(doc.mcpServers) ? { ...doc.mcpServers } : {};
     const next = mutate(current) ?? current;
     const text = JSON.stringify({ ...doc, mcpServers: next }, null, 2) + "\n";
     const check: unknown = JSON.parse(text);

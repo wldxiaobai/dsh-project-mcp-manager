@@ -297,6 +297,28 @@ try {
     pass("cli --format / DSH_MCP_CLI_FORMAT / --scope profile write to the right file");
   }
 
+  // 18. mcpServers 里的非对象坏条目：add/remove 不得顺手删掉它（此前读-改-写
+  // 会过滤非对象条目，任何一次写入都让用户手写的 `"legacy": "node x.js"` 永久消失）；
+  // 坏条目占的名字要能被判重看见，指名 remove 能清掉。
+  {
+    const jsonPath = join(project, ".dsh", "mcp.json");
+    await writeFile(jsonPath, JSON.stringify({ mcpServers: { legacy: "node x.js", ok: { command: "node", args: ["ok.js"] } } }, null, 2), "utf8");
+    const capAdd = io();
+    assert.equal(await runCli(["add", "fresh", "node", "f.js", "--format", "json"], capAdd.io, deps), 0, capAdd.errs.join("\n"));
+    const doc = JSON.parse(await readFile(jsonPath, "utf8"));
+    assert.equal(doc.mcpServers.legacy, "node x.js", "the malformed entry survives an add");
+    assert.ok(doc.mcpServers.fresh !== undefined, "the new row is written");
+    const capDup = io();
+    assert.equal(await runCli(["add", "legacy", "node", "l.js", "--format", "json"], capDup.io, deps), 1, "a name held by a malformed entry is not silently overwritten");
+    assert.ok(capDup.errs.join("\n").includes("已存在"), "duplicate detection sees the malformed entry");
+    const capRm = io();
+    assert.equal(await runCli(["remove", "legacy", "--format", "json"], capRm.io, deps), 0, capRm.errs.join("\n"));
+    const after = JSON.parse(await readFile(jsonPath, "utf8"));
+    assert.equal(after.mcpServers.legacy, undefined, "remove can clear a malformed entry");
+    assert.ok(after.mcpServers.ok !== undefined, "unrelated entries untouched");
+    pass("cli add/remove preserve malformed mcpServers entries and can clear them by name");
+  }
+
   // 17. DSH_HOME 重定位：未注入 deps.home 时，用户层与 profile 层路径都跟随 $DSH_HOME；
   // 注入的 deps.home 仍优先于环境变量（否则测试会读到真实用户配置，注入失去隔离意义）。
   {
