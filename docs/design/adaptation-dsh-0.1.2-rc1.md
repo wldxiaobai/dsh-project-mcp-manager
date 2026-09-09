@@ -1,5 +1,7 @@
 # 适配记录：dsh v0.1.2-rc.1
 
+[← 返回 README](../README.zh.md) ｜ 相关：[JSON 配置层设计提案](proposal-json-mcp-config.md)
+
 **记录日期**：2026-09-09 ｜ **被测插件**：`dsh-project-mcp-manager` v0.3.1
 **宿主**：`@deepseek-ai/dsh@0.1.2-rc.1`（自带 `dsh-mcp-client@0.1.2-rc.1`、cordis 4.0.2、
 cordis-plugin-loader 1.0.3、cordis-plugin-include 1.0.7）

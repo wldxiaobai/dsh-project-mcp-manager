@@ -1,5 +1,7 @@
 # 设计提案：DSH 自有 JSON 配置层（替代 Claude 兼容层）
 
+[← 返回 README](../README.zh.md) ｜ 相关：[dsh v0.1.2-rc.1 适配记录](adaptation-dsh-0.1.2-rc1.md)
+
 **状态**：已裁决并实现（v0.4.0） ｜ **提出日期**：2026-09-09 ｜ **目标版本**：v0.4.0（破坏性）
 **关联**：[dsh v0.1.2-rc.1 适配记录](adaptation-dsh-0.1.2-rc1.md)（宿主适配记录）、`AGENTS.md`（装载模型）、`CHANGELOG.md`（0.4.0）
 
