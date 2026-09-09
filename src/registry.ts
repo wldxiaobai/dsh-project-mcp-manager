@@ -109,6 +109,20 @@ export function phaseToFiberPhase(phase: ProjectServerPhase): "loading" | "activ
   }
 }
 
+/**
+ * serverName 集合 → 这批服务器当前注册的精确工具名（`mcp__<server>__*`）。
+ * tools.restrict 的 deny 只认已注册的具体工具名（传 unknown names 会报错），不能直接给 serverName；
+ * 装载尚未 settle 时会漏几个工具，靠下一次 sweep 补上。
+ */
+function expandToToolNames(serverNames: Iterable<string>, toolIds: string[]): string[] {
+  const out: string[] = [];
+  for (const serverName of serverNames) {
+    const prefix = `mcp__${serverName}__`;
+    out.push(...toolIds.filter((id) => id.startsWith(prefix)));
+  }
+  return out;
+}
+
 /** 一个已装载（或装载中）的 MCP 服务器的运行时状态。 */
 export interface ProjectServerState {
   /** 项目根；全局层行为空串（scope="global"）。 */
@@ -1085,44 +1099,38 @@ export class ProjectMcpRegistry {
 
   private async sweepRestrictions() {
     if (this.disposed) return;
+    const groups = this.activeMountGroups();
+    const toolIds = this.registeredToolIds();
+    for (const agent of this.liveAgents()) {
+      const project = this.agentProjects.get(agent.id) ?? await this.resolveProject(agent);
+      if (project !== undefined) this.agentProjects.set(agent.id, project);
+      const hidden = [...denySetFor(project, groups)];
+      // 项目侧压制：本项目自身行遮蔽过的全局服务器，在本会话 deny 其工具
+      // （全局实例仍只挂一条，只有该项目的会话看不见）。
+      if (project !== undefined) hidden.push(...(this.suppressedGlobals.get(project) ?? []));
+      this.applyRestriction(agent, expandToToolNames(hidden, toolIds));
+    }
+  }
+
+  /** 各装载容器里已 active 的生效名，按项目根分组（deny 计算的输入）。 */
+  private activeMountGroups(): { projectRoot: string; effectiveNames: string[] }[] {
     const groups: { projectRoot: string; effectiveNames: string[] }[] = [];
     for (const entry of this.projects.values()) {
       const names: string[] = [];
       for (const state of entry.servers.values()) {
-        if (state.phase !== "active") continue;
-        names.push(state.effectiveName);
+        if (state.phase === "active") names.push(state.effectiveName);
       }
       if (names.length > 0) groups.push({ projectRoot: entry.projectRoot, effectiveNames: names });
     }
-    // tools.restrict 的 deny 是精确工具名（"unknown names fail"），不是 serverName；
-    // 把各服务器的 serverName 展开为它当前注册的全部工具名（mcp__<server>__*）。
-    let schemas: any[] = [];
+    return groups;
+  }
+
+  /** 宿主工具层当前注册的全部工具 id；取不到时按空集（本轮不新增限制，下次 sweep 补）。 */
+  private registeredToolIds(): string[] {
     try {
-      schemas = this.ctx.tools?.schemas?.() ?? [];
+      return (this.ctx.tools?.schemas?.() ?? []).map((schema: any) => String(schema?.id ?? schema?.name ?? ""));
     } catch {
-      schemas = [];
-    }
-    const toolNamesOf = (serverName: string): string[] => {
-      const prefix = "mcp__" + serverName + "__";
-      return schemas
-        .map((s) => String(s?.id ?? s?.name ?? ""))
-        .filter((name) => name.startsWith(prefix));
-    };
-    for (const agent of this.liveAgents()) {
-      const project = this.agentProjects.get(agent.id) ?? await this.resolveProject(agent);
-      if (project !== undefined) this.agentProjects.set(agent.id, project);
-      const toolDeny: string[] = [];
-      for (const serverName of denySetFor(project, groups)) {
-        toolDeny.push(...toolNamesOf(serverName));
-      }
-      // 项目侧压制：本项目自身行遮蔽过的全局服务器，在本会话 deny 其工具
-      // （全局实例仍只挂一条，只有该项目的会话看不见）。
-      if (project !== undefined) {
-        for (const rawName of this.suppressedGlobals.get(project) ?? []) {
-          toolDeny.push(...toolNamesOf(rawName));
-        }
-      }
-      this.applyRestriction(agent, toolDeny);
+      return [];
     }
   }
 
