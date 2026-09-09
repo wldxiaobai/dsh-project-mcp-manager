@@ -157,7 +157,7 @@ const dir = await mkdtemp(join(tmpdir(), "dsh-project-mcp-manager-registry-"));
     ]);
     assert.deepEqual(m.rows.map((r) => r.rawName), ["unityMCP"], "normname dup drops the low-priority twin");
     assert.deepEqual(m.shadowedIdentity, [{ name: "unity-mcp", winner: "unityMCP", reason: "normname" }], "identity shadow reports the incident pair");
-    assert.deepEqual(m.shadowedUser, ["unity-mcp"], "the dropped cc-user row also counts as project-shadowed user row");
+    assert.deepEqual(m.shadowedUser, ["unity-mcp"], "the dropped user-layer row also counts as project-shadowed user row");
   }
   // 0.2 完全相同的 command+args（名字归一后不同）→ 身份键命中
   {
@@ -456,7 +456,7 @@ try {
       count14 = next;
     }
     await writeManagedRows(join(home2, ".dsh", "mcp.yml"), [stdioRow("epsilon")], { createIfMissing: true });
-    const epsilonActive = await registry2.waitForState(dir2, "epsilon", (state) => state?.phase === "active", 5000);
+    const epsilonActive = await registry2.waitForGlobalState("epsilon", (state) => state?.phase === "active", 5000);
     assert.ok(epsilonActive, "user ~/.dsh/mcp.yml row hot-mounts via the user watcher");
     assert.ok(registry2.debugReconcileCount > count14, "the user yml write itself must have driven the reconcile");
     pass("registry watches and hot-mounts the user ~/.dsh/mcp.yml");
@@ -470,7 +470,7 @@ try {
       count15 = next;
     }
     await writeManagedRows(join(home2, ".dsh", "mcp.yml"), [stdioRow("epsilon"), stdioRow("zeta")], { createIfMissing: true });
-    const zetaActive = await registry2.waitForState(dir2, "zeta", (state) => state?.phase === "active", 5000);
+    const zetaActive = await registry2.waitForGlobalState("zeta", (state) => state?.phase === "active", 5000);
     assert.ok(zetaActive, "user yml row hot-mounts through the user watcher");
     pass("user ~/.dsh/mcp.yml watcher drives reconciliation");
 
@@ -576,9 +576,10 @@ try {
     const nocwd22 = ctx2.mounts.findLast((config) => config.serverName === "nocwd");
     assert.ok(nocwd22 !== undefined, "project row with empty cwd mounts");
     assert.equal(nocwd22.cwd, dir4, "empty cwd at the project layer resolves to the project root");
-    const userNoCwd22 = ctx2.mounts.findLast((config) => /(^|_)user-nocwd$/.test(config.serverName));
-    assert.ok(userNoCwd22 !== undefined, "user row with empty cwd mounts");
-    assert.equal(userNoCwd22.cwd, "", "empty cwd at the user layer stays host-inherit");
+    const userNoCwd22 = ctx2.mounts.findLast((config) => config.serverName === "user-nocwd");
+    assert.ok(userNoCwd22 !== undefined, "user row with empty cwd mounts globally");
+    assert.equal(userNoCwd22.cwd, "", "empty cwd at the global layer stays host-inherit");
+    assert.equal(ctx2.mounts.filter((config) => config.serverName === "user-nocwd").length, 1, "a user row mounts exactly once regardless of project count");
     pass("empty stdio cwd resolves to the project root for project sources and stays host-inherit for user sources");
 
     // 23. P1 回归：项目 watcher 只认「已知项目根下的精确配置文件」。修复前：
@@ -597,22 +598,18 @@ try {
     assert.equal(registry2.debugReconcileCount, count23, "a stray nested .dsh/mcp.yml must not drive reconciles");
     pass("project watcher kicks only on the exact config files of known project roots");
 
-    // 24. P1 回归（边界）：纯用户层挂载的项目缺 .dsh/mcp.yml 不留痕。修复前：
-    // reconcileAll 拿 servers.size 当「本项目有活装载」，把用户层行也数进去，
-    // 文件缺失的 ENOENT 被记成 scan 错误——零配置项目被假诊断刷屏。
+    // 24. 全局用户层挂载与项目无关：新项目（无项目行）不建条目、不写诊断；
+    // 用户层实例仍只有一条。真实 yml 行装载后文件被删 → 仍记 scan 错。
     const dir5 = join(dir2, "proj5");
     await mkdir(join(dir5, ".dsh"), { recursive: true });
     ctx2.agentsList.push(fakeAgent("session-h", dir5));
     await registry2.reconcileNow();
-    // 用户层活行：场景 22 重写过用户 yml，epsilon 已不在，用 user-nocwd（user-yml 源）。
-    const eps24 = await registry2.waitForState(dir5, "user-nocwd", (state) => state?.phase === "active", 5000);
-    assert.ok(eps24, "user-layer rows mount in the new project");
+    // 用户层活行：场景 22 重写过用户 yml，epsilon 已不在，用 user-nocwd（dsh-user-yml 源）。
+    const eps24 = await registry2.waitForGlobalState("user-nocwd", (state) => state?.phase === "active", 5000);
+    assert.ok(eps24, "the user-layer row is mounted globally");
+    assert.equal(ctx2.mounts.filter((config) => config.serverName === "user-nocwd").length, 1, "adding a project does not add a second global instance");
     await registry2.reconcileNow();
-    // attempt 行允许存在（任何装载都写），但不得出现 scan/ENOENT 假错误。
-    if (await pathExists(diagFile(dir5))) {
-      const diag24a = await readDiag(dir5);
-      assert.ok(diag24a.every((row) => !(row.kind === "scan" && String(row.error ?? "").includes("ENOENT"))), "no false ENOENT scan error for user-layer-only mounts");
-    }
+    assert.equal(await pathExists(diagFile(dir5)), false, "a project with no rows writes no diagnostics");
     // 对照：真实 yml 行装载后文件被删 → 记 scan 错仍是正确行为
     await writeManagedRows(projectMcpFile(dir5), [stdioRow("real-yml")], { createIfMissing: true });
     await registry2.reconcileNow();
@@ -688,7 +685,16 @@ try {
         const view6 = await registry2.serverView(dir6, "unityMCP");
         assert.ok(view6 !== undefined && view6.fiberPhase === "active" && view6.source === "dsh-project", "serverView shows the owning yml row as mounted");
         const viewCpu = await registry2.serverView(dir6, "unity-mcp");
-        assert.ok(viewCpu !== undefined && viewCpu.fiberPhase === "pending" && viewCpu.toolCount === 0, "the deduped row is never shown as loaded");
+        assert.ok(viewCpu !== undefined && viewCpu.source === "dsh-user-yml", "serverView resolves the global row to its user-layer source");
+        // 全局实例仍在（只挂一条），但 proj6 的会话按项目侧压制 deny 掉它的工具。
+        assert.ok(await registry2.waitForGlobalState("unity-mcp", (state) => state?.phase === "active", 5000), "the shadowed global row still mounts exactly once");
+        ctx2.schemas.push({ id: "mcp__unity-mcp__ping" }, { id: "mcp__unityMCP__ping" });
+        await registry2.reconcileNow();
+        const agentJ = ctx2.agentsList.find((agent) => agent.id === "session-j");
+        assert.ok(agentJ.denies.some((deny) => deny.includes("mcp__unity-mcp__ping")), "proj6 denies the suppressed global server's tools: " + JSON.stringify(agentJ.denies));
+        assert.ok(agentJ.denies.every((deny) => !deny.includes("mcp__unityMCP__ping")), "proj6 keeps its own yml server visible");
+        const agentB28 = ctx2.agentsList.find((agent) => agent.id === "session-e");
+        assert.ok(agentB28.denies.every((deny) => !deny.includes("mcp__unity-mcp__ping")), "other projects keep the global server visible");
         // 变更门控（P1-2 回归）：剔除集稳定就不得每次对账各刷一遍；集合真正
         // 变化（清零→再出现）才重新告警。
         const dup28 = () => warns28.filter((w) => w.includes('跳过重复服务定义 "unity-mcp"')).length;
@@ -699,7 +705,7 @@ try {
         await writeManagedRows(join(home2, ".dsh", "mcp.yml"), [userRow("distinct-28", ["u-server.js", "extra"])]);
         await registry2.reconcileNow();
         assert.equal(dup28(), 1, "clearing the shadow alone must not warn");
-        assert.ok(await registry2.waitForState(dir6, "distinct-28", (state) => state?.phase === "active", 5000), "the replacement server mounts once the shadow is gone");
+        assert.ok(await registry2.waitForGlobalState("distinct-28", (state) => state?.phase === "active", 5000), "the replacement server mounts once the shadow is gone");
         await writeManagedRows(join(home2, ".dsh", "mcp.yml"), [userRow("unity-mcp", ["--offline", "u-server.js"])]);
         await registry2.reconcileNow();
         assert.equal(dup28(), 2, "a changed shadow set re-arms the dedup warning");
@@ -735,32 +741,45 @@ try {
       };
       const ctx3 = fakeCtx();
       const registry3 = new ProjectMcpRegistry(ctx3, { globalNames: async () => [], activeProfile: async () => "web", userLayerPaths: userPaths });
-      ctx3.agentsList.push(fakeAgent("session-k", dir7));
+      // 两个项目：全局行也只应挂一条（不随项目数变化）。
+      const dir7b = join(dir2, "proj7b");
+      await mkdir(join(dir7b, ".dsh"), { recursive: true });
+      ctx3.agentsList.push(fakeAgent("session-k", dir7), fakeAgent("session-k2", dir7b));
       await registry3.reconcileNow();
       const names29 = ctx3.mounts.map((config) => config.serverName);
-      // 用户层行扇出到每个已知项目 → 同名冲突时生效名带 p<hash>_ 前缀。
-      const mounts29 = (name) => names29.some((mounted) => mounted === name || mounted.endsWith("_" + name));
       for (const expected of ["jsonproj", "jsonprofile", "jsonuser"]) {
-        assert.ok(mounts29(expected), `${expected} mounts from its DSH json layer: ${names29.join(",")}`);
+        assert.ok(names29.includes(expected), `${expected} mounts from its DSH json layer: ${names29.join(",")}`);
       }
+      assert.equal(names29.filter((name) => name === "jsonuser").length, 1, "user json row mounts once for the whole host");
+      assert.equal(names29.filter((name) => name === "jsonprofile").length, 1, "profile json row mounts once for the whole host");
       const both29 = ctx3.mounts.findLast((config) => config.serverName === "both");
       assert.deepEqual(both29.args, ["srv-both.js"], "yml wins over .dsh/mcp.json for the same name");
       const snap29 = await registry3.snapshot();
       assert.ok(snap29.some((file) => file.source === "dsh-project-json" && file.project === dir7), "project json partition present");
-      assert.ok(snap29.some((file) => file.source === "dsh-user" && file.kind === "global"), "user json partition present");
+      const userPart29 = snap29.find((file) => file.source === "dsh-user" && file.kind === "global");
+      assert.ok(userPart29 !== undefined, "user json partition present");
+      assert.equal(userPart29.servers[0].fiberPhase, "active", "global partition carries the global fiber phase");
       assert.ok(snap29.some((file) => file.source === "dsh-profile-user" && file.kind === "global"), "profile json partition present");
+      // 与宿主 patch 行全局服务器撞名 → 跳过（name-taken），不改名、不冲突。
+      const ctxTaken = fakeCtx();
+      const registryTaken = new ProjectMcpRegistry(ctxTaken, { globalNames: async () => ["jsonuser"], activeProfile: async () => "web", userLayerPaths: userPaths });
+      ctxTaken.agentsList.push(fakeAgent("session-m", dir7));
+      await registryTaken.reconcileNow();
+      assert.ok(!ctxTaken.mounts.some((config) => config.serverName === "jsonuser"), "a host global name is not taken over");
+      const viewTaken = await registryTaken.serverView(dir7, "jsonuser");
+      assert.equal(viewTaken.skipReason, "name-taken", "skip reason names the host-global collision");
       // profile 名解析不出（无 activeProfile provider）→ 不读 profile 层，其余照常。
       const ctx4 = fakeCtx();
       const registry4 = new ProjectMcpRegistry(ctx4, { globalNames: async () => [], userLayerPaths: userPaths });
       ctx4.agentsList.push(fakeAgent("session-l", dir7));
       await registry4.reconcileNow();
-      assert.ok(!ctx4.mounts.some((config) => config.serverName.endsWith("jsonprofile")), "profile layer skipped when the profile name is unresolvable");
-      assert.ok(ctx4.mounts.some((config) => config.serverName.endsWith("jsonuser")), "other user layers unaffected by the profile fallback");
-      for (const disposer of [...ctx3.disposers, ...ctx4.disposers]) {
+      assert.ok(!ctx4.mounts.some((config) => config.serverName === "jsonprofile"), "profile layer skipped when the profile name is unresolvable");
+      assert.ok(ctx4.mounts.some((config) => config.serverName === "jsonuser"), "other user layers unaffected by the profile fallback");
+      for (const disposer of [...ctx3.disposers, ...ctxTaken.disposers, ...ctx4.disposers]) {
         const cleanup = disposer();
         if (typeof cleanup === "function") cleanup();
       }
-      pass("DSH json layers mount for project/user/profile with yml precedence and profile fallback");
+      pass("DSH json layers mount globally for user/profile, per project for project, with yml precedence");
     }
 
     // 场景 24 的 unlink 会留下防抖后的迟到 reconcile 与 chokidar 内部重扫：
