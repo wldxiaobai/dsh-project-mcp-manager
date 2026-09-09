@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.2] - 2026-09-16
+## [0.4.2] - 2026-09-10
 
 Code-quality release: clears all 15 findings that held the PR #7 Sonar gate at
 "Reliability Rating on New Code = D". **No user-visible behaviour changes** —
@@ -38,7 +38,7 @@ internal decomposition.
   specifier `^4.0.2` that `package.json` has declared since v0.4.1 (resolved
   version was already `4.0.2`); `pnpm` no longer demands a re-lock on every run.
 
-## [0.4.1] - 2026-09-16
+## [0.4.1] - 2026-09-10
 
 Follow-up on the code review of every TypeScript change since v0.3.1
 (`docs/code-review/ts-review-since-v0.3.1.zh.md`). No configuration file format
