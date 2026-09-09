@@ -1,7 +1,9 @@
 # 设计提案：DSH 自有 JSON 配置层（替代 Claude 兼容层）
 
+[← 返回 README](../README.zh.md) ｜ 相关：[dsh v0.1.2-rc.1 适配记录](adaptation-dsh-0.1.2-rc1.md)
+
 **状态**：已裁决并实现（v0.4.0） ｜ **提出日期**：2026-09-09 ｜ **目标版本**：v0.4.0（破坏性）
-**关联**：`docs/adaptation-dsh-0.1.2-rc1.md`（宿主适配记录）、`AGENTS.md`（装载模型）、`CHANGELOG.md`（0.4.0）
+**关联**：[dsh v0.1.2-rc.1 适配记录](adaptation-dsh-0.1.2-rc1.md)（宿主适配记录）、`AGENTS.md`（装载模型）、`CHANGELOG.md`（0.4.0）
 
 ## 0. 裁决结果（2026-09-09）
 
@@ -91,7 +93,7 @@
 - **自动探测**：目标项目已有哪个文件就写哪个；两个都存在 → 报错要求显式 `--format`
   （否则极易产生"yml 一条、json 一条"的双真相）；
 - `--scope user` 需明确写 `~/.dsh/mcp.yml` 还是 `~/.dsh/mcp.json`；
-- 文档位置：`README.md` CLI 小节、`docs/README.zh.md` 对应段落、`dsh-mcp --help`
+- 文档位置：`docs/guide/cli.md` / `docs/guide/cli.zh.md`（当时的 README CLI 小节）、`dsh-mcp --help`
   打印当前生效值。
 
 ### 3.5 层名 cc-* → dsh-* —— 采纳，但**不得硬编码 web/headless**
@@ -171,7 +173,7 @@
 | 代码 | `cc-file.ts` 拆为 `json-file.ts`（通用 JSON 读取）+ 遗留 CC 读取；`model.ts` 增 JSON 方言 schema（`mcpServers`）；`cli.ts` 增 `--format`/`DSH_MCP_CLI_FORMAT` 与 JSON 写入器；`registry.ts` 删哈希门、扩层、改 `SOURCE_RANK`/`McpRowSource` |
 | 写入 | 先定 §4.2 策略，再实现原子写 + 锁（复用 `writeFileAtomic`/`withPatchLock`） |
 | 测试 | `test-cc-file.mjs` 拆为 JSON 读取 / 遗留 CC / 优先序 / 写入器；新增 profile 名推导与降级用例 |
-| 文档 | README + `docs/README.zh.md` 层序表与 env 变量；`AGENTS.md` 目录结构与关键行为约定同步 |
+| 文档 | `docs/guide/layers.md` / `docs/guide/layers.zh.md` 层序表与 env 变量；`AGENTS.md` 目录结构与关键行为约定同步 |
 | 安全 | 新 JSON 文件同样只落 `${VAR}` 字面量、装载时展开；stdio 行仍是可执行代码载体；用户层保留扇出告警 |
 | 建议 | 本仓库 `.gitignore` 改为只忽略 `.dsh/.mcp-diag.json`，让 `mcp.yml`/`mcp.json` 可提交 |
 
