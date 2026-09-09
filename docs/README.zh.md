@@ -18,8 +18,8 @@
 - [`${VAR}` 展开](guide/env-expansion.zh.md)——装载时插值与对应诊断。
 - [CLI `dsh-mcp`](guide/cli.zh.md)——作用域、写入格式与独占契约。
 
-设计与发布记录（中文）：[dsh 0.1.2-rc.1 适配记录](adaptation-dsh-0.1.2-rc1.md) ·
-[JSON 配置层设计提案](proposal-json-mcp-config.md) ·
+设计与发布记录（中文）：[dsh 0.1.2-rc.1 适配记录](design/adaptation-dsh-0.1.2-rc1.md) ·
+[JSON 配置层设计提案](design/proposal-json-mcp-config.md) ·
 [v0.4.0 发布说明](releases/v0.4.0.md) ·
 [v0.3.1 发布说明](releases/v0.3.1.md)。
 
