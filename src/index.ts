@@ -5,7 +5,7 @@
  * cordis.patch.yml 的受管块一致），在该项目开启 dsh 会话时自动装载其中的
  * MCP 服务器（经 @deepseek-ai/dsh-mcp-client），文件改动经 watch 热重载。
  *
- * 装载模型见 README 与 docs/configuration-layers.md；运行时行为见 registry.ts
+ * 装载模型见 README 与 docs/guide/layers.md；运行时行为见 registry.ts
  * 的类注释。
  */
 import { Context } from "@deepseek-ai/cordis";
