@@ -261,6 +261,11 @@ function normalizePathKey(path: string): string {
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
+/** 两个文件路径是否指向同一文件（Windows 大小写不敏感）。 */
+function isSameFilePath(left: string, right: string): boolean {
+  return normalizePathKey(left) === normalizePathKey(right);
+}
+
 const SOURCE_RANK: Record<McpRowSource, number> = {
   "dsh-project": 0,
   "dsh-project-json": 1,
@@ -748,14 +753,24 @@ export class ProjectMcpRegistry {
     await this.syncUserWatcher();
 
     const roots = await this.knownProjects();
+    const userPaths = this.resolveUserLayerPaths();
     const desiredByProject = new Map<string, { projectRoot: string; rows: DesiredProjectRow[] }>();
     for (const projectRoot of roots) {
       const key = projectKeyOf(projectRoot);
       // 只数 yml 来源的装载实例：用户层行同样落在 entry.servers 里，拿总数
       // 会把「纯用户层挂载」误判成「yml 装载后文件被删」，产生假 ENOENT 诊断。
       const hasYmlMounts = [...(this.projects.get(key)?.servers.values() ?? [])].some((state) => state.source === "dsh-project" || state.source === undefined);
-      const yml = await this.readNativeRows(projectMcpFile(projectRoot), "dsh-project", hasYmlMounts);
-      const projectJson = await readDshJsonFile(projectDshJsonFile(projectRoot), { source: "dsh-project-json", cwdPolicy: "project", projectRoot });
+      // 家目录（或 DSH_HOME 所在目录）本身就是已知项目时，<home>/.dsh/mcp.yml|json
+      // 与用户层文件是同一份文件：项目层必须跳过，否则同一行会被挂两次
+      // （全局一条 + 该项目一条 p<hash>_…）。
+      const ymlPath = projectMcpFile(projectRoot);
+      const jsonPath = projectDshJsonFile(projectRoot);
+      const yml = isSameFilePath(ymlPath, userPaths.mcpYml)
+        ? { rows: [], ok: true, error: null }
+        : await this.readNativeRows(ymlPath, "dsh-project", hasYmlMounts);
+      const projectJson: JsonReadResult = isSameFilePath(jsonPath, userPaths.mcpJson)
+        ? { rows: [], entryErrors: [] }
+        : await readDshJsonFile(jsonPath, { source: "dsh-project-json", cwdPolicy: "project", projectRoot });
       const cc: JsonReadResult = mcpJsonLayerEnabled()
         ? await readMcpJsonFile(projectMcpJsonFile(projectRoot), projectRoot)
         : { rows: [], entryErrors: [] };
@@ -1207,16 +1222,21 @@ export class ProjectMcpRegistry {
 
   /** 行级 view 的逐层影子优先查找：项目 yml > 项目 .dsh/mcp.json > .mcp.json > profile json > 用户 yml > 用户 json > 装载残留态。 */
   private async locateRow(projectRoot: string, rawName: string, state?: ProjectServerState): Promise<{ row?: PatchRow; source?: McpRowSource }> {
-    try {
-      const raw = await readPatchFile(projectMcpFile(projectRoot));
-      const ymlRow = extractManagedRows(raw).find((candidate) => rowNameOf(candidate) === rawName);
-      if (ymlRow !== undefined) return { row: ymlRow, source: "dsh-project" };
-    } catch {
-      // 落到后续层
+    const userPaths = this.resolveUserLayerPaths();
+    if (!isSameFilePath(projectMcpFile(projectRoot), userPaths.mcpYml)) {
+      try {
+        const raw = await readPatchFile(projectMcpFile(projectRoot));
+        const ymlRow = extractManagedRows(raw).find((candidate) => rowNameOf(candidate) === rawName);
+        if (ymlRow !== undefined) return { row: ymlRow, source: "dsh-project" };
+      } catch {
+        // 落到后续层
+      }
     }
-    const projectJson = await readDshJsonFile(projectDshJsonFile(projectRoot), { source: "dsh-project-json", cwdPolicy: "project", projectRoot });
-    const projectJsonRow = projectJson.rows.find((candidate) => candidate.rawName === rawName);
-    if (projectJsonRow !== undefined) return { row: projectJsonRow.row, source: "dsh-project-json" };
+    if (!isSameFilePath(projectDshJsonFile(projectRoot), userPaths.mcpJson)) {
+      const projectJson = await readDshJsonFile(projectDshJsonFile(projectRoot), { source: "dsh-project-json", cwdPolicy: "project", projectRoot });
+      const projectJsonRow = projectJson.rows.find((candidate) => candidate.rawName === rawName);
+      if (projectJsonRow !== undefined) return { row: projectJsonRow.row, source: "dsh-project-json" };
+    }
     if (mcpJsonLayerEnabled()) {
       const cc = await readMcpJsonFile(projectMcpJsonFile(projectRoot), projectRoot);
       const found = cc.rows.find((candidate) => candidate.rawName === rawName);
@@ -1266,47 +1286,55 @@ export class ProjectMcpRegistry {
       await this.reconcileAll();
     });
     const out: ProjectFileState[] = [];
+    const userPaths = this.resolveUserLayerPaths();
     for (const [key, entry] of this.projects) {
       const path = projectMcpFile(entry.projectRoot);
       const file: ProjectFileState = { project: entry.projectRoot, path, ok: true, error: null, source: "dsh-project", servers: [] };
       let rows: PatchRow[] = [];
       let usable = true;
       let skipYmlPartition = false;
-      try {
-        rows = extractManagedRows(await readPatchFile(path));
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        // yml 缺失且没有 yml 来源的装载：文件本就不存在，不出 yml 分区——
-        // 用户层行也能让项目有装载实例，servers.size>0 不再等价「装载后文件被删」。
-        const ymlLive = [...entry.servers.values()].some((state) => state.source === "dsh-project" || state.source === undefined);
-        if (message.includes("ENOENT") && !ymlLive) {
-          skipYmlPartition = true;
-        } else {
-          usable = false;
-          file.ok = false;
-          file.error = message;
+      if (isSameFilePath(path, userPaths.mcpYml)) {
+        // 家目录即项目根：该文件就是用户层文件，不作为项目分区展示。
+        skipYmlPartition = true;
+      } else {
+        try {
+          rows = extractManagedRows(await readPatchFile(path));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          // yml 缺失且没有 yml 来源的装载：文件本就不存在，不出 yml 分区——
+          // 用户层行也能让项目有装载实例，servers.size>0 不再等价「装载后文件被删」。
+          const ymlLive = [...entry.servers.values()].some((state) => state.source === "dsh-project" || state.source === undefined);
+          if (message.includes("ENOENT") && !ymlLive) {
+            skipYmlPartition = true;
+          } else {
+            usable = false;
+            file.ok = false;
+            file.error = message;
+          }
         }
       }
       if (!skipYmlPartition) {
         if (usable) file.servers = this.partitionServers(entry, key, rows, "dsh-project");
         out.push(file);
       }
-      // ── 项目 .dsh/mcp.json 分区（DSH 自有 JSON 方言）──
+      // ── 项目 .dsh/mcp.json 分区（DSH 自有 JSON 方言；家目录即项目根时跳过）──
       {
         const jsonPath = projectDshJsonFile(entry.projectRoot);
-        const pj = await readDshJsonFile(jsonPath, { source: "dsh-project-json", cwdPolicy: "project", projectRoot: entry.projectRoot });
-        const pjLive = [...entry.servers.values()].some((state) => state.source === "dsh-project-json");
-        if (pj.rows.length > 0 || pj.fileError !== undefined || pj.entryErrors.length > 0 || pjLive) {
-          const pjFile: ProjectFileState = {
-            project: entry.projectRoot,
-            path: jsonPath,
-            ok: pj.fileError === undefined,
-            error: pj.fileError ?? null,
-            source: "dsh-project-json",
-            servers: this.partitionServers(entry, key, pj.rows.map((r) => r.row), "dsh-project-json")
-          };
-          if (pj.entryErrors.length > 0) (pjFile as any).entryErrors = pj.entryErrors;
-          out.push(pjFile);
+        if (!isSameFilePath(jsonPath, userPaths.mcpJson)) {
+          const pj = await readDshJsonFile(jsonPath, { source: "dsh-project-json", cwdPolicy: "project", projectRoot: entry.projectRoot });
+          const pjLive = [...entry.servers.values()].some((state) => state.source === "dsh-project-json");
+          if (pj.rows.length > 0 || pj.fileError !== undefined || pj.entryErrors.length > 0 || pjLive) {
+            const pjFile: ProjectFileState = {
+              project: entry.projectRoot,
+              path: jsonPath,
+              ok: pj.fileError === undefined,
+              error: pj.fileError ?? null,
+              source: "dsh-project-json",
+              servers: this.partitionServers(entry, key, pj.rows.map((r) => r.row), "dsh-project-json")
+            };
+            if (pj.entryErrors.length > 0) (pjFile as any).entryErrors = pj.entryErrors;
+            out.push(pjFile);
+          }
         }
       }
       // ── 项目 .mcp.json 分区（被开关关闭时整分区不出，含残留装载的情形）──

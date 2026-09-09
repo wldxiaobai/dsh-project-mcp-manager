@@ -782,6 +782,30 @@ try {
       pass("DSH json layers mount globally for user/profile, per project for project, with yml precedence");
     }
 
+    // 30. 家目录即项目根：<home>/.dsh/mcp.yml|json 是用户层文件，不得被该项目层再挂一次
+    //（实机复现：宿主 cwd 为家目录时，同一行会挂成「全局一条 + p<hash>_ 一条」）。
+    {
+      await writeFile(join(home2, ".dsh", "mcp.json"), JSON.stringify({ mcpServers: { "home-row": { command: "node", args: ["home.js"] } } }), "utf8");
+      const ctx5 = fakeCtx();
+      const registry5 = new ProjectMcpRegistry(ctx5, {
+        globalNames: async () => [],
+        userLayerPaths: { mcpYml: join(home2, ".dsh", "mcp.yml"), mcpJson: join(home2, ".dsh", "mcp.json"), profilesDir: join(home2, ".dsh", "profiles") }
+      });
+      ctx5.agentsList.push(fakeAgent("session-home", home2));
+      await registry5.reconcileNow();
+      const homeRowMounts = ctx5.mounts.filter((config) => config.serverName.endsWith("home-row")).map((config) => config.serverName);
+      assert.deepEqual(homeRowMounts, ["home-row"], "the home project must not mount a second namespaced copy: " + homeRowMounts.join(","));
+      const unityMounts30 = ctx5.mounts.filter((config) => config.serverName.endsWith("unity-mcp"));
+      assert.equal(unityMounts30.length, 1, "user yml rows are not double-mounted either: " + unityMounts30.join(","));
+      const snap30 = await registry5.snapshot();
+      assert.ok(!snap30.some((file) => file.source === "dsh-project-json" && file.project === home2), "no project json partition for the home root");
+      for (const disposer of ctx5.disposers) {
+        const cleanup = disposer();
+        if (typeof cleanup === "function") cleanup();
+      }
+      pass("a project root equal to the DSH home does not double-mount the user layer");
+    }
+
     // 场景 24 的 unlink 会留下防抖后的迟到 reconcile 与 chokidar 内部重扫：
     // 先让队列落空再关 watcher，否则 close 与临时目录删除赛跑、句柄不释放。
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 800));
