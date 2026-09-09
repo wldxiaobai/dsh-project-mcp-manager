@@ -30,6 +30,17 @@ export function isUrlOrEnvRef(value: string): boolean {
     return false;
   }
 }
+/**
+ * 字符串数组比较器：UTF-16 码元序，与 `Array#sort` 默认行为逐字节等价。
+ * 全仓凡排序结果 wire 可见（诊断/快照键集、告警门控签名、list 输出序）都必须
+ * 用显式比较器写死这个口径——默认序不经 locale collator，不随宿主区域设置漂移。
+ */
+export function byCodeUnit(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
 export const DEFAULT_TOOL_CALL_TIMEOUT_MS = 60000;
 export const DEFAULT_RECONNECT = {
   enabled: true,
@@ -163,6 +174,18 @@ export function denySetFor(
 /** 兼容 dsh-skill-mcp-panel 的行 id ↔ serverName。 */
 export function rowIdForServerName(serverName: string): string {
   return MANAGED_ROW_ID_PREFIX + serverName;
+}
+
+/**
+ * 行的原始 serverName：**受管行 id 优先**，其次 `config.serverName`。
+ * 装载（registry）与 CLI 判重/删除必须同口径——反向优先（config 优先）会在
+ * `id: panel-mcp-a` + `config.serverName: b` 这类不一致行上认成另一个名字，
+ * 于是 CLI 删不掉装载器实际装载的那条。
+ */
+export function rowNameOf(row: PatchRow): string | undefined {
+  const fromId = serverNameFromRowId(row.id);
+  if (fromId !== undefined) return fromId;
+  return typeof row.config?.serverName === "string" ? row.config.serverName : undefined;
 }
 
 export function serverNameFromRowId(id: string | undefined): string | undefined {

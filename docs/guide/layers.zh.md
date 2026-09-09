@@ -66,7 +66,12 @@
 - 坏文件/坏条目不影响其他服务器，且**按源隔离**：`.mcp.json` 坏了不会卸掉
   同项目的 yml 行（反之亦然）；条目错误写入 `.dsh/.mcp-diag.json` 与宿主
   日志（诊断从不带文件内容）。
-- CC 侧的 `enabled: false` 与 `disabled: true` 都静默跳过、**不占名**；原生 yml/json
-  里的 `disabled: true` 仍**占住影子键**（禁用意味着"这个名字不许跑"，而不是
-  "让位给别的副本"）。要把某台服务器在所有层压住，请在 `.dsh/mcp.yml` 留一条
-  `disabled: true` 占位行。
+- `enabled: false` 静默跳过、**不占名**（生态通行写法）；`disabled: true` **占住
+  影子键但不装载**——禁用意味着"这个名字不许跑"，而不是"让位给别的副本"。
+  该口径自 v0.4.0 起对全部 JSON 来源统一（含遗留 `.mcp.json`；此前遗留层的
+  `disabled: true` 是静默跳过、不占名）。要把某台服务器在所有层压住，请在
+  `.dsh/mcp.yml` 留一条 `disabled: true` 占位行。
+- 自 v0.4.0 起，遗留层与 DSH JSON 层走同一个读取器，因此还有两处行为变化：
+  条目里显式写的 `cwd` 现在**生效**（旧实现一律强制为项目根，仅缺省或空串时
+  才落到项目根）；DSH 透传键 `toolCallTimeoutMs`/`failOnStartupError`/`reconnect`
+  在遗留文件里也**生效**（旧实现忽略）。两者都只在条目显式给出时改变行为。

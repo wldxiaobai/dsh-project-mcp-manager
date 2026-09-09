@@ -7,7 +7,125 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-09-10
+
+Code-quality release: clears all 15 findings that held the PR #7 Sonar gate at
+"Reliability Rating on New Code = D". **No user-visible behaviour changes** —
+every fix is either an explicit restatement of what the code already did, or an
+internal decomposition.
+
+### Fixed
+
+- **Every string sort now passes an explicit comparator.** New
+  `byCodeUnit(a, b)` in `src/model.ts` — UTF-16 code-unit order, byte-identical
+  to `Array.prototype.sort`'s default and deliberately *not* locale collation
+  (`localeCompare` would let the host's locale decide the order of wire-visible
+  sequences: diagnostic and snapshot key sets, warning-gate signatures, `list`
+  output). Applied at all 15 call sites across `src/registry.ts`, `src/cli.ts`
+  and the test suite; ordering is unchanged, so no expectations moved.
+
 ### Changed
+
+- **Internal decomposition of `scanProject`** (cognitive-complexity finding):
+  the duplicate-service shadow warning with its change gate moved into
+  `warnIdentityShadows`, and the scan-diagnostic payload into a pure
+  `buildScanDiag` that returns `null` for a clean, config-free project. The
+  zero-config-no-trace rule and every warning/diagnostic set are identical.
+- `collectLayers` pushes its three trailing layers in a single call (left-to-right
+  evaluation keeps the layer precedence unchanged), and one test helper block lost
+  its redundant braces.
+- **Lockfile metadata**: `pnpm-lock.yaml` now records the `@deepseek-ai/cordis`
+  specifier `^4.0.2` that `package.json` has declared since v0.4.1 (resolved
+  version was already `4.0.2`); `pnpm` no longer demands a re-lock on every run.
+
+## [0.4.1] - 2026-09-10
+
+Follow-up on the code review of every TypeScript change since v0.3.1
+(`docs/code-review/ts-review-since-v0.3.1.zh.md`). No configuration file format
+changes; the only observable output change is that CLI-written JSON entries now
+carry an explicit `type`.
+
+### Fixed
+
+- **Project-side suppression no longer denies a project its own tools.** A
+  `disabled: true` placeholder in a user-layer file, or a user-layer row refused
+  because a host global patch row already holds the name, used to enter the
+  project's suppression set anyway. Since neither produces a global instance, the
+  `mcp__<name>__*` deny prefix hit the project's own server (whose effective name
+  was never renamed) or the host patch instance — silently, with the snapshot
+  still reporting `fiberPhase: "active"` and no `skipReason`. The user-layer merge
+  and the host-taken name set are now computed before the project loop, so
+  suppression only ever contains names that really mount globally, and the sweep
+  additionally guards on a live global instance.
+- **`$DSH_HOME` is honoured everywhere.** The user layer (`mcp.yml`, `mcp.json`,
+  `profiles/<name>/mcp.json`), the global diagnostics file and every CLI
+  read/write path resolve the dsh home through the new `src/dsh-paths.ts`
+  (`dshHomeDir` / `dshHomeFor`). Previously they hard-coded `homedir()/.dsh`, so a
+  relocated dsh home made the whole user layer disappear without a word (a
+  missing file is a legitimate zero-config state). Injected paths
+  (`userLayerPaths`, CLI `deps.home`) still win over the environment variable.
+- **`remove` explains a cross-dialect takeover.** Removing a name that exists in
+  both `mcp.yml` and `mcp.json` still deletes the first hit only, but now prints
+  which file's same-named definition will take over as a result.
+- **Malformed `mcpServers` entries survive a write.** `readJsonServers` and
+  `updateJsonServers` no longer drop non-object entries, so a hand-written
+  `"legacy": "node x.js"` is not silently deleted by an unrelated `add`/`remove`;
+  the name it holds is visible to duplicate detection and can be cleared by
+  `dsh-mcp remove legacy`.
+- **The yml write path is a lock-held read-modify-write.** The new
+  `updateManagedRows` replaces the previous "read outside the lock, replace inside
+  it" shape, so two concurrent `add`s cannot lose each other's row. `EACCES` and a
+  corrupt managed block are no longer swallowed as "missing file":
+  `createIfMissing` now only accepts `ENOENT`.
+- **`DSH_MCP_PROFILE` is validated before it becomes a path.** A value such as
+  `../../somewhere` used to be joined straight into the profiles directory and
+  read from outside it. Invalid names (anything not matching
+  `^[A-Za-z0-9][A-Za-z0-9._-]*$`, plus an explicit `.` / `..`) now degrade to
+  "unresolvable" — the profile layer is skipped — and warn once.
+- `serverView` reports user-layer rows with a `global` scope and the layer file
+  path instead of `workspace` + project root, matching the snapshot partitions.
+
+### Changed
+
+- **Shadow diagnostics are attributed to the layer that owns the conflict.**
+  `IdentityShadow` carries the loser's and winner's source, and a new
+  `shadowedGlobal` bucket records same-name shadowing between user layers (which
+  previously had no visibility at all). Conflicts confined to the user layer are
+  reported once globally, in `<dshHome>/.mcp-diag.json`; the per-project pass only
+  keeps entries where at least one side is a project-layer row, so a zero-config
+  project is no longer given a `.dsh/.mcp-diag.json` because two user-layer files
+  disagree.
+- **Repeat warnings are gated on change.** File-level errors, bad entries and the
+  `name-taken` set now warn only when the set itself changes, instead of once per
+  reconcile per project. `skipReason` is still written every round, so the
+  snapshot keeps reporting the cause.
+- The `name-taken` warning says "host global patch row (bundle layer or profile
+  patch layer)", matching what `globalNames()` actually collects.
+- CLI-written JSON entries include an explicit `type` (`stdio` / `http`) so other
+  tools that require the key can consume the file; this plugin's own reader still
+  infers it.
+- `add` now reports, after a successful write, that the new row will not mount
+  when a higher-priority layer shadows it (by name or as the same service), and
+  notes when the other dialect file in the same scope also holds definitions.
+- Non-`ENOENT` JSON read failures carry their errno code (`读取失败（EACCES）`);
+  the code never contains file content.
+- `rowNameOf` moved to `src/model.ts` and is shared by the loader and the CLI:
+  the managed row id wins over `config.serverName`. The CLI previously used the
+  reverse precedence, so a row whose id and `config.serverName` disagreed could
+  not be removed by the name the loader actually mounted.
+- `docs/guide/layers.md` / `.zh.md` document the legacy `.mcp.json` behavior
+  changes introduced in v0.4.0 (an explicit entry `cwd` now applies, the DSH
+  passthrough keys apply, and `disabled: true` holds the name instead of being a
+  silent skip); `docs/guide/cli.md` / `.zh.md` note that `-f` and `-p` are
+  reserved short flags.
+- Wire note for snapshot consumers (a v0.4.0 change, documented here): in the
+  `snapshot()` partitions of the global layers, `project` now carries the
+  directory of the layer file itself — the dsh home for `mcp.yml` / `mcp.json`,
+  `profiles/<name>` for a profile file — where v0.3.1 reported the parent of
+  `.dsh` (the home directory). Consumers such as `dsh-skill-mcp-panel` should
+  read it as "the layer's own directory", not as a workspace root.
+
+### Changed (0.4.0 documentation and cleanup, previously unreleased)
 
 - Documentation restructured: the feature write-ups moved out of the READMEs
   into `docs/guide/` as English/Chinese pairs — `format.md`/`.zh.md` (native
@@ -21,6 +139,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each linking to the documentation in its own language; every cross-document
   link, the `AGENTS.md` directory listing and the `src/index.ts` header comment
   follow the new layout.
+- Internal cleanup for the SonarCloud new-code review, with no behavior change:
+  test fixtures drop their world-writable-path literals (`/tmp/…`; the analyzer
+  graded one as a security vulnerability and failed the quality gate) and every
+  hand-rolled `sort()` comparator across `src/` and `test/` gives way to the
+  default code-unit ordering. Nested ternaries and a nested template literal in
+  `cli.ts` / `json-file.ts` become explicit statements, adjacent `Array#push()`
+  calls merge into one, `String#replace(/\\/g, …)` becomes `String#replaceAll`,
+  and the three over-complex functions are split — `cmdRemove`
+  (→ `removeFromTarget`), `ProjectMcpRegistry.mountServer`
+  (→ `buildServerConfig` + `trackMount`) and `sweepRestrictions`
+  (→ `activeMountGroups` + `registeredToolIds` + `expandToToolNames`).
 
 ## [0.4.0] - 2026-09-09
 
@@ -405,7 +534,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Security note: `stdio` lines in `.dsh/mcp.yml` spawn their `command` inside the dsh host
 process, so project files are executable-code carriers — add them only in trusted projects.
 
-[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.3.1...HEAD
+[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.1...v0.4.2
+[0.4.1]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.2.0...v0.2.1

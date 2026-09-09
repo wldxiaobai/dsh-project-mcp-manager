@@ -7,7 +7,7 @@ import { mkdtemp, readFile, rm, writeFile, access } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { readJsonDocument, readJsonServers, toJsonEntry, updateJsonServers, writeJsonServers } from "../lib/json-write.js";
-import { mcpServerInputSchema } from "../lib/model.js";
+import { byCodeUnit, mcpServerInputSchema } from "../lib/model.js";
 
 let passed = 0;
 function pass(name) {
@@ -59,18 +59,29 @@ try {
   await assert.rejects(() => writeJsonServers(target, {}), /顶层必须是 JSON 对象/);
   pass("unparsable or non-object files are refused without leaking content");
 
-  // 4. 空文件按空文档处理；readJsonServers 过滤非对象条目
+  // 4. 空文件按空文档处理；非对象条目在读-改-写全程原样保留（过滤会让任何
+  // add/remove 顺手永久删掉用户手写的坏条目），且能被指名删除。
   await writeFile(target, "   \n", "utf8");
   assert.deepEqual(await readJsonDocument(target), {});
   await writeFile(target, JSON.stringify({ mcpServers: { good: { command: "node" }, bad: "nope" } }), "utf8");
-  assert.deepEqual(Object.keys(await readJsonServers(target)), ["good"]);
-  pass("blank files read as empty and non-object entries are skipped");
+  assert.deepEqual(Object.keys(await readJsonServers(target)), ["good", "bad"], "bad entries stay visible to the CLI");
+  await updateJsonServers(target, (servers) => {
+    servers.added = { command: "node", args: ["a.js"] };
+  });
+  const afterAdd = JSON.parse(await readFile(target, "utf8"));
+  assert.equal(afterAdd.mcpServers.bad, "nope", "a non-object entry survives an unrelated add");
+  assert.deepEqual(Object.keys(afterAdd.mcpServers), ["good", "bad", "added"], "key order preserved, bad entry kept");
+  await updateJsonServers(target, (servers) => {
+    delete servers.bad;
+  });
+  assert.equal(JSON.parse(await readFile(target, "utf8")).mcpServers.bad, undefined, "a named bad entry can be removed");
+  pass("blank files read as empty and non-object entries survive read-modify-write");
 
   // 5. 条目映射：缺省值不落盘、${VAR} 字面保留、透传键按需写入
   const stdio = mcpServerInputSchema.parse({ serverName: "s", transport: "stdio", command: "node", args: [], env: { TOKEN: "${GH_TOKEN}" }, cwd: "." });
-  assert.deepEqual(toJsonEntry(stdio), { command: "node", env: { TOKEN: "${GH_TOKEN}" } });
+  assert.deepEqual(toJsonEntry(stdio), { type: "stdio", command: "node", env: { TOKEN: "${GH_TOKEN}" } });
   const http = mcpServerInputSchema.parse({ serverName: "h", transport: "streamable-http", url: "https://h/mcp", headers: { Authorization: "Bearer ${T}" } });
-  assert.deepEqual(toJsonEntry(http), { url: "https://h/mcp", headers: { Authorization: "Bearer ${T}" } });
+  assert.deepEqual(toJsonEntry(http), { type: "http", url: "https://h/mcp", headers: { Authorization: "Bearer ${T}" } });
   const tuned = mcpServerInputSchema.parse({
     serverName: "t",
     transport: "stdio",
@@ -81,6 +92,7 @@ try {
     reconnect: { enabled: false, initialDelayMs: 10, maxDelayMs: 20, maxAttempts: 2 }
   });
   assert.deepEqual(toJsonEntry(tuned), {
+    type: "stdio",
     command: "node",
     cwd: "sub/dir",
     toolCallTimeoutMs: 1234,
@@ -96,7 +108,9 @@ try {
     updateJsonServers(target, (servers) => { servers.two = { command: "node", args: ["2.js"] }; })
   ]);
   const after = await readJsonServers(target);
-  assert.deepEqual(Object.keys(after).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)), ["one", "two"], "concurrent read-modify-write keeps both entries");
+  const afterKeys = Object.keys(after);
+  afterKeys.sort(byCodeUnit);
+  assert.deepEqual(afterKeys, ["one", "two"], "concurrent read-modify-write keeps both entries");
   assert.equal(await exists(target + ".mcp-project.lock"), false, "no lock left behind after concurrent writes");
   pass("concurrent updates serialize through the lock without losing entries");
 } finally {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   MAX_TIMER_DELAY_MS,
   SERVER_NAME_RE,
+  byCodeUnit,
   denySetFor,
   effectiveServerNames,
   expandEnvRefs,
@@ -13,11 +14,14 @@ import {
   patchRowToView,
   projectKeyOf,
   rowIdForServerName,
+  rowNameOf,
   serverNameFromRowId,
   toOfficialConfig,
   toPatchRow
 } from "../lib/model.js";
 import { jsonServerEntrySchema } from "../lib/json-file.js";
+import { dshHomeDir, dshHomeFor, isValidProfileName, profileMcpJsonFile, userLayerPathsIn } from "../lib/dsh-paths.js";
+import { join, resolve } from "node:path";
 
 let passed = 0;
 function pass(name) {
@@ -80,7 +84,9 @@ const secretRow = toPatchRow(mcpServerInputSchema.parse({
   env: { GITHUB_TOKEN: "super-secret", FOO: "bar" }
 }));
 const view = patchRowToView(secretRow);
-assert.deepEqual(view.envKeys.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)), ["FOO", "GITHUB_TOKEN"]);
+const envKeys = [...view.envKeys];
+envKeys.sort(byCodeUnit);
+assert.deepEqual(envKeys, ["FOO", "GITHUB_TOKEN"]);
 assert.equal(JSON.stringify(view).includes("super-secret"), false);
 pass("patchRowToView redacts secret values");
 
@@ -95,8 +101,10 @@ assert.deepEqual(mergeSecretPatch(undefined, undefined), {});
 pass("secret patch null deletes, string overrides, absent preserves");
 
 // 8. effectiveServerNames：唯一名保持原名，冲突名（含全局占用）双方都改
-const projA = "/tmp/projA";
-const projB = "/tmp/projB";
+// 纯路径字符串夹具（只喂给 projectKeyOf / namespacedServerName，不落盘），
+// 用中性虚构挂载点，避免被安全规则按公共可写目录（/tmp 等）的使用判违规。
+const projA = "/srv/projects/alpha";
+const projB = "/srv/projects/beta";
 const eff1 = effectiveServerNames(
   [{ projectRoot: projA, names: ["unique", "dup"] }, { projectRoot: projB, names: ["dup"] }],
   ["global-only"]
@@ -118,7 +126,9 @@ pass("namespacedServerName produces valid, deterministic names");
 // 10. denySetFor：own 项目不 deny，无项目 deny 全部
 const mounted = [{ projectRoot: projA, effectiveNames: ["a1", "a2"] }, { projectRoot: projB, effectiveNames: ["b1"] }];
 assert.deepEqual(denySetFor(projA, mounted), ["b1"]);
-assert.deepEqual(denySetFor(undefined, mounted).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)), ["a1", "a2", "b1"]);
+const denyAll = [...denySetFor(undefined, mounted)];
+denyAll.sort(byCodeUnit);
+assert.deepEqual(denyAll, ["a1", "a2", "b1"]);
 pass("denySetFor scopes visibility to the session's own project");
 
 assert.equal(SERVER_NAME_RE.test("a_b-1"), true);
@@ -210,6 +220,36 @@ assert.equal(jsonServerEntrySchema.safeParse({}).success, true); // 空条目先
 assert.equal(jsonServerEntrySchema.safeParse({ command: "npx", toolCallTimeoutMs: 1000, disabled: true }).success, true);
 assert.equal(jsonServerEntrySchema.safeParse({ command: "npx", toolCallTimeoutMs: 0 }).success, false);
 pass("jsonServerEntrySchema tolerates unknown keys and DSH passthrough, rejects non-string secrets");
+
+// 16. dsh-paths：DSH_HOME 重定位与注入优先（用户层三文件都从这里派生）
+{
+  const homeDir = process.platform === "win32" ? String.raw`C:\Users\x` : "/home/x";
+  const relocated = process.platform === "win32" ? String.raw`D:\dsh-home` : "/srv/dsh-home";
+  assert.equal(dshHomeDir(homeDir, {}), join(homeDir, ".dsh"), "no DSH_HOME → <home>/.dsh");
+  assert.equal(dshHomeDir(homeDir, { DSH_HOME: "" }), join(homeDir, ".dsh"), "empty DSH_HOME is ignored");
+  assert.equal(dshHomeDir(homeDir, { DSH_HOME: relocated }), resolve(relocated), "DSH_HOME wins and is absolutized");
+  assert.equal(dshHomeFor(homeDir, { DSH_HOME: relocated }), join(homeDir, ".dsh"), "explicit home injection beats DSH_HOME");
+  assert.equal(dshHomeFor(undefined, { DSH_HOME: relocated }), resolve(relocated), "no injection → DSH_HOME");
+  const paths = userLayerPathsIn(relocated);
+  assert.deepEqual(paths, {
+    mcpYml: join(relocated, "mcp.yml"),
+    mcpJson: join(relocated, "mcp.json"),
+    profilesDir: join(relocated, "profiles")
+  }, "user layer paths derive from the dsh home");
+  assert.equal(profileMcpJsonFile(paths.profilesDir, "web"), join(relocated, "profiles", "web", "mcp.json"));
+  // profile 名校验：外部输入不得越出 profiles 目录
+  for (const ok of ["web", "headless", "a.b_c-1", "X9"]) assert.equal(isValidProfileName(ok), true, `${ok} is a valid profile name`);
+  for (const bad of ["", ".", "..", "../x", "a/b", String.raw`a\b`, "/abs", "-lead", ".hidden", "C:", "a b"]) {
+    assert.equal(isValidProfileName(bad), false, `${JSON.stringify(bad)} must be rejected`);
+  }
+  pass("dshHomeDir/dshHomeFor honour DSH_HOME with injection priority, profile names are validated");
+}
+
+// 17. rowNameOf：受管行 id 优先于 config.serverName（CLI 与装载器同口径）
+assert.equal(rowNameOf({ id: "panel-mcp-fromid", name: "@deepseek-ai/dsh-mcp-client", config: { serverName: "fromconfig" } }), "fromid", "row id wins over config.serverName");
+assert.equal(rowNameOf({ name: "@deepseek-ai/dsh-mcp-client", config: { serverName: "onlyconfig" } }), "onlyconfig", "config.serverName is the fallback");
+assert.equal(rowNameOf({ id: "other-prefix", name: "@deepseek-ai/dsh-mcp-client", config: {} }), undefined, "no name at all");
+pass("rowNameOf prefers the managed row id");
 
 console.log("\n" + passed + " passed, 0 failed");
 console.log("ALL MCP MODEL TESTS PASSED");

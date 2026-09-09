@@ -87,8 +87,17 @@ global row's tools (project-side suppression).
   source**: an unreadable `.mcp.json` cannot unmount the same project's yml
   rows (and vice versa). Entry errors land in `.dsh/.mcp-diag.json` and the
   host log (diagnostics never carry file content).
-- CC-side `enabled: false` and `disabled: true` are both skipped silently and
-  hold **no name**; `disabled: true` in native yml/json still **holds its
-  shadow keys** (disabled means "this name must not run", not "let another copy
-  through"). To suppress a server across all layers, keep a `disabled: true`
+- `enabled: false` is skipped silently and holds **no name** (the ecosystem
+  convention); `disabled: true` **holds its shadow keys but does not mount** —
+  disabled means "this name must not run", not "let another copy through". Since
+  v0.4.0 this reading is uniform across every JSON source, the legacy
+  `.mcp.json` included (previously its `disabled: true` was a silent skip that
+  held no name). To suppress a server across all layers, keep a `disabled: true`
   placeholder row in `.dsh/mcp.yml`.
+- Since v0.4.0 the legacy layer shares the DSH JSON reader, which brings two
+  more behavior changes: an explicit `cwd` in an entry now **takes effect** (the
+  old implementation forced the project root; the project root is now only the
+  fallback for a missing or empty `cwd`), and the DSH passthrough keys
+  `toolCallTimeoutMs` / `failOnStartupError` / `reconnect` now **apply** in
+  legacy files too (previously ignored). Both only change behavior for entries
+  that spell them out.

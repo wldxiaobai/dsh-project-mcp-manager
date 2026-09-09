@@ -136,7 +136,13 @@ export function jsonEntryToInput(name: string, entry: JsonServerEntry, options: 
     if (typeof entry.command !== "string" || entry.command === "") {
       return { error: entry.type === "stdio" ? 'type:"stdio" 条目缺少 command' : '条目缺少 command（且无 type:"http"/url）' };
     }
-    const cwd = typeof entry.cwd === "string" && entry.cwd !== "" ? entry.cwd : options.cwdPolicy === "project" ? options.projectRoot : "";
+    // cwd 缺省语义：显式写的非空 cwd 原样保留；项目层缺省落到项目根；全局层留空串（继承宿主工作目录）。
+    let cwd = "";
+    if (typeof entry.cwd === "string" && entry.cwd !== "") {
+      cwd = entry.cwd;
+    } else if (options.cwdPolicy === "project") {
+      cwd = options.projectRoot;
+    }
     const input = mcpServerInputSchema.parse({
       serverName: name,
       transport: "stdio",
@@ -192,8 +198,11 @@ async function readJsonFile(path: string): Promise<{ missing?: true; value?: unk
   try {
     raw = await readFile(path, "utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return { missing: true };
-    return { error: "读取失败" };
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code === "ENOENT") return { missing: true };
+    // errno code 不含文件内容，可安全附带——EACCES 与 EISDIR 的处置完全不同，
+    // 只报「读取失败」会让用户无从下手。
+    return { error: typeof code === "string" && code !== "" ? `读取失败（${code}）` : "读取失败" };
   }
   try {
     return { value: JSON.parse(raw) };

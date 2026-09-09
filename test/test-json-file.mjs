@@ -7,6 +7,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mcpJsonLayerEnabled, readDshJsonFile, readMcpJsonFile } from "../lib/json-file.js";
+import { byCodeUnit } from "../lib/model.js";
 
 let passed = 0;
 function pass(name) {
@@ -90,7 +91,9 @@ try {
   }));
   const r3b = await readDshJsonFile(p3b, { source: "dsh-project-json", cwdPolicy: "project", projectRoot: "/work/proj" });
   assert.deepEqual(r3b.entryErrors, [], "off flags must be silent, url-only must not error as missing-command");
-  assert.deepEqual(r3b.rows.map((row) => row.rawName).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)), ["full-name", "off-alias", "off-truthy", "url-only"]);
+  const r3bNames = r3b.rows.map((row) => row.rawName);
+  r3bNames.sort(byCodeUnit);
+  assert.deepEqual(r3bNames, ["full-name", "off-alias", "off-truthy", "url-only"]);
   const alias = r3b.rows.find((row) => row.rawName === "off-alias");
   assert.equal(alias.disabled, true, "disabled:true occupies the name");
   assert.equal(alias.row.disabled, true);

@@ -20,8 +20,12 @@
 
 设计与发布记录（中文）：[dsh 0.1.2-rc.1 适配记录](design/adaptation-dsh-0.1.2-rc1.md) ·
 [JSON 配置层设计提案](design/proposal-json-mcp-config.md) ·
+[v0.4.2 发布说明](releases/v0.4.2.md) ·
+[v0.4.1 发布说明](releases/v0.4.1.md) ·
 [v0.4.0 发布说明](releases/v0.4.0.md) ·
 [v0.3.1 发布说明](releases/v0.3.1.md)。
+
+代码审查记录（中文）：[v0.3.1 以来 TypeScript 变更审查](code-review/ts-review-since-v0.3.1.zh.md)。
 
 ## 安装（挂载到 profile）
 

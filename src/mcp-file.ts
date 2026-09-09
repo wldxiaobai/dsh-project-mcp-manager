@@ -196,24 +196,55 @@ export async function withPatchLock<T>(path: string, fn: () => Promise<T> | T): 
 }
 
 /**
- * 读取 patch 文件、替换受管块、校验、加锁原子写回。
- * createIfMissing 时文件缺失（或父目录缺失）按空文件处理：用于项目级
- * <projectRoot>/.dsh/mcp.yml 的首次写入。
+ * 锁内读-改-写受管行：mutate 收到锁内读出的最新受管行，返回值即写回的行集合。
+ * 并发写入的唯一安全形态——锁外先读、锁内整体替换会让两个并发 add 互相丢行。
+ * mutate 抛出的错误原样上抛（判重冲突走这里），文件不被改动。
+ *
+ * createIfMissing 只吃「文件/父目录不存在」（ENOENT）：EACCES、受管块损坏等
+ * 一律上抛，绝不当成空文件覆盖用户内容。
  * 返回写回后的完整文本。
  */
-export async function writeManagedRows(path: string, rows: PatchRow[], options: { createIfMissing?: boolean } = {}): Promise<string> {
+async function writeManagedBlockLocked(
+  path: string,
+  rowsFrom: (raw: string) => PatchRow[],
+  options: { createIfMissing?: boolean }
+): Promise<string> {
   return withPatchLock(path, async () => {
     let raw: string;
     try {
       raw = await readPatchFile(path);
     } catch (error) {
-      if (options.createIfMissing !== true) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      // 只有「文件/父目录不存在」才按空文件处理：EACCES 等一律上抛，
+      // 否则读不到的文件会被当空文件整体覆盖（吞掉用户内容）。
+      if (options.createIfMissing !== true || !message.includes("ENOENT")) throw error;
       await mkdir(dirname(path), { recursive: true });
       raw = "";
     }
-    const next = replaceManagedBlock(raw, rows);
+    const next = replaceManagedBlock(raw, rowsFrom(raw));
     await validatePatchText(next);
     await writeFileAtomic(path, next);
     return next;
   });
+}
+
+export async function updateManagedRows(
+  path: string,
+  mutate: (rows: PatchRow[]) => PatchRow[],
+  options: { createIfMissing?: boolean } = {}
+): Promise<string> {
+  // extractManagedRows 的解析错误在此穿透：受管块损坏时改写等于丢用户内容。
+  return writeManagedBlockLocked(path, (raw) => mutate(extractManagedRows(raw)), options);
+}
+
+/**
+ * 整体替换受管行（读取、替换受管块、校验、加锁原子写回）。
+ * 调用方已持有完整目标行集合时用它；需要「基于现有行改一改」请用
+ * updateManagedRows（锁内读-改-写，并发安全）。
+ * createIfMissing 时文件缺失（或父目录缺失）按空文件处理：用于项目级
+ * <projectRoot>/.dsh/mcp.yml 的首次写入。
+ * 返回写回后的完整文本。
+ */
+export async function writeManagedRows(path: string, rows: PatchRow[], options: { createIfMissing?: boolean } = {}): Promise<string> {
+  return writeManagedBlockLocked(path, () => rows, options);
 }

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runCli } from "../lib/cli.js";
 import { projectMcpFile } from "../lib/registry.js";
+import { writeManagedRows } from "../lib/mcp-file.js";
 
 let passed = 0;
 function pass(name) {
@@ -254,7 +255,7 @@ try {
     const cap = io();
     assert.equal(await runCli(["add", "fj", "node", "f.js", "-e", "TOKEN=${FJ_TOKEN}", "--format", "json"], cap.io, deps), 0, cap.errs.join("\n"));
     const doc = JSON.parse(await readFile(jsonPath, "utf8"));
-    assert.deepEqual(doc.mcpServers.fj, { command: "node", args: ["f.js"], env: { TOKEN: "${FJ_TOKEN}" } }, "json add keeps ${VAR} literal and omits default cwd");
+    assert.deepEqual(doc.mcpServers.fj, { type: "stdio", command: "node", args: ["f.js"], env: { TOKEN: "${FJ_TOKEN}" } }, "json add writes explicit type, keeps ${VAR} literal and omits default cwd");
     assert.ok(!(await readFile(projectYml, "utf8")).includes("serverFJ"), "yml untouched by a json add");
 
     // 环境变量等价于 --format json；显式 --format 优先。
@@ -293,8 +294,118 @@ try {
     const capProfile = io();
     assert.equal(await runCli(["add", "pp", "node", "p.js", "--scope", "profile", "--profile", "web"], capProfile.io, deps), 0, capProfile.errs.join("\n"));
     const profileDoc = JSON.parse(await readFile(join(home, ".dsh", "profiles", "web", "mcp.json"), "utf8"));
-    assert.deepEqual(profileDoc.mcpServers.pp, { command: "node", args: ["p.js"] }, "profile row written to profiles/<name>/mcp.json");
+    assert.deepEqual(profileDoc.mcpServers.pp, { type: "stdio", command: "node", args: ["p.js"] }, "profile row written to profiles/<name>/mcp.json");
     pass("cli --format / DSH_MCP_CLI_FORMAT / --scope profile write to the right file");
+  }
+
+  // 20. 行 id 与 config.serverName 不一致（M5/T8）：CLI 判重、get、remove 都必须
+  // 用装载器口径（受管行 id 优先），否则 CLI 删不掉装载器实际装载的那条。
+  {
+    const ymlPath = projectMcpFile(project);
+    await rm(ymlPath, { force: true });
+    await writeManagedRows(ymlPath, [{
+      id: "panel-mcp-byid",
+      name: "@deepseek-ai/dsh-mcp-client",
+      config: { serverName: "byconfig", transport: "stdio", command: "node", args: ["m.js"], env: {}, cwd: ".", toolCallTimeoutMs: 60000, failOnStartupError: false, reconnect: { enabled: true, initialDelayMs: 500, maxDelayMs: 30000, maxAttempts: 10 } }
+    }], { createIfMissing: true });
+    const capGet = io();
+    assert.equal(await runCli(["get", "byid"], capGet.io, deps), 0, capGet.errs.join("\n"));
+    assert.ok(capGet.lines.join("\n").includes("Name:     byid"), "get resolves the row by its managed id: " + capGet.lines.join("\n"));
+    const capDup = io();
+    assert.equal(await runCli(["add", "byid", "node", "dup.js"], capDup.io, deps), 1, "duplicate detection uses the loader's name");
+    const capRm = io();
+    assert.equal(await runCli(["remove", "byid"], capRm.io, deps), 0, capRm.errs.join("\n"));
+    assert.ok(!(await readFile(ymlPath, "utf8")).includes("panel-mcp-byid"), "remove deletes the row the loader would mount");
+    pass("cli name resolution matches the loader when row id and config.serverName disagree");
+  }
+
+  // 19. yml 与 json 同名（H3/M8）：add 提示新行会被遮蔽 + 另一方言还有条目；
+  // remove 首个命中即删，但要说清「另一方言的同名行将接管生效」，二次 remove 才清空。
+  {
+    const ymlPath = projectMcpFile(project);
+    const jsonPath = join(project, ".dsh", "mcp.json");
+    await rm(ymlPath, { force: true });
+    await rm(jsonPath, { force: true });
+    const capYml = io();
+    assert.equal(await runCli(["add", "twin", "node", "y.js"], capYml.io, deps), 0, capYml.errs.join("\n"));
+    const capJson = io();
+    assert.equal(await runCli(["add", "twin", "node", "j.js", "--format", "json"], capJson.io, deps), 0, capJson.errs.join("\n"));
+    const jsonOut = capJson.lines.join("\n");
+    assert.ok(jsonOut.includes("不会装载"), "add warns that the shadowed row will not mount: " + jsonOut);
+    assert.ok(jsonOut.includes(ymlPath), "the warning names the shadowing yml layer");
+    assert.ok(jsonOut.includes("提示：同作用域"), "add points at the other dialect file: " + jsonOut);
+
+    const capRm1 = io();
+    assert.equal(await runCli(["remove", "twin"], capRm1.io, deps), 0, capRm1.errs.join("\n"));
+    const rm1 = capRm1.lines.join("\n");
+    assert.ok(rm1.includes(ymlPath), "the first remove hits the yml layer");
+    assert.ok(rm1.includes("接管生效"), "the first remove announces the json takeover: " + rm1);
+    assert.ok(rm1.includes(jsonPath), "the takeover notice names the json file");
+    assert.ok(JSON.parse(await readFile(jsonPath, "utf8")).mcpServers.twin !== undefined, "the json row is still there after the first remove");
+    const capRm2 = io();
+    assert.equal(await runCli(["remove", "twin"], capRm2.io, deps), 0, capRm2.errs.join("\n"));
+    assert.equal(JSON.parse(await readFile(jsonPath, "utf8")).mcpServers.twin, undefined, "the second remove clears the json row");
+    assert.ok(!capRm2.lines.join("\n").includes("接管生效"), "no takeover notice when nothing is left");
+    pass("cli add flags shadowed writes and remove announces cross-dialect takeover");
+  }
+
+  // 18. mcpServers 里的非对象坏条目：add/remove 不得顺手删掉它（此前读-改-写
+  // 会过滤非对象条目，任何一次写入都让用户手写的 `"legacy": "node x.js"` 永久消失）；
+  // 坏条目占的名字要能被判重看见，指名 remove 能清掉。
+  {
+    const jsonPath = join(project, ".dsh", "mcp.json");
+    await writeFile(jsonPath, JSON.stringify({ mcpServers: { legacy: "node x.js", ok: { command: "node", args: ["ok.js"] } } }, null, 2), "utf8");
+    const capAdd = io();
+    assert.equal(await runCli(["add", "fresh", "node", "f.js", "--format", "json"], capAdd.io, deps), 0, capAdd.errs.join("\n"));
+    const doc = JSON.parse(await readFile(jsonPath, "utf8"));
+    assert.equal(doc.mcpServers.legacy, "node x.js", "the malformed entry survives an add");
+    assert.ok(doc.mcpServers.fresh !== undefined, "the new row is written");
+    const capDup = io();
+    assert.equal(await runCli(["add", "legacy", "node", "l.js", "--format", "json"], capDup.io, deps), 1, "a name held by a malformed entry is not silently overwritten");
+    assert.ok(capDup.errs.join("\n").includes("已存在"), "duplicate detection sees the malformed entry");
+    const capRm = io();
+    assert.equal(await runCli(["remove", "legacy", "--format", "json"], capRm.io, deps), 0, capRm.errs.join("\n"));
+    const after = JSON.parse(await readFile(jsonPath, "utf8"));
+    assert.equal(after.mcpServers.legacy, undefined, "remove can clear a malformed entry");
+    assert.ok(after.mcpServers.ok !== undefined, "unrelated entries untouched");
+    pass("cli add/remove preserve malformed mcpServers entries and can clear them by name");
+  }
+
+  // 17. DSH_HOME 重定位：未注入 deps.home 时，用户层与 profile 层路径都跟随 $DSH_HOME；
+  // 注入的 deps.home 仍优先于环境变量（否则测试会读到真实用户配置，注入失去隔离意义）。
+  {
+    const relocated = join(dir, "dsh-home");
+    await mkdir(join(relocated, "profiles", "web"), { recursive: true });
+    await writeFile(join(relocated, "mcp.json"), JSON.stringify({ mcpServers: { relocated: { command: "node", args: ["r.js"] } } }), "utf8");
+    const savedHome = process.env.DSH_HOME;
+    process.env.DSH_HOME = relocated;
+    try {
+      const envDeps = { resolveProjectRoot: async () => project };
+      const capAdd = io();
+      assert.equal(await runCli(["add", "envhome", "node", "eh.js", "--scope", "user"], capAdd.io, envDeps), 0, capAdd.errs.join("\n"));
+      assert.ok(await pathExists(join(relocated, "mcp.yml")), "user scope write follows $DSH_HOME");
+      const capList = io();
+      assert.equal(await runCli(["list"], capList.io, envDeps), 0, capList.errs.join("\n"));
+      const listed = capList.lines.join("\n");
+      assert.ok(listed.includes("relocated:"), "user json layer under $DSH_HOME is listed: " + listed);
+      // get 未命中时报出实际查过的六层路径（M6）：重定位后的用户层路径必须在列。
+      const capMiss = io();
+      assert.equal(await runCli(["get", "nosuch"], capMiss.io, envDeps), 1);
+      const missText = capMiss.errs.join("\n");
+      assert.ok(missText.includes(join(relocated, "mcp.json")), "miss message lists the relocated user json path: " + missText);
+      assert.ok(missText.includes(join(relocated, "mcp.yml")), "miss message lists the relocated user yml path");
+      const capProfile = io();
+      assert.equal(await runCli(["add", "ph", "node", "ph.js", "--scope", "profile", "--profile", "web"], capProfile.io, envDeps), 0, capProfile.errs.join("\n"));
+      assert.ok(await pathExists(join(relocated, "profiles", "web", "mcp.json")), "profile scope write follows $DSH_HOME");
+      // deps.home 注入优先：同一环境下仍写进注入的 home。
+      const capInjected = io();
+      assert.equal(await runCli(["add", "injhome", "node", "ih.js", "--scope", "user", "--format", "json"], capInjected.io, deps), 0, capInjected.errs.join("\n"));
+      assert.ok(await pathExists(join(home, ".dsh", "mcp.json")), "injected deps.home wins over $DSH_HOME");
+      pass("cli follows DSH_HOME for user/profile scopes while deps.home injection still wins");
+    } finally {
+      if (savedHome === undefined) delete process.env.DSH_HOME;
+      else process.env.DSH_HOME = savedHome;
+    }
   }
 } finally {
   await rm(dir, { recursive: true, force: true });
