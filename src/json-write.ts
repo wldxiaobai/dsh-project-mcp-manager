@@ -97,12 +97,16 @@ export function writeJsonServers(path: string, servers: JsonServers): Promise<Js
 export function toJsonEntry(input: McpServerInput): Record<string, unknown> {
   const entry: Record<string, unknown> = {};
   if (input.transport === "stdio") {
+    // 显式写 type：这些文件也可能被生态里要求 type 的工具读到（本插件自己按
+    // 缺省 stdio / 有 url 推断 http，不依赖它）。
+    entry.type = "stdio";
     entry.command = input.command;
     if (input.args.length > 0) entry.args = [...input.args];
     const env = Object.entries(input.env ?? {}).filter((pair): pair is [string, string] => typeof pair[1] === "string");
     if (env.length > 0) entry.env = Object.fromEntries(env);
     if (input.cwd !== "" && input.cwd !== ".") entry.cwd = input.cwd;
   } else {
+    entry.type = "http";
     entry.url = input.url;
     const headers = Object.entries(input.headers ?? {}).filter((pair): pair is [string, string] => typeof pair[1] === "string");
     if (headers.length > 0) entry.headers = Object.fromEntries(headers);

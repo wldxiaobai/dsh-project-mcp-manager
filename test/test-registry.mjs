@@ -1021,6 +1021,47 @@ try {
       }
     }
 
+    // 35. profile 名校验（M10）：DSH_MCP_PROFILE 是外部输入，`../..` 之类不得被
+    // join 进 profiles 目录读到目录外的文件；不合法按「解析不出」降级并告警一次。
+    {
+      const home35 = await mkdtemp(join(tmpdir(), "dsh-project-mcp-manager-profile-"));
+      const proj35 = join(dir2, "proj35");
+      try {
+        await mkdir(proj35, { recursive: true });
+        const userPaths35 = { mcpYml: join(home35, "mcp.yml"), mcpJson: join(home35, "mcp.json"), profilesDir: join(home35, "profiles") };
+        // 目录外的"战利品"文件：越界读取会把它当 profile 层装载。
+        await writeFile(join(home35, "outside.json"), JSON.stringify({ mcpServers: { escaped: { command: "node", args: ["e.js"] } } }), "utf8");
+        await mkdir(join(home35, "profiles", "web"), { recursive: true });
+        await writeFile(join(home35, "profiles", "web", "mcp.json"), JSON.stringify({ mcpServers: { okprofile: { command: "node", args: ["p.js"] } } }), "utf8");
+        const ctx35 = fakeCtx();
+        const warns35 = [];
+        ctx35.logger.warn = (msg) => { warns35.push(String(msg)); };
+        const registry35 = new ProjectMcpRegistry(ctx35, { globalNames: async () => [], activeProfile: async () => "..", userLayerPaths: userPaths35 });
+        ctx35.agentsList.push(fakeAgent("session-profile", proj35));
+        await registry35.reconcileNow();
+        assert.ok(!ctx35.mounts.some((config) => config.serverName === "escaped"), "an out-of-tree profile name must not be read: " + ctx35.mounts.map((c) => c.serverName).join(","));
+        assert.equal(warns35.filter((w) => w.includes("profile 名")).length, 1, "the invalid profile name warns once: " + JSON.stringify(warns35));
+        await registry35.reconcileNow();
+        assert.equal(warns35.filter((w) => w.includes("profile 名")).length, 1, "a stable invalid name stays silent");
+        const snap35 = await registry35.snapshot();
+        assert.ok(!snap35.some((file) => file.source === "dsh-profile-user"), "no profile partition for an unresolvable name");
+        // 合法名照常读取。
+        const ctxOk = fakeCtx();
+        const registryOk = new ProjectMcpRegistry(ctxOk, { globalNames: async () => [], activeProfile: async () => "web", userLayerPaths: userPaths35 });
+        ctxOk.agentsList.push(fakeAgent("session-profile-ok", proj35));
+        await registryOk.reconcileNow();
+        assert.ok(ctxOk.mounts.some((config) => config.serverName === "okprofile"), "a valid profile name still mounts its layer");
+        for (const disposer of [...ctx35.disposers, ...ctxOk.disposers]) {
+          const cleanup = disposer();
+          if (typeof cleanup === "function") cleanup();
+        }
+        pass("invalid profile names are rejected before joining the profiles directory");
+      } finally {
+        await rmRetry(home35);
+        await rmRetry(proj35);
+      }
+    }
+
     // 场景 24 的 unlink 会留下防抖后的迟到 reconcile 与 chokidar 内部重扫：
     // 先让队列落空再关 watcher，否则 close 与临时目录删除赛跑、句柄不释放。
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 800));

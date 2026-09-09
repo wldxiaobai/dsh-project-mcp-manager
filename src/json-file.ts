@@ -198,8 +198,11 @@ async function readJsonFile(path: string): Promise<{ missing?: true; value?: unk
   try {
     raw = await readFile(path, "utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return { missing: true };
-    return { error: "读取失败" };
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code === "ENOENT") return { missing: true };
+    // errno code 不含文件内容，可安全附带——EACCES 与 EISDIR 的处置完全不同，
+    // 只报「读取失败」会让用户无从下手。
+    return { error: typeof code === "string" && code !== "" ? `读取失败（${code}）` : "读取失败" };
   }
   try {
     return { value: JSON.parse(raw) };

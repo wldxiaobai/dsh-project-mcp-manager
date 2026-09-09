@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runCli } from "../lib/cli.js";
 import { projectMcpFile } from "../lib/registry.js";
+import { writeManagedRows } from "../lib/mcp-file.js";
 
 let passed = 0;
 function pass(name) {
@@ -254,7 +255,7 @@ try {
     const cap = io();
     assert.equal(await runCli(["add", "fj", "node", "f.js", "-e", "TOKEN=${FJ_TOKEN}", "--format", "json"], cap.io, deps), 0, cap.errs.join("\n"));
     const doc = JSON.parse(await readFile(jsonPath, "utf8"));
-    assert.deepEqual(doc.mcpServers.fj, { command: "node", args: ["f.js"], env: { TOKEN: "${FJ_TOKEN}" } }, "json add keeps ${VAR} literal and omits default cwd");
+    assert.deepEqual(doc.mcpServers.fj, { type: "stdio", command: "node", args: ["f.js"], env: { TOKEN: "${FJ_TOKEN}" } }, "json add writes explicit type, keeps ${VAR} literal and omits default cwd");
     assert.ok(!(await readFile(projectYml, "utf8")).includes("serverFJ"), "yml untouched by a json add");
 
     // 环境变量等价于 --format json；显式 --format 优先。
@@ -293,8 +294,29 @@ try {
     const capProfile = io();
     assert.equal(await runCli(["add", "pp", "node", "p.js", "--scope", "profile", "--profile", "web"], capProfile.io, deps), 0, capProfile.errs.join("\n"));
     const profileDoc = JSON.parse(await readFile(join(home, ".dsh", "profiles", "web", "mcp.json"), "utf8"));
-    assert.deepEqual(profileDoc.mcpServers.pp, { command: "node", args: ["p.js"] }, "profile row written to profiles/<name>/mcp.json");
+    assert.deepEqual(profileDoc.mcpServers.pp, { type: "stdio", command: "node", args: ["p.js"] }, "profile row written to profiles/<name>/mcp.json");
     pass("cli --format / DSH_MCP_CLI_FORMAT / --scope profile write to the right file");
+  }
+
+  // 20. 行 id 与 config.serverName 不一致（M5/T8）：CLI 判重、get、remove 都必须
+  // 用装载器口径（受管行 id 优先），否则 CLI 删不掉装载器实际装载的那条。
+  {
+    const ymlPath = projectMcpFile(project);
+    await rm(ymlPath, { force: true });
+    await writeManagedRows(ymlPath, [{
+      id: "panel-mcp-byid",
+      name: "@deepseek-ai/dsh-mcp-client",
+      config: { serverName: "byconfig", transport: "stdio", command: "node", args: ["m.js"], env: {}, cwd: ".", toolCallTimeoutMs: 60000, failOnStartupError: false, reconnect: { enabled: true, initialDelayMs: 500, maxDelayMs: 30000, maxAttempts: 10 } }
+    }], { createIfMissing: true });
+    const capGet = io();
+    assert.equal(await runCli(["get", "byid"], capGet.io, deps), 0, capGet.errs.join("\n"));
+    assert.ok(capGet.lines.join("\n").includes("Name:     byid"), "get resolves the row by its managed id: " + capGet.lines.join("\n"));
+    const capDup = io();
+    assert.equal(await runCli(["add", "byid", "node", "dup.js"], capDup.io, deps), 1, "duplicate detection uses the loader's name");
+    const capRm = io();
+    assert.equal(await runCli(["remove", "byid"], capRm.io, deps), 0, capRm.errs.join("\n"));
+    assert.ok(!(await readFile(ymlPath, "utf8")).includes("panel-mcp-byid"), "remove deletes the row the loader would mount");
+    pass("cli name resolution matches the loader when row id and config.serverName disagree");
   }
 
   // 19. yml 与 json 同名（H3/M8）：add 提示新行会被遮蔽 + 另一方言还有条目；

@@ -15,6 +15,8 @@ import { JSON_MCP_FILE } from "./json-file.js";
 
 /** dsh 家目录重定位环境变量。 */
 export const DSH_HOME_ENV = "DSH_HOME";
+/** 显式指定 profile 名的环境变量（覆盖自动解析；CLI/无 profile 启动场景用）。 */
+export const PROFILE_ENV = "DSH_MCP_PROFILE";
 /** 原生受管块文件名（项目层 `<root>/.dsh/mcp.yml` 与用户层 `<dshHome>/mcp.yml` 同名）。 */
 export const MCP_YML_FILE = "mcp.yml";
 /** 项目/用户层配置目录名（项目层为 `<root>/.dsh`）。 */
@@ -60,4 +62,17 @@ export function userLayerPathsIn(dshHome: string): UserLayerPaths {
 /** profile 层配置文件路径（`<dshHome>/profiles/<name>/mcp.json`）。 */
 export function profileMcpJsonFile(profilesDir: string, profile: string): string {
   return join(profilesDir, profile, JSON_MCP_FILE);
+}
+
+/**
+ * 合法 profile 名：字母数字开头，其后允许字母数字、`.`、`_`、`-`。
+ * 用于把外部输入（`DSH_MCP_PROFILE`）挡在 profiles 目录内——`..`、
+ * `../../somewhere`、绝对路径都会被拒。
+ */
+export const PROFILE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/** profile 名是否可安全拼进 profiles 目录（显式拒绝 `.` 与 `..`）。 */
+export function isValidProfileName(name: string): boolean {
+  if (name === "." || name === "..") return false;
+  return PROFILE_NAME_RE.test(name);
 }

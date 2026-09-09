@@ -79,9 +79,9 @@ try {
 
   // 5. 条目映射：缺省值不落盘、${VAR} 字面保留、透传键按需写入
   const stdio = mcpServerInputSchema.parse({ serverName: "s", transport: "stdio", command: "node", args: [], env: { TOKEN: "${GH_TOKEN}" }, cwd: "." });
-  assert.deepEqual(toJsonEntry(stdio), { command: "node", env: { TOKEN: "${GH_TOKEN}" } });
+  assert.deepEqual(toJsonEntry(stdio), { type: "stdio", command: "node", env: { TOKEN: "${GH_TOKEN}" } });
   const http = mcpServerInputSchema.parse({ serverName: "h", transport: "streamable-http", url: "https://h/mcp", headers: { Authorization: "Bearer ${T}" } });
-  assert.deepEqual(toJsonEntry(http), { url: "https://h/mcp", headers: { Authorization: "Bearer ${T}" } });
+  assert.deepEqual(toJsonEntry(http), { type: "http", url: "https://h/mcp", headers: { Authorization: "Bearer ${T}" } });
   const tuned = mcpServerInputSchema.parse({
     serverName: "t",
     transport: "stdio",
@@ -92,6 +92,7 @@ try {
     reconnect: { enabled: false, initialDelayMs: 10, maxDelayMs: 20, maxAttempts: 2 }
   });
   assert.deepEqual(toJsonEntry(tuned), {
+    type: "stdio",
     command: "node",
     cwd: "sub/dir",
     toolCallTimeoutMs: 1234,

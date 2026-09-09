@@ -19,7 +19,7 @@ import {
   toPatchRow
 } from "../lib/model.js";
 import { jsonServerEntrySchema } from "../lib/json-file.js";
-import { dshHomeDir, dshHomeFor, profileMcpJsonFile, userLayerPathsIn } from "../lib/dsh-paths.js";
+import { dshHomeDir, dshHomeFor, isValidProfileName, profileMcpJsonFile, userLayerPathsIn } from "../lib/dsh-paths.js";
 import { join, resolve } from "node:path";
 
 let passed = 0;
@@ -236,7 +236,12 @@ pass("jsonServerEntrySchema tolerates unknown keys and DSH passthrough, rejects 
     profilesDir: join(relocated, "profiles")
   }, "user layer paths derive from the dsh home");
   assert.equal(profileMcpJsonFile(paths.profilesDir, "web"), join(relocated, "profiles", "web", "mcp.json"));
-  pass("dshHomeDir/dshHomeFor honour DSH_HOME with injection priority");
+  // profile 名校验：外部输入不得越出 profiles 目录
+  for (const ok of ["web", "headless", "a.b_c-1", "X9"]) assert.equal(isValidProfileName(ok), true, `${ok} is a valid profile name`);
+  for (const bad of ["", ".", "..", "../x", "a/b", String.raw`a\b`, "/abs", "-lead", ".hidden", "C:", "a b"]) {
+    assert.equal(isValidProfileName(bad), false, `${JSON.stringify(bad)} must be rejected`);
+  }
+  pass("dshHomeDir/dshHomeFor honour DSH_HOME with injection priority, profile names are validated");
 }
 
 // 17. rowNameOf：受管行 id 优先于 config.serverName（CLI 与装载器同口径）

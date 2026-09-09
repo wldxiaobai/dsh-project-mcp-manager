@@ -10,6 +10,7 @@
  */
 import { Context } from "@deepseek-ai/cordis";
 import { MCP_PLUGIN_NAME } from "./mcp-file.js";
+import { PROFILE_ENV } from "./dsh-paths.js";
 import { ProjectMcpRegistry, profileNameFromConfigPath } from "./registry.js";
 
 export const name = "dsh-project-mcp-manager";
@@ -17,8 +18,8 @@ export const name = "dsh-project-mcp-manager";
  *  保证构造时的 liveAgents 补扫能看到已恢复/已存在的会话。 */
 export const inject = ["tools", "agents"];
 
-/** 显式指定 profile 名的环境变量（覆盖自动解析；CLI/无 profile 启动场景用）。 */
-export const PROFILE_ENV = "DSH_MCP_PROFILE";
+/** 显式指定 profile 名的环境变量（实现在 dsh-paths.ts，registry 的校验共用）。 */
+export { PROFILE_ENV } from "./dsh-paths.js";
 
 export function apply(ctx: Context) {
   const registry = new ProjectMcpRegistry(ctx as any, {

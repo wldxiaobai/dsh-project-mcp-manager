@@ -41,7 +41,9 @@ import {
   DIAG_FILE,
   DSH_DIR,
   MCP_YML_FILE,
+  PROFILE_ENV,
   dshHomeDir,
+  isValidProfileName,
   profileMcpJsonFile,
   userLayerPathsIn,
   type UserLayerPaths
@@ -752,12 +754,29 @@ export class ProjectMcpRegistry {
    * 读用户层三个来源并刷新缓存：profile JSON（profile 名可解析时）、用户 yml、用户 JSON。
    * 坏条目/文件级错误只告警（无项目归属，不进逐项目 diag）。
    */
+  /**
+   * 当前 profile 名，并挡下不能安全拼进 profiles 目录的值：`DSH_MCP_PROFILE`
+   * 是外部输入，`../../somewhere` 会让 join 读到 profiles 目录之外。
+   * 不合法按「解析不出」降级（不读 profile 层），并按门控告警一次。
+   */
+  private async resolveActiveProfileName(): Promise<string | undefined> {
+    if (this.providers.activeProfile === undefined) return undefined;
+    // Promise.resolve 包一层：注入的 activeProfile 若同步抛错，裸 .catch 会先 TypeError。
+    const resolved = await Promise.resolve(this.providers.activeProfile()).catch(() => undefined);
+    if (resolved === undefined) return undefined;
+    if (isValidProfileName(resolved)) {
+      this.warnGated("profile\u0000name", "", () => {});
+      return resolved;
+    }
+    this.warnGated("profile\u0000name", resolved, () => {
+      this.ctx.logger.warn(`profile 名 ${JSON.stringify(resolved)} 不合法（只允许字母数字开头，其后字母数字与 . _ -），已跳过 profile 用户层；请检查 ${PROFILE_ENV} 或宿主 profile 路径`);
+    });
+    return undefined;
+  }
+
   private async readUserLayer(): Promise<void> {
     const paths = this.resolveUserLayerPaths();
-    // Promise.resolve 包一层：注入的 activeProfile 若同步抛错，裸 .catch 会先 TypeError。
-    this.activeProfileName = this.providers.activeProfile === undefined
-      ? undefined
-      : await Promise.resolve(this.providers.activeProfile()).catch(() => undefined);
+    this.activeProfileName = await this.resolveActiveProfileName();
     const yml = await this.readNativeRows(paths.mcpYml, "dsh-user-yml", false);
     const json = await readDshJsonFile(paths.mcpJson, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" });
     const profileJson = this.activeProfileName === undefined ? null : profileMcpJsonFile(paths.profilesDir, this.activeProfileName);
