@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { MCP_BLOCK_BEGIN, MCP_BLOCK_END, extractManagedRows, writeManagedRows } from "../lib/mcp-file.js";
+import { MCP_BLOCK_BEGIN, MCP_BLOCK_END, extractManagedRows, updateManagedRows, writeManagedRows } from "../lib/mcp-file.js";
 
 let passed = 0;
 function pass(name) {
@@ -68,6 +68,29 @@ try {
   assert.ok(next.includes("panel-mcp-demo2"), "managed block replaced");
   assert.equal(extractManagedRows(next).length, 1);
   pass("writeManagedRows keeps out-of-block !!js and swaps only the managed block");
+
+  // 7. updateManagedRows：锁内读-改-写，两个并发 add 都不丢行；mutate 抛错不改文件；
+  //    createIfMissing 只吃 ENOENT（受管块损坏必须上抛，不能当空文件覆盖）
+  const row = (name) => ({ id: "panel-mcp-" + name, name: "@deepseek-ai/dsh-mcp-client", config: { serverName: name, transport: "stdio", command: "node" } });
+  const concurrentPath = join(dir, "concurrent.yml");
+  await Promise.all([
+    updateManagedRows(concurrentPath, (rows) => [...rows, row("one")], { createIfMissing: true }),
+    updateManagedRows(concurrentPath, (rows) => [...rows, row("two")], { createIfMissing: true })
+  ]);
+  const names = extractManagedRows(await readFile(concurrentPath, "utf8")).map((r) => r.config.serverName);
+  names.sort();
+  assert.deepEqual(names, ["one", "two"], "concurrent adds both survive the lock: " + names.join(","));
+
+  const guardedPath = join(dir, "guarded.yml");
+  await updateManagedRows(guardedPath, () => [row("keep")], { createIfMissing: true });
+  const before = await readFile(guardedPath, "utf8");
+  await assert.rejects(() => updateManagedRows(guardedPath, () => { throw new Error("已存在"); }), /已存在/, "mutate errors propagate");
+  assert.equal(await readFile(guardedPath, "utf8"), before, "a throwing mutate leaves the file untouched");
+
+  const brokenPath = join(dir, "broken.yml");
+  await writeFile(brokenPath, MCP_BLOCK_BEGIN + "\n- insert:\n  - id: x\n   bad: [\n" + MCP_BLOCK_END + "\n", "utf8");
+  await assert.rejects(() => updateManagedRows(brokenPath, (rows) => rows, { createIfMissing: true }), /受管块/, "a corrupt managed block is not overwritten as if missing");
+  pass("updateManagedRows serializes concurrent edits and refuses to clobber unreadable files");
 } finally {
   await rm(dir, { recursive: true, force: true });
 }

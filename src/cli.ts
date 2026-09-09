@@ -15,7 +15,7 @@
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { mkdir, readdir } from "node:fs/promises";
-import { extractManagedRows, readPatchFile, writeManagedRows, type PatchRow } from "./mcp-file.js";
+import { extractManagedRows, readPatchFile, updateManagedRows, type PatchRow } from "./mcp-file.js";
 import { mcpServerInputSchema, patchRowToView, rowNameOf, toPatchRow, type McpServerInput } from "./model.js";
 import { CC_PROJECT_FILE, IGNORE_MCP_JSON_ENV, JSON_MCP_FILE, mcpJsonLayerEnabled, readDshJsonFile, readMcpJsonFile, type JsonReadResult, type McpRowSource, type SourcedRow } from "./json-file.js";
 import { MCP_YML_FILE, dshHomeFor, profileMcpJsonFile, userLayerPathsIn } from "./dsh-paths.js";
@@ -479,9 +479,15 @@ async function cmdAdd(parsed: ParsedArgs, rest: string[], io: CliIo, deps: CliDe
       return fail(io, error instanceof Error ? error.message : String(error));
     }
   } else {
-    const rows = extractManagedRows(await readPatchFile(targetFile.path).catch(() => "[]"));
-    await mkdir(dirname(targetFile.path), { recursive: true });
-    await writeManagedRows(targetFile.path, [...rows, toPatchRow(serverInput)], { createIfMissing: true });
+    try {
+      // 锁内读-改-写：并发 add 不丢行；判重放进 mutate 里按锁内最新内容判定。
+      await updateManagedRows(targetFile.path, (rows) => {
+        if (rows.some((row) => rowNameOf(row) === name)) throw new Error(`"${name}" 已存在于 ${targetFile.path}`);
+        return [...rows, toPatchRow(serverInput)];
+      }, { createIfMissing: true });
+    } catch (error) {
+      return fail(io, error instanceof Error ? error.message : String(error));
+    }
   }
   io.out(`已添加 ${parsed.transport === "stdio" ? "stdio" : "http"} 服务器 "${name}" → ${targetFile.path}`);
   io.out("运行中的 dsh 会话会经文件监听自动收敛（宿主未运行时下次启动生效）。");
@@ -589,8 +595,8 @@ async function removeFromTarget(target: WriteTarget, name: string, io: CliIo): P
         delete servers[name];
       });
     } else {
-      const rows = extractManagedRows(await readPatchFile(target.path));
-      await writeManagedRows(target.path, rows.filter((row) => rowNameOf(row) !== name));
+      // 锁内读-改-写：与并发 add 串行，不会把对方刚写的行覆盖掉。
+      await updateManagedRows(target.path, (rows) => rows.filter((row) => rowNameOf(row) !== name));
     }
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
