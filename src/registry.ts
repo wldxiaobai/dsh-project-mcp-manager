@@ -200,7 +200,9 @@ export interface ProjectChangePlan {
 function canonicalConfig(config: Record<string, unknown> | undefined): string {
   return JSON.stringify(config ?? null, (key, value) => {
     if (value !== null && typeof value === "object" && !Array.isArray(value)) {
-      return Object.keys(value).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).reduce((acc: Record<string, unknown>, k) => {
+      const keys = Object.keys(value);
+      keys.sort();
+      return keys.reduce((acc: Record<string, unknown>, k) => {
         acc[k] = (value as Record<string, unknown>)[k];
         return acc;
       }, {});
@@ -355,10 +357,9 @@ function classifyShadow(item: SourcedRow, winner: SourcedRow, buckets: ShadowBuc
 
 /** 剔除集签名：排序后逐条 name\0winner\0reason 拼接，供「集合变了才告警」比较。 */
 function identityShadowSignature(shadows: IdentityShadow[]): string {
-  return shadows
-    .map((shadow) => shadow.name + "\u0000" + shadow.winner + "\u0000" + shadow.reason)
-    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
-    .join("\u0001");
+  const entries = shadows.map((shadow) => shadow.name + "\u0000" + shadow.winner + "\u0000" + shadow.reason);
+  entries.sort();
+  return entries.join("\u0001");
 }
 
 /** 单行三键先到先得：命中已有影子键则归因剔除，否则注册进影子表（disabled 占名行也注册）。 */
@@ -609,7 +610,8 @@ export class ProjectMcpRegistry {
 
   private async syncWatcher() {
     const roots = await this.knownProjects();
-    const keys = roots.map((root) => projectKeyOf(root)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    const keys = roots.map((root) => projectKeyOf(root));
+    keys.sort();
     const same = this.watchedFiles.length === keys.length && keys.every((key, index) => key === this.watchedFiles[index]);
     if (same) return;
     const old = this.watcher;
@@ -726,8 +728,10 @@ export class ProjectMcpRegistry {
   private async syncUserWatcher(): Promise<void> {
     const paths = this.resolveUserLayerPaths();
     const targets = [paths.mcpYml, paths.mcpJson, ...(this.userLayer.profileJson === null ? [] : [this.userLayer.profileJson])];
-    // 码元序显式比较器：排序只用于跨轮次相等性比较，须与 locale 无关保持稳定。
-    const keys = targets.map((target) => normalizePathKey(target)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    // 排序只用于跨轮次相等性比较，须与 locale 无关保持稳定：Array#sort 默认即按 UTF-16
+    // 码元序比较字符串（不经 locale .collator），无需手搓比较器。
+    const keys = targets.map((target) => normalizePathKey(target));
+    keys.sort();
     const same = this.userWatchedPaths.length === keys.length && keys.every((key, index) => key === this.userWatchedPaths[index]);
     if (same) return;
     const old = this.userWatcher;
