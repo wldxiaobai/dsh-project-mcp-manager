@@ -55,7 +55,7 @@ dsh plugin --profile web add dsh-project-mcp-manager@latest
 
 # Install a specific version (check available versions with
 # npm view dsh-project-mcp-manager versions)
-dsh plugin --profile web add dsh-project-mcp-manager@0.2.0
+dsh plugin --profile web add dsh-project-mcp-manager@0.4.2
 ```
 
 **Option 2: install directly with pnpm** (equivalent to option 1):
@@ -82,7 +82,7 @@ pnpm add link:<path-to-your-dsh-mcp-project-source>   # e.g. D:\dev\dsh-mcp-proj
 > trigger the bundle reconcile.
 
 **Upgrading / pinning versions**: re-run the `add` command from option 1 with
-the desired version suffix — `@latest` upgrades to the newest release, `@0.2.0`
+the desired version suffix — `@latest` upgrades to the newest release, `@0.4.2`
 pins to a specific version.
 
 ## Build & test

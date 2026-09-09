@@ -48,7 +48,7 @@ npm install -g deepseek-ai/dsh         # 或从 GitHub 源码安装
 dsh plugin --profile web add dsh-project-mcp-manager@latest
 
 # 安装指定版本（版本号可先 npm view dsh-project-mcp-manager versions 查看）
-dsh plugin --profile web add dsh-project-mcp-manager@0.2.0
+dsh plugin --profile web add dsh-project-mcp-manager@0.4.2
 ```
 
 **方式二：直接 pnpm 安装**（与方式一等价）：
@@ -73,7 +73,7 @@ pnpm add link:<你的 dsh-mcp-project 源码目录>   # 例如 D:\dev\dsh-mcp-pr
 > bundle reconcile。
 
 **升级/锁定版本**：重跑方式一的 `add` 命令并带上目标版本后缀——`@latest`
-升级到最新，`@0.2.0` 锁定到指定版本。
+升级到最新，`@0.4.2` 锁定到指定版本。
 
 ## 构建与测试
 
