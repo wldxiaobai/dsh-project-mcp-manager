@@ -21,6 +21,7 @@
 设计与发布记录（中文）：[dsh 0.1.5-rc.1 适配记录](design/adaptation-dsh-0.1.5-rc1.md) ·
 [dsh 0.1.2-rc.1 适配记录](design/adaptation-dsh-0.1.2-rc1.md) ·
 [JSON 配置层设计提案](design/proposal-json-mcp-config.md) ·
+[v0.4.3 发布说明](releases/v0.4.3.md) ·
 [v0.4.2 发布说明](releases/v0.4.2.md) ·
 [v0.4.1 发布说明](releases/v0.4.1.md) ·
 [v0.4.0 发布说明](releases/v0.4.0.md) ·

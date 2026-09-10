@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-09-10
+
+Host-alignment release for dsh 0.1.5-rc.1. **No user-visible behaviour
+changes** — configuration format, mount semantics, deny isolation and CLI
+output are unchanged. The published 0.4.2 range could not resolve the
+host's prerelease client.
+
+### Changed
+
+- **Align `@deepseek-ai/dsh-mcp-client` with dsh 0.1.5-rc.1.** Specifier
+  `^0.1.2-rc.1` cannot resolve a `0.1.5-rc.*` prerelease (npm semver keeps
+  prereleases on the same major.minor.patch tuple), so the plugin was still
+  loading its own 0.1.2-rc.1 copy and 0.1.2-rc.1 peers inside a 0.1.5-rc.1
+  host. The range is now `^0.1.5-rc.1`. pnpm 12 wrote
+  `pnpm-workspace.yaml` `minimumReleaseAgeExclude` for the new rc peers so
+  the supply-chain age gate does not block them.
+
 ## [0.4.2] - 2026-09-10
 
 Code-quality release: clears all 15 findings that held the PR #7 Sonar gate at
@@ -534,7 +551,8 @@ carry an explicit `type`.
 Security note: `stdio` lines in `.dsh/mcp.yml` spawn their `command` inside the dsh host
 process, so project files are executable-code carriers — add them only in trusted projects.
 
-[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.2...HEAD
+[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.3.1...v0.4.0

@@ -2,7 +2,7 @@
 
 ## 项目概览
 
-`dsh-project-mcp-manager`（v0.4.2）是一个 **DSH 插件**（无 UI）：为每个项目自动装载 MCP 服务器。项目配置放 `<projectRoot>/.dsh/mcp.yml`（原生受管块）或 `<projectRoot>/.dsh/mcp.json`（JSON 方言），dsh 会话在该项目开启时自动经 `@deepseek-ai/dsh-mcp-client` 装载，文件改动热重载，工具可见性按会话 cwd 隔离。用户层（`~/.dsh/mcp.yml`、`~/.dsh/mcp.json`、`~/.dsh/profiles/<name>/mcp.json`）为**全局装载**（宿主级一条连接）。遗留 Claude Code 项目文件 `<projectRoot>/.mcp.json` 只读兼容；`~/.claude.json` 自 v0.4.0 起不再读取。`dsh-mcp` CLI 可写原生 yml 或 DSH JSON。
+`dsh-project-mcp-manager`（v0.4.3）是一个 **DSH 插件**（无 UI）：为每个项目自动装载 MCP 服务器。项目配置放 `<projectRoot>/.dsh/mcp.yml`（原生受管块）或 `<projectRoot>/.dsh/mcp.json`（JSON 方言），dsh 会话在该项目开启时自动经 `@deepseek-ai/dsh-mcp-client` 装载，文件改动热重载，工具可见性按会话 cwd 隔离。用户层（`~/.dsh/mcp.yml`、`~/.dsh/mcp.json`、`~/.dsh/profiles/<name>/mcp.json`）为**全局装载**（宿主级一条连接）。遗留 Claude Code 项目文件 `<projectRoot>/.mcp.json` 只读兼容；`~/.claude.json` 自 v0.4.0 起不再读取。`dsh-mcp` CLI 可写原生 yml 或 DSH JSON。
 
 - 语言：TypeScript（ESM，`"type": "module"`），`target ES2022` / `module NodeNext`，`strict: true`（`noImplicitAny: false`）。
 - 编译产物：`src/` → `lib/`（`main: lib/index.js`）。
@@ -23,7 +23,7 @@
 - `src/dsh-paths.ts`：dsh 家目录与用户层路径的唯一解析口径（registry 与 CLI 共用）。`dshHomeDir(home, env)`（`DSH_HOME` 非空则 `resolve` 它，否则 `<home>/.dsh`）、`dshHomeFor(home|undefined, env)`（**注入的 home 优先于 env**，测试才能隔离真实用户配置）、`userLayerPathsIn(dshHome)`（`mcp.yml`/`mcp.json`/`profiles`）、`profileMcpJsonFile(profilesDir, profile)`、`isValidProfileName`（`PROFILE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/`，显式拒绝 `.`/`..`）、常量 `DSH_HOME_ENV`/`PROFILE_ENV`/`DSH_DIR`/`MCP_YML_FILE`/`DIAG_FILE`。
 - `test/`：`test-model.mjs`、`test-mcp-file.mjs`、`test-json-file.mjs`、`test-json-write.mjs`、`test-registry.mjs`、`test-cli.mjs`（node 直接跑，无测试框架）。
 - `README.md` / `docs/README.zh.md`：项目介绍、安装/构建、工作原理与安全边界（中英双版，各自链接同语言文档）。
-- `docs/`：按用途分目录——`guide/`（功能文档中英双版：`format.md`/`.zh.md` 配置格式、`layers.md`/`.zh.md` 六层来源与影子优先序、`env-expansion.md`/`.zh.md` `${VAR}` 展开、`cli.md`/`.zh.md` `dsh-mcp` CLI）、`releases/`（`v0.3.1.md`、`v0.4.0.md`、`v0.4.1.md`、`v0.4.2.md` 发布说明）、`design/`（`adaptation-dsh-0.1.5-rc1.md` / `adaptation-dsh-0.1.2-rc1.md` 宿主适配记录、`proposal-json-mcp-config.md` JSON 层设计提案）；`docs/README.zh.md` 为中文 README。
+- `docs/`：按用途分目录——`guide/`（功能文档中英双版：`format.md`/`.zh.md` 配置格式、`layers.md`/`.zh.md` 六层来源与影子优先序、`env-expansion.md`/`.zh.md` `${VAR}` 展开、`cli.md`/`.zh.md` `dsh-mcp` CLI）、`releases/`（`v0.3.1.md`、`v0.4.0.md`、`v0.4.1.md`、`v0.4.2.md`、`v0.4.3.md` 发布说明）、`design/`（`adaptation-dsh-0.1.5-rc1.md` / `adaptation-dsh-0.1.2-rc1.md` 宿主适配记录、`proposal-json-mcp-config.md` JSON 层设计提案）；`docs/README.zh.md` 为中文 README。
 - `CHANGELOG.md`：版本变更记录（`[Unreleased]` 起累积）。
 
 ## 常用命令
