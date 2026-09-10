@@ -21,8 +21,10 @@ Feature documentation lives in `docs/`, English and Chinese side by side:
   its diagnostics.
 - [CLI `dsh-mcp`](docs/guide/cli.md) — scopes, write formats, ownership contract.
 
-Design and release records (Chinese): [dsh 0.1.2-rc.1 adaptation](docs/design/adaptation-dsh-0.1.2-rc1.md) ·
+Design and release records (Chinese): [dsh 0.1.5-rc.1 adaptation](docs/design/adaptation-dsh-0.1.5-rc1.md) ·
+[dsh 0.1.2-rc.1 adaptation](docs/design/adaptation-dsh-0.1.2-rc1.md) ·
 [JSON config layer proposal](docs/design/proposal-json-mcp-config.md) ·
+[v0.4.3 release notes](docs/releases/v0.4.3.md) ·
 [v0.4.2 release notes](docs/releases/v0.4.2.md) ·
 [v0.4.1 release notes](docs/releases/v0.4.1.md) ·
 [v0.4.0 release notes](docs/releases/v0.4.0.md) ·
