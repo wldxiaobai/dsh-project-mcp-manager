@@ -31,8 +31,8 @@ user/profile 为 `""`（宿主目录）；`-c` 显式覆盖。
 **`status`** 读取六层来源文件与诊断文件（`<项目根>/.dsh/.mcp-diag.json` 与
 `$DSH_HOME/.mcp-diag.json`）：打印每层行数与名称，再打印最近一次对账的
 `summary`（已装载 / 跳过原因 / 不健康行 / 工具预算）。不连接宿主内存；宿主从未对账
-时文件不存在，命令会说明空态。`--scope project|user` 只过滤层列表，两份
-诊断文件仍都会展示。
+时文件不存在，命令会说明空态。`--scope project|user` 同时过滤层列表与诊断文件
+（项目 `.dsh/.mcp-diag.json` 对 `project`，`$DSH_HOME/.mcp-diag.json` 对 `user`）。
 
 **`import`** 把 `{"mcpServers":{...}}` 写入原生 yml 或 JSON（`--scope` /
 `--format` / `--profile` 与 `add` 相同，缺省作用域为 **project**）。同名默认

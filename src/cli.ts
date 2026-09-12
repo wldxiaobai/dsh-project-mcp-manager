@@ -983,8 +983,12 @@ async function cmdStatus(parsed: ParsedArgs, io: CliIo, deps: CliDeps): Promise<
     if (layer.note !== undefined) listed += 1;
   }
   const projectRoot = await resolveProjectRootFor(deps);
-  const printedProject = await printDiagStatus(join(projectRoot, ".dsh", DIAG_FILE), io);
-  const printedGlobal = await printDiagStatus(join(dshHomeOf(deps), DIAG_FILE), io);
+  const printedProject = parsed.scope === "user" || parsed.scope === "profile"
+    ? false
+    : await printDiagStatus(join(projectRoot, ".dsh", DIAG_FILE), io);
+  const printedGlobal = parsed.scope === "project"
+    ? false
+    : await printDiagStatus(join(dshHomeOf(deps), DIAG_FILE), io);
   if (listed === 0 && !printedProject && !printedGlobal) {
     io.out("未配置 MCP 服务器；尚无运行时诊断（宿主未运行或零配置）。");
   }

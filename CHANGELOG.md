@@ -47,6 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   drop keys that are no longer known.
 - `projectMcp.serverView` is typed as the same runtime view as `snapshot`
   rows (`McpServerRuntimeView`), still an unstable API.
+- `dsh-mcp status --scope project|user` prints only that scope's diagnostic
+  file, matching the layer list filter.
 
 ## [0.6.0] - 2026-09-12
 

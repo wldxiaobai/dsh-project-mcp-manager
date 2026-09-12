@@ -475,6 +475,27 @@ try {
       assert.ok(text.includes("不健康：fs"), "status names the unhealthy row: " + text);
       assert.ok(text.includes("不健康：dead (give-up)"), "status names give-up rows: " + text);
       assert.ok(text.includes("工具预算：heavy 240 个工具"), "status surfaces tool budget: " + text);
+      await mkdir(join(statusHome, ".dsh"), { recursive: true });
+      await writeFile(join(statusHome, ".dsh", ".mcp-diag.json"), JSON.stringify({
+        summary: {
+          at: "2026-01-01T00:00:00.000Z",
+          rows: 1,
+          mounted: 0,
+          skippedByReason: {},
+          unhealthy: [{ name: "user-dead", reason: "give-up" }]
+        },
+        events: []
+      }), "utf8");
+      const capProject = io();
+      assert.equal(await runCli(["status", "--scope", "project"], capProject.io, statusDeps), 0);
+      const projectText = capProject.lines.join("\n");
+      assert.ok(projectText.includes("不健康：fs"), "project scope still prints project diag: " + projectText);
+      assert.ok(!projectText.includes("user-dead"), "project scope hides global diag: " + projectText);
+      const capUser = io();
+      assert.equal(await runCli(["status", "--scope", "user"], capUser.io, statusDeps), 0);
+      const userText = capUser.lines.join("\n");
+      assert.ok(userText.includes("user-dead"), "user scope prints global diag: " + userText);
+      assert.ok(!userText.includes("不健康：fs"), "user scope hides project diag: " + userText);
       pass("cli status shows empty state, layer rows, and diagnostic skip reasons");
     } finally {
       await rm(statusDir, { recursive: true, force: true });
