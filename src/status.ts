@@ -7,5 +7,9 @@ export function mcpToolCount(ctx: any, serverName: string): number {
   if (tools === undefined || typeof tools.schemas !== "function") return 0;
   const prefix = `mcp__${serverName}__`;
   const schemas = tools.schemas();
-  return Array.isArray(schemas) ? schemas.filter((schema) => typeof schema?.name === "string" && schema.name.startsWith(prefix)).length : 0;
+  if (!Array.isArray(schemas)) return 0;
+  return schemas.filter((schema) => {
+    const id = typeof schema?.id === "string" ? schema.id : typeof schema?.name === "string" ? schema.name : "";
+    return id.startsWith(prefix);
+  }).length;
 }

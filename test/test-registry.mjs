@@ -1134,5 +1134,104 @@ try {
   await rmRetry(dir);
 }
 
+{
+  const dirH = await mkdtemp(join(tmpdir(), "dsh-mcp-health-"));
+  const homeH = join(dirH, "home");
+  const projH = join(dirH, "proj");
+  await mkdir(join(homeH, ".dsh"), { recursive: true });
+  await mkdir(projH, { recursive: true });
+  const savedCwd = process.cwd();
+  try {
+    process.chdir(dirH);
+    await writeManagedRows(projectMcpFile(projH), [stdioRow("alive")], { createIfMissing: true });
+    const ctxH = fakeCtx();
+    const registryH = new ProjectMcpRegistry(ctxH, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(homeH, ".dsh", "mcp.yml"), mcpJson: join(homeH, ".dsh", "mcp.json"), profilesDir: join(homeH, ".dsh", "profiles") },
+      healthRemountBackoffMs: 0
+    });
+    ctxH.agentsList.push(fakeAgent("session-h", projH));
+    await registryH.reconcileNow();
+    assert.equal(ctxH.mounts.length, 1, "initial mount");
+    const reads1 = registryH.debugConfigReadCount;
+    await registryH.reconcileNow();
+    assert.equal(registryH.debugConfigReadCount, reads1, "unchanged files skip reread");
+    const effective = ctxH.mounts[0].serverName;
+    ctxH.schemas.push({ id: "mcp__" + effective + "__ping" });
+    await registryH.reconcileNow();
+    ctxH.schemas.length = 0;
+    await registryH.reconcileNow();
+    assert.equal(ctxH.disposals.length, 1, "dead connection is unmounted once");
+    assert.equal(ctxH.mounts.length, 2, "dead connection is remounted once");
+    const diagH = await readDiag(projH);
+    assert.ok(diagH.some((row) => row.kind === "remount" && row.attempt === 1), "remount diag: " + JSON.stringify(diagH.slice(-4)));
+    await registryH.reconcileNow();
+    await registryH.reconcileNow();
+    await registryH.reconcileNow();
+    assert.ok(ctxH.mounts.length >= 4, "three remounts then stop: " + ctxH.mounts.length);
+    const diagGive = await readDiag(projH);
+    assert.ok(diagGive.some((row) => row.kind === "give-up"), "give-up after remount limit: " + JSON.stringify(diagGive.slice(-6)));
+    const mountsAtGiveUp = ctxH.mounts.length;
+    await registryH.reconcileNow();
+    assert.equal(ctxH.mounts.length, mountsAtGiveUp, "give-up stops further remounts");
+    await writeManagedRows(projectMcpFile(projH), [{ ...stdioRow("alive"), config: { ...stdioRow("alive").config, args: ["srv-alive-2.js"] } }]);
+    await registryH.reconcileNow();
+    assert.ok(registryH.debugConfigReadCount > reads1, "fingerprint change rereads files");
+    for (const disposer of ctxH.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    pass("registry remounts dead connections, gives up after the limit, and skips reread when fingerprints match");
+
+    const dirD = await mkdtemp(join(tmpdir(), "dsh-mcp-disabled-"));
+    const projD = join(dirD, "proj");
+    await mkdir(projD, { recursive: true });
+    await writeManagedRows(projectMcpFile(projD), [{ ...stdioRow("off"), disabled: true }], { createIfMissing: true });
+    const ctxD = fakeCtx();
+    const registryD = new ProjectMcpRegistry(ctxD, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(dirD, "home", ".dsh", "mcp.yml"), mcpJson: join(dirD, "home", ".dsh", "mcp.json"), profilesDir: join(dirD, "home", ".dsh", "profiles") },
+      healthRemountBackoffMs: 0
+    });
+    ctxD.agentsList.push(fakeAgent("session-d", projD));
+    await registryD.reconcileNow();
+    assert.equal(ctxD.mounts.length, 0, "disabled rows never mount");
+    await registryD.reconcileNow();
+    assert.equal(ctxD.mounts.length, 0, "health remount does not revive disabled rows");
+    for (const disposer of ctxD.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    await rmRetry(dirD);
+    pass("registry health remount never revives disabled rows");
+
+    const dirZ = await mkdtemp(join(tmpdir(), "dsh-mcp-nevertools-"));
+    const projZ = join(dirZ, "proj");
+    await mkdir(projZ, { recursive: true });
+    await writeManagedRows(projectMcpFile(projZ), [stdioRow("quiet")], { createIfMissing: true });
+    const ctxZ = fakeCtx();
+    const registryZ = new ProjectMcpRegistry(ctxZ, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(dirZ, "home", ".dsh", "mcp.yml"), mcpJson: join(dirZ, "home", ".dsh", "mcp.json"), profilesDir: join(dirZ, "home", ".dsh", "profiles") },
+      healthRemountBackoffMs: 0
+    });
+    ctxZ.agentsList.push(fakeAgent("session-z", projZ));
+    await registryZ.reconcileNow();
+    await registryZ.reconcileNow();
+    await registryZ.reconcileNow();
+    assert.equal(ctxZ.mounts.length, 1, "a server that never had tools is not remounted");
+    assert.equal(ctxZ.disposals.length, 0);
+    for (const disposer of ctxZ.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    await rmRetry(dirZ);
+    pass("registry does not remount servers that never exposed tools");
+  } finally {
+    process.chdir(savedCwd);
+    await rmRetry(dirH);
+  }
+}
+
 console.log("\n" + passed + " passed, 0 failed");
 console.log("ALL PROJECT REGISTRY TESTS PASSED");

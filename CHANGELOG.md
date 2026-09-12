@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   yml or JSON file. Same-name keys are skipped unless `--overwrite`;
   `--dry-run` previews shadow conflicts without writing. VS Code `servers`
   objects and bare entries/arrays are rejected.
+- Connection health remount: after a server has exposed tools, a later
+  `mcpToolCount === 0` triggers unmount-then-mount (max 3, then `give-up`).
+  `disabled: true` / `enabled: false` rows are never revived. Unchanged
+  config fingerprints (`mtimeMs+size`) skip file rereads but still run
+  remount, deny sweep and diag summaries.
 
 - `package.json` discovery fields: `repository`, `bugs`, and `homepage` point at
   https://github.com/wldxiaobai/dsh-project-mcp-manager so npm and GitHub can
