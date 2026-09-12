@@ -34,12 +34,18 @@ export const FOREIGN_MCP_JSON_FILE = "dsh-mcp.json";
 export const FOREIGN_MCP_FORMAT_HINT =
   "该文件疑似 @wingsky-1/dsh-mcp-manager 的存储格式（{version, servers}），本插件不读取。建议改用 mcpServers 方言，或改用 .dsh/mcp.yml";
 
+/** 对方文件名里误写了本插件 `mcpServers`：不装载，提示改用 mcp.json。 */
+export const FOREIGN_MCP_WRONG_FILE_HINT =
+  "该文件名为 dsh-mcp.json（@wingsky-1/dsh-mcp-manager 的全局存储），本插件不从此路径装载。请把 mcpServers 写到 mcp.json";
+
 /**
- * 检测对方插件的存储格式。`mcpServers` 一旦存在（即便同时有 `servers`）就不告警——
- * 那是本插件方言。缺 `mcpServers` 且顶层是 `servers` 数组，或同时有 `version` 与
- * `servers`，才认定为对方格式。
+ * 检测对方插件的存储格式。本插件方言文件（mcp.json / .mcp.json）里一旦有
+ * `mcpServers`（即便同时有 `servers`）就不告警。对方文件名 `dsh-mcp.json`
+ * 即使写了 `mcpServers` 也不装载，并提示改用 mcp.json。缺 `mcpServers` 且顶层
+ * 是 `servers` 数组，或同时有 `version` 与 `servers`，认定为对方格式。
  */
-export function detectForeignMcpFormat(value: Record<string, unknown>): string | undefined {
+export function detectForeignMcpFormat(value: Record<string, unknown>, fileName?: string): string | undefined {
+  if (fileName === FOREIGN_MCP_JSON_FILE && "mcpServers" in value) return FOREIGN_MCP_WRONG_FILE_HINT;
   if ("mcpServers" in value) return undefined;
   const servers = value.servers;
   if (Array.isArray(servers) || ("version" in value && servers !== undefined)) return FOREIGN_MCP_FORMAT_HINT;
@@ -295,8 +301,11 @@ export async function readJsonRows(path: string, options: JsonReadOptions): Prom
   if (result.missing === true) return { rows: [], entryErrors: [] };
   if (result.error !== undefined) return { rows: [], entryErrors: [], fileError: `${label} ${result.error}` };
   if (!isPlainObject(result.value)) return { rows: [], entryErrors: [], fileError: `${label} 顶层必须是 JSON 对象` };
+  const formatHint = detectForeignMcpFormat(result.value, label);
+  if (label === FOREIGN_MCP_JSON_FILE && "mcpServers" in result.value) {
+    return { rows: [], entryErrors: [], formatHint };
+  }
   if (!("mcpServers" in result.value)) {
-    const formatHint = detectForeignMcpFormat(result.value);
     if (options.requireMcpServers === true) {
       return {
         rows: [],

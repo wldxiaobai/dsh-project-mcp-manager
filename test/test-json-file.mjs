@@ -220,6 +220,11 @@ try {
   assert.match((await readDshJsonFile(pServersOnly, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" })).formatHint ?? "", /servers/);
   const pTheme = await write("theme.json", JSON.stringify({ theme: "dark" }));
   assert.equal((await readDshJsonFile(pTheme, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" })).formatHint, undefined, "unrelated JSON stays a silent empty layer");
+  const pWrongFile = await write("dsh-mcp.json", JSON.stringify({ mcpServers: { sneak: { command: "node" } } }));
+  const rWrongFile = await readDshJsonFile(pWrongFile, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" });
+  assert.equal(rWrongFile.rows.length, 0, "mcpServers in dsh-mcp.json must not load");
+  assert.match(rWrongFile.formatHint ?? "", /dsh-mcp\.json/);
+  assert.match(rWrongFile.formatHint ?? "", /mcp\.json/);
   pass("foreign {version, servers} format is diagnosed; mcpServers coexistence is silent");
 
   const pTools = await write("tools.json", JSON.stringify({

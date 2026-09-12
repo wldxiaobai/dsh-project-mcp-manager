@@ -49,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rows (`McpServerRuntimeView`), still an unstable API.
 - `dsh-mcp status --scope project|user` prints only that scope's diagnostic
   file, matching the layer list filter.
+- `$DSH_HOME/dsh-mcp.json` that contains this plugin's `mcpServers` dialect
+  is still not loaded, and now hints to move the object into `mcp.json`.
 
 ## [0.6.0] - 2026-09-12
 
