@@ -3,15 +3,22 @@
 English | [中文](docs/README.zh.md)
 
 A project-level MCP auto-loading plugin for DSH: write MCP server configs in
-`<projectRoot>/.dsh/mcp.yml` and they are mounted automatically (via the
-official `@deepseek-ai/dsh-mcp-client`) whenever a dsh session opens in that
-project. Changes to the file hot-reload into the running dsh process, and tool
-visibility is scoped per session cwd. No UI — core functionality only.
+`<projectRoot>/.dsh/mcp.yml` or `.dsh/mcp.json` and they are mounted
+automatically (via the official `@deepseek-ai/dsh-mcp-client`) whenever a dsh
+session opens in that project. Changes to the file hot-reload into the running
+dsh process, and tool visibility is scoped per session cwd. No UI — core
+functionality only.
 
 **Capability boundary**: this plugin = official `@deepseek-ai/dsh-mcp-client`
 transports + six-layer source governance + per-session isolation.
 **Transport types are decided by the official client**; this plugin does not
 implement MCP transports.
+
+If this plugin is useful, a GitHub
+[star](https://github.com/wldxiaobai/dsh-project-mcp-manager) is appreciated.
+Bugs, host mismatches, or ideas belong in
+[Issues](https://github.com/wldxiaobai/dsh-project-mcp-manager/issues) — even a
+short report helps.
 
 ## Documentation
 
