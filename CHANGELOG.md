@@ -45,6 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Config fingerprints reuse the signature from the skip check instead of
   statting files twice. Per-project `idleSince` / `lastScanDesired` tables
   drop keys that are no longer known.
+- `projectMcp.serverView` is typed as the same runtime view as `snapshot`
+  rows (`McpServerRuntimeView`), still an unstable API.
 
 ## [0.6.0] - 2026-09-12
 

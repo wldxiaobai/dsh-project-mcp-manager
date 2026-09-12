@@ -79,7 +79,8 @@ import {
   rowNameOf,
   toOfficialConfig,
   toolFilterFromConfig,
-  type McpScopeInfo
+  type McpScopeInfo,
+  type McpServerView
 } from "./model.js";
 import { mcpToolBudgetStats, mcpToolCount, parseToolBudgetWarn } from "./status.js";
 
@@ -159,13 +160,23 @@ export interface ProjectServerState {
   error?: string;
 }
 
+export type FiberPhaseView = "loading" | "active" | "failed" | "unloading" | "pending" | null;
+
+/** snapshot / serverView 的行级脱敏 view（不承诺稳定）。 */
+export interface McpServerRuntimeView extends McpServerView {
+  source?: McpRowSource;
+  fiberPhase: FiberPhaseView;
+  skipReason: string | null;
+  toolCount: number;
+}
+
 /** 一个项目的文件级状态（snapshot() 用）。 */
 export interface ProjectFileState {
   project: string;
   path: string;
   ok: boolean;
   error: string | null;
-  servers: any[];
+  servers: McpServerRuntimeView[];
   /** 分区作用域：workspace=项目层文件，global=用户层文件。缺省 workspace。 */
   kind?: "workspace" | "global";
   /** 该分区的配置来源方言。 */
@@ -505,7 +516,7 @@ function mergeOneRow(item: SourcedRow, byName: Map<string, SourcedRow>, byNorm: 
 }
 
 /** fiberPhase 展示推导：未装载时 disabled 占名→null、否则 pending；已装载且本分区拥有该实例才给生命周期枚举。 */
-function fiberPhaseFor(state: ProjectServerState | undefined, row: PatchRow, owned: boolean): unknown {
+function fiberPhaseFor(state: ProjectServerState | undefined, row: PatchRow, owned: boolean): FiberPhaseView {
   if (state === undefined) return row.disabled === true ? null : "pending";
   return owned ? phaseToFiberPhase(state.phase) : null;
 }
@@ -2036,7 +2047,7 @@ export class ProjectMcpRegistry {
   }
 
   /** 行级 view；未装载时 phase 按行状态推导。行查找按影子优先序逐层进行。 */
-  async serverView(projectRoot: string, rawName: string): Promise<any | undefined> {
+  async serverView(projectRoot: string, rawName: string): Promise<McpServerRuntimeView | undefined> {
     const key = projectKeyOf(projectRoot);
     const state = this.projects.get(key)?.servers.get(rawName) ?? this.globalServers.get(rawName);
     const located = await this.locateRow(projectRoot, rawName, state);
@@ -2177,8 +2188,8 @@ export class ProjectMcpRegistry {
   }
 
   /** 一个来源分区的服务器 view 列表；state 只认同来源装载实例（异来源=被遮蔽）。 */
-  private partitionServers(entry: ProjectEntry, key: string, rows: PatchRow[], source: McpRowSource): any[] {
-    const out: any[] = [];
+  private partitionServers(entry: ProjectEntry, key: string, rows: PatchRow[], source: McpRowSource): McpServerRuntimeView[] {
+    const out: McpServerRuntimeView[] = [];
     for (const row of rows) {
       const rawName = rowNameOf(row);
       if (rawName === undefined) continue;

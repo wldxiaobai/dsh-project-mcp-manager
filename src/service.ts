@@ -5,7 +5,7 @@
  * `serverView` / `globalState` 只读内存态，不触发对账；`reload` 才跑一次
  * reconcileAll。插件原有导出（`inject`、`globalNames()`、`activeProfile()`）不变。
  */
-import type { ProjectFileState, ProjectMcpRegistry, ProjectServerState } from "./registry.js";
+import type { McpServerRuntimeView, ProjectFileState, ProjectMcpRegistry, ProjectServerState } from "./registry.js";
 
 /** cordis 服务名；经 `ctx.provide` / `ctx.get` / `ctx.projectMcp` 取用。 */
 export const PROJECT_MCP_SERVICE = "projectMcp";
@@ -13,7 +13,7 @@ export const PROJECT_MCP_SERVICE = "projectMcp";
 export interface ProjectMcpService {
   /** 只读内存快照；不触发对账。 */
   snapshot(): Promise<ProjectFileState[]>;
-  serverView(projectRoot: string, rawName: string): Promise<unknown>;
+  serverView(projectRoot: string, rawName: string): Promise<McpServerRuntimeView | undefined>;
   globalState(rawName: string): ProjectServerState | undefined;
   /** 触发一次全量对账（等同 `registry.reconcileNow()`）。 */
   reload(): Promise<void>;
