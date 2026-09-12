@@ -2,13 +2,18 @@
 
 [English](../README.md) | 中文
 
-项目级 MCP 自动加载插件：在项目根 `<projectRoot>/.dsh/mcp.yml` 写入 MCP
-服务器配置，在该项目开启 dsh 会话时自动装载（经官方
+项目级 MCP 自动加载插件：在项目根 `<projectRoot>/.dsh/mcp.yml` 或
+`.dsh/mcp.json` 写入 MCP 服务器配置，在该项目开启 dsh 会话时自动装载（经官方
 `@deepseek-ai/dsh-mcp-client`），文件改动热重载到运行中的 dsh 进程，并按
 会话 cwd 控制工具可见性。无 UI，仅具备核心功能。
 
 **能力边界**：本插件 = 官方 `@deepseek-ai/dsh-mcp-client` 传输 + 六层来源治理 +
 按会话隔离。**传输类型由官方 client 决定**；本插件不实现任何 MCP 传输。
+
+若这个插件对你有帮助，欢迎给仓库点一颗
+[star](https://github.com/wldxiaobai/dsh-project-mcp-manager)。遇到问题、宿主
+不适配或有想法，请开
+[Issue](https://github.com/wldxiaobai/dsh-project-mcp-manager/issues)——哪怕几句话也很有用。
 
 ## 文档
 
@@ -79,8 +84,8 @@ pnpm add link:<你的 dsh-mcp-project 源码目录>   # 例如 D:\dev\dsh-mcp-pr
 > **dsh ≥ 0.1.2 注意**：插件是否生效取决于 profile 的 `dsh.profile.bundles`，
 > 而单纯 `pnpm add link:` **不会**把包写进 bundles。方式一/方式二会自动补齐；
 > 若你手写了 pnpm 命令，请再跑一次任意 `dsh plugin --profile web list`（或
-> `--dump-config` 检查合成结果里有没有 `dsh-project-mcp-manager` 行）触发
-> bundle reconcile。
+> 用 `dsh --profile web --dump-config` 检查合成结果里有没有
+> `dsh-project-mcp-manager` 行）触发 bundle reconcile。
 
 **升级/锁定版本**：重跑方式一的 `add` 命令并带上目标版本后缀——`@latest`
 升级到最新，`@0.6.0` 锁定到指定版本。
