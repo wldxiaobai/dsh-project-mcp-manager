@@ -101,7 +101,15 @@ export function supportedTransportsLabel(separator = " | "): string {
 
 /** 未知/不受支持传输的报错（CLI 与 JSON 读取器共用）。 */
 export function unsupportedTransportMessage(value: string): string {
-  return `不支持 ${value} 传输：装载后端（dsh-mcp-client）只有 ${supportedTransportsLabel(" 与 ")}`;
+  const backend = `装载后端（dsh-mcp-client）只支持 ${supportedTransportsLabel(" | ")}`;
+  if (value === "sse") {
+    return (
+      "不支持 MCP SSE 端点传输：" + backend +
+      "。出路：①服务端已支持 Streamable HTTP 时把 type 改为 \"http\"；" +
+      "②删除 type 只留 url（本插件按 streamable-http 推断）"
+    );
+  }
+  return `不支持 ${value} 传输：${backend}`;
 }
 
 /**

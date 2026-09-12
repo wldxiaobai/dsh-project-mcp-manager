@@ -26,7 +26,8 @@ dsh-mcp remove gitlab # 按优先序在 yml/json 中查找并删除；命中只�
 `~/.dsh/mcp.json`。`add` 的 `cwd` 缺省随作用域而变：project 为 `"."`（项目根），
 user/profile 为 `""`（宿主目录）；`-c` 显式覆盖。
 没有 `local` 作用域——`--scope local` 会报错并解释。`--transport` 接受
-`stdio`（缺省）与 `http`；`sse` 拒绝（后端不支持）。
+`stdio`（缺省）与 `http`；MCP SSE 端点传输（`sse`）拒绝并给出可执行出路
+（把 `type` 改为 `"http"`，或删除 `type` 只留 `url`）。
 
 **保留短名**：`-s`/`-t`/`-e`/`-H`/`-c`/`-h` 之外，v0.4.0 起 `-f`（`--format`）与
 `-p`（`--profile`）也是本 CLI 的选项。这两个短名会连带吞掉下一个词元作为选项值：

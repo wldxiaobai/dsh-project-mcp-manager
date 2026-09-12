@@ -31,7 +31,8 @@ the nearest `.git` ancestor), `--scope user` (writes `~/.dsh/mcp.yml`) and
 `-c` overrides it explicitly.
 There is no `local` scope — `--scope local`
 fails with an explanation. `--transport` accepts `stdio` (default) and `http`;
-`sse` is refused (unsupported by the backend).
+the MCP SSE endpoint transport (`sse`) is refused with an actionable error
+(change `type` to `"http"`, or drop `type` and keep `url`).
 
 **Reserved short flags**: besides `-s`/`-t`/`-e`/`-H`/`-c`/`-h`, since v0.4.0
 `-f` (`--format`) and `-p` (`--profile`) are CLI options too. Both consume the

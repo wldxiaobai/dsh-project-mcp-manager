@@ -997,20 +997,20 @@ try {
         await registry34.reconcileNow();
         await registry34.reconcileNow();
         const count = (needle) => warns34.filter((w) => w.includes(needle)).length;
-        assert.equal(count('"bad34": 不支持 sse'), 1, "the user-layer bad entry warns once across reconciles: " + JSON.stringify(warns34));
-        assert.equal(count('"projbad34": 不支持 sse'), 1, "the project bad entry warns once across reconciles");
+        assert.equal(count('"bad34": 不支持 MCP SSE'), 1, "the user-layer bad entry warns once across reconciles: " + JSON.stringify(warns34));
+        assert.equal(count('"projbad34": 不支持 MCP SSE'), 1, "the project bad entry warns once across reconciles");
         assert.equal(count('"taken34" 未装载'), 1, "the name-taken warning is gated too");
         assert.ok(warns34.some((w) => w.includes("宿主全局 patch 行")), "the name-taken warning names host global patch rows, not just profile patches");
         assert.equal((await registry34.serverView(proj34, "taken34")).skipReason, "name-taken", "skipReason still reports the collision every round");
         // 集合变化（坏条目修好）后再坏一次 → 重新告警一次。
         await writeFile(userPaths34.mcpJson, JSON.stringify({ mcpServers: { taken34: { command: "node", args: ["t.js"] } } }), "utf8");
         await registry34.reconcileNow();
-        assert.equal(count('"bad34": 不支持 sse'), 1, "fixing an entry does not warn");
+        assert.equal(count('"bad34": 不支持 MCP SSE'), 1, "fixing an entry does not warn");
         await writeFile(userPaths34.mcpJson, JSON.stringify({
           mcpServers: { taken34: { command: "node", args: ["t.js"] }, bad34: { type: "sse", url: "https://x/mcp" } }
         }), "utf8");
         await registry34.reconcileNow();
-        assert.equal(count('"bad34": 不支持 sse'), 2, "a re-appearing bad entry warns again");
+        assert.equal(count('"bad34": 不支持 MCP SSE'), 2, "a re-appearing bad entry warns again");
         for (const disposer of ctx34.disposers) {
           const cleanup = disposer();
           if (typeof cleanup === "function") cleanup();

@@ -65,7 +65,11 @@ process.env.GITHUB_TOKEN }`）在项目文件里**不支持**——受管块内�
 ```
 
 - `command`/`args`/`env`/`cwd` 为 stdio；`url`/`headers` 为 streamable-http；
-  可选 `type`（`stdio`|`http`|`streamable-http`；`sse` 逐条拒绝）、DSH 透传键
+  可选 `type`（`stdio`|`http`|`streamable-http`）。`type: "sse"` 是 **MCP SSE
+  端点传输**（规范 2024-11-05），逐条拒绝并给出可执行诊断：装载后端
+  （`dsh-mcp-client`）只支持 `stdio` 与 streamable-http——服务端已支持
+  Streamable HTTP 时把 `type` 改为 `"http"`；或删除 `type` 只留 `url`
+  （本插件按 streamable-http 推断）。没有隐式回退。DSH 透传键
   `toolCallTimeoutMs`/`failOnStartupError`/`reconnect`、`enabled: false`
   （静默跳过、不占名）与 `disabled: true`（占名但不装载）。
 - 未知键容忍忽略；名字须匹配 `[A-Za-z0-9_-]{1,32}`；坏条目逐条报错、不影响其余。

@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`stdio` | `streamable-http`). Schema, CLI `--transport`, JSON `type`
   mapping and error copy all derive from it; unknown values fail locally
   instead of reaching `ctx.plugin`.
+- Actionable diagnostics for the **MCP SSE endpoint transport** (`type: "sse"`
+  / `--transport sse`): the error names two fixes (change `type` to `"http"`,
+  or drop `type` and keep `url`) and does not silently fall back.
 
 - `package.json` discovery fields: `repository`, `bugs`, and `homepage` point at
   https://github.com/wldxiaobai/dsh-project-mcp-manager so npm and GitHub can

@@ -74,7 +74,9 @@ try {
   assert.equal(r3.rows.length, 1);
   assert.equal(r3.rows[0].rawName, "survivor");
   assert.equal(r3.entryErrors.length, 5);
-  assert.ok(r3.entryErrors.some((e) => /sse/.test(e)), "sse rejection present");
+  assert.ok(r3.entryErrors.some((e) => /MCP SSE 端点传输/.test(e)), "sse rejection names the MCP SSE endpoint transport");
+  assert.ok(r3.entryErrors.some((e) => /把 type 改为 "http"/.test(e)), "sse error offers changing type to http");
+  assert.ok(r3.entryErrors.some((e) => /删除 type 只留 url/.test(e)), "sse error offers dropping type and keeping url");
   assert.ok(r3.entryErrors.some((e) => /serverName 非法/.test(e)));
   assert.ok(r3.entryErrors.some((e) => /缺少 command/.test(e)));
   pass("sse and broken entries are rejected per-entry without affecting valid ones");

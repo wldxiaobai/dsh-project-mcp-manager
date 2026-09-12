@@ -69,8 +69,13 @@ Follows the ecosystem (Cursor / Claude Code's `mcpServers` shape):
 ```
 
 - `command`/`args`/`env`/`cwd` are stdio; `url`/`headers` are streamable-http;
-  an optional `type` (`stdio`|`http`|`streamable-http`; `sse` is rejected per
-  entry), the DSH passthrough keys
+  an optional `type` (`stdio`|`http`|`streamable-http`). `type: "sse"` is the
+  **MCP SSE endpoint transport** (protocol version 2024-11-05) and is rejected
+  per entry with an actionable diagnostic: the mount backend
+  (`dsh-mcp-client`) only speaks `stdio` and streamable-http — if the server
+  already speaks Streamable HTTP, change `type` to `"http"`; or drop `type`
+  and keep `url` (this plugin infers streamable-http). There is no implicit
+  fallback. The DSH passthrough keys
   `toolCallTimeoutMs`/`failOnStartupError`/`reconnect`, `enabled: false`
   (silently skipped, claims no name) and `disabled: true` (claims its name but
   is not mounted).

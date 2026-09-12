@@ -76,7 +76,8 @@ try {
     assert.ok(cap.errs.join("\n").includes("配置无效"));
     const cap2 = io();
     assert.equal(await runCli(["add", "-t", "sse", "x", "https://e/"], cap2.io, deps), 1, "sse rejected");
-    assert.ok(cap2.errs.join("\n").includes("sse"));
+    assert.ok(cap2.errs.join("\n").includes("MCP SSE 端点传输"), "sse error names the MCP SSE endpoint transport");
+    assert.ok(cap2.errs.join("\n").includes('把 type 改为 "http"'), "sse error offers the http type fix");
     const capUnknown = io();
     assert.equal(await runCli(["add", "-t", "websocket", "x", "https://e/"], capUnknown.io, deps), 1, "unknown transport rejected");
     assert.ok(capUnknown.errs.join("\n").includes("stdio|http"), "unknown --transport names the accepted set");

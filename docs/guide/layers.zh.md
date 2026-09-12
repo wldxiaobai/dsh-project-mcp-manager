@@ -59,8 +59,10 @@
 - **没有 local 作用域**。CC 的 `claude mcp add` 默认写进 `~/.claude.json` 的
   `projects.<cwd>.mcpServers`（local 层），本插件不读取该层；请用
   `dsh-mcp add --scope user` 或项目文件。
-- `type: "sse"` 条目按条目报错跳过——装载后端（`dsh-mcp-client`）只支持
-  `stdio` 与 `streamable-http`。CC 的 `type: "http"` 与显式
+- `type: "sse"` 条目是 **MCP SSE 端点传输**，按条目报错跳过并给出可执行诊断——
+  装载后端（`dsh-mcp-client`）只支持 `stdio` 与 `streamable-http`。服务端已
+  支持 Streamable HTTP 时把 `type` 改为 `"http"`；或删除 `type` 只留 `url`
+  （本插件按 streamable-http 推断）。没有隐式回退。CC 的 `type: "http"` 与显式
   `type: "streamable-http"` 都映射为 `streamable-http`；缺省 `type` 时，
   只带 `url` 不带 `command` 的条目按 http 处理，其余视为 stdio。
 - 坏文件/坏条目不影响其他服务器，且**按源隔离**：`.mcp.json` 坏了不会卸掉

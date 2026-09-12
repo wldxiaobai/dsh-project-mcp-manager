@@ -78,11 +78,14 @@ global row's tools (project-side suppression).
   inside `~/.claude.json` (`projects.<cwd>.mcpServers`, the local layer); this
   plugin does not read that layer. Use `dsh-mcp add --scope user` or the
   project files.
-- `type: "sse"` entries are rejected with a per-entry diagnostic — the mount
-  backend (`dsh-mcp-client`) only speaks `stdio` and `streamable-http`. CC's
-  `type: "http"` and an explicit `type: "streamable-http"` both map to
-  `streamable-http`; with `type` omitted, an entry that has only `url` (no
-  `command`) is treated as http, everything else as stdio.
+- `type: "sse"` entries are the **MCP SSE endpoint transport** and are
+  rejected per entry with an actionable diagnostic — the mount backend
+  (`dsh-mcp-client`) only speaks `stdio` and `streamable-http`. If the server
+  already speaks Streamable HTTP, change `type` to `"http"`; or drop `type`
+  and keep `url` (this plugin infers streamable-http). There is no implicit
+  fallback. CC's `type: "http"` and an explicit `type: "streamable-http"`
+  both map to `streamable-http`; with `type` omitted, an entry that has only
+  `url` (no `command`) is treated as http, everything else as stdio.
 - Broken files/entries never take down the valid ones, and they fail **per
   source**: an unreadable `.mcp.json` cannot unmount the same project's yml
   rows (and vice versa). Entry errors land in `.dsh/.mcp-diag.json` and the

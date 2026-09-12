@@ -85,7 +85,7 @@ const HELP = `dsh-mcp —— 项目/用户/profile 级 MCP 服务器管理（原
 其他：
   -c 缺省：project 为 "."（相对项目根）；user/profile 为空（继承宿主 cwd）。
   值里的 \${VAR} 原样写入，装载时由插件从宿主环境展开（支持串内插值，凭据不落盘）。
-  sse 传输不受支持（后端只支持 stdio 与 streamable-http）。
+  sse 为 MCP SSE 端点传输，不受支持（后端只支持 stdio 与 streamable-http；把 type 改为 http，或删除 type 只留 url）。
   list/get 展示全部来源层（含遗留只读层），不显示任何密钥值。`
 
 function fail(io: CliIo, message: string): number {

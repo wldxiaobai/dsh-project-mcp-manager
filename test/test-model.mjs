@@ -265,11 +265,13 @@ assert.equal(jsonTypeOfTransport("streamable-http"), "http");
 assert.deepEqual(resolveMcpTransport("http"), { transport: "streamable-http" });
 assert.deepEqual(resolveMcpTransport("stdio"), { transport: "stdio" });
 assert.equal(resolveMcpTransport("sse").error, unsupportedTransportMessage("sse"));
-assert.match(unsupportedTransportMessage("sse"), /stdio 与 streamable-http/);
+assert.match(unsupportedTransportMessage("sse"), /MCP SSE 端点传输/);
+assert.match(unsupportedTransportMessage("sse"), /把 type 改为 "http"/);
+assert.match(unsupportedTransportMessage("sse"), /删除 type 只留 url/);
 assert.deepEqual(parseCliTransport("streamable-http"), { transport: "http" });
 assert.deepEqual(parseCliTransport("stdio"), { transport: "stdio" });
 assert.match(parseCliTransport("websocket").error, /stdio\|http/);
-assert.match(parseCliTransport("sse").error, /不支持 sse 传输/);
+assert.match(parseCliTransport("sse").error, /MCP SSE 端点传输/);
 expectThrow(
   "unknown yml transport still names the mirrored set",
   () => inputFromPatchRow({ id: "panel-mcp-x", name: "@deepseek-ai/dsh-mcp-client", config: { serverName: "x", transport: "websocket" } }),
