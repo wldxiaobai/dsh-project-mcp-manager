@@ -30,9 +30,10 @@
  *   4. ~/.dsh/profiles/<p>/mcp.json —— profile 用户层（dsh-profile-user）
  *   5. ~/.dsh/mcp.yml             —— 用户层原生（dsh-user-yml）
  *   6. ~/.dsh/mcp.json            —— 通用用户层（dsh-user）
- * 用户层行进入每个项目的合并集，即每个项目各挂一条用户服务器连接（与项目行
- * 同模型）；被同名项目行遮蔽的项目不再见到用户层副本。${VAR} 占位在 mount
- * 时经 model.expandEnvRefs 用宿主进程环境运行时展开，缺失即跳过该条目。
+ * 用户层行由全局 MountContainer 宿主级只挂一条（与项目数无关、不参与按项目
+ * deny）；被同名项目行遮蔽时只对该项目会话 deny 全局工具，不卸载全局实例。
+ * ${VAR} 占位在 mount 时经 model.expandEnvRefs 用宿主进程环境运行时展开，
+ * 缺失即跳过该条目。
  */
 import chokidar from "chokidar";
 import { dirname, join, resolve } from "node:path";
@@ -1188,15 +1189,16 @@ export class ProjectMcpRegistry {
     return parts.join("\n");
   }
 
-  private async shouldSkipConfigReread(roots: string[], hostGlobalNames: string[]): Promise<boolean> {
-    if (this.lastFingerprintSig === "") return false;
-    if (this.configEpoch !== this.lastFingerprintEpoch) return false;
+  private async shouldSkipConfigReread(roots: string[], hostGlobalNames: string[]): Promise<{ skip: boolean; signature: string }> {
+    const signature = await this.configFingerprintSignature(roots, hostGlobalNames);
+    if (this.lastFingerprintSig === "") return { skip: false, signature };
+    if (this.configEpoch !== this.lastFingerprintEpoch) return { skip: false, signature };
     for (const entry of this.projects.values()) {
       const hasYmlMounts = [...entry.servers.values()].some((state) => state.source === "dsh-project" || state.source === undefined);
       if (!hasYmlMounts) continue;
-      if (await this.statConfigFile(projectMcpFile(entry.projectRoot)) === "missing") return false;
+      if (await this.statConfigFile(projectMcpFile(entry.projectRoot)) === "missing") return { skip: false, signature };
     }
-    return await this.configFingerprintSignature(roots, hostGlobalNames) === this.lastFingerprintSig;
+    return { skip: signature === this.lastFingerprintSig, signature };
   }
 
   // ── 核心 reconcile ───────────────────────────────────────────────────
@@ -1210,7 +1212,7 @@ export class ProjectMcpRegistry {
     this.reconcileCount++;
     const roots = await this.knownProjects();
     const hostGlobalNames = await this.providers.globalNames().catch(() => []);
-    const skipReread = await this.shouldSkipConfigReread(roots, hostGlobalNames);
+    const { skip: skipReread, signature } = await this.shouldSkipConfigReread(roots, hostGlobalNames);
     if (!skipReread) {
       await this.readUserLayer();
     }
@@ -1235,7 +1237,7 @@ export class ProjectMcpRegistry {
         desiredByProject.set(projectKeyOf(projectRoot), await this.scanProject(projectRoot, globalMountable));
       }
       this.lastScanDesired = new Map(desiredByProject);
-      this.lastFingerprintSig = await this.configFingerprintSignature(roots, hostGlobalNames);
+      this.lastFingerprintSig = signature;
       this.lastFingerprintEpoch = this.configEpoch;
     }
     await this.reportGlobalShadows(globalMerged.shadowedGlobal, globalMerged.shadowedIdentity);
@@ -1368,6 +1370,12 @@ export class ProjectMcpRegistry {
     }
     for (const key of this.identityShadowSigs.keys()) {
       if (!knownKeys.has(key)) this.identityShadowSigs.delete(key);
+    }
+    for (const key of this.idleSince.keys()) {
+      if (!knownKeys.has(key)) this.idleSince.delete(key);
+    }
+    for (const key of this.lastScanDesired.keys()) {
+      if (!knownKeys.has(key)) this.lastScanDesired.delete(key);
     }
   }
 

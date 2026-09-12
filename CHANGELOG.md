@@ -42,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Object.prototype`.
 - Illegal `tools.allow` / `tools.deny` globs (for example `[z-a]`) warn
   once per entry instead of silently never matching.
+- Config fingerprints reuse the signature from the skip check instead of
+  statting files twice. Per-project `idleSince` / `lastScanDesired` tables
+  drop keys that are no longer known.
 
 ## [0.6.0] - 2026-09-12
 
