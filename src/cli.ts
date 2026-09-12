@@ -2,10 +2,11 @@
 /**
  * dsh-mcp —— Claude Code 风格的 MCP 命令行管理入口。
  *
- * 子命令：add / list / get / remove，均支持 `--scope project|user`（默认 project，
+ * 子命令：add / list / get / remove / status，均支持 `--scope project|user`（默认 project，
  * 与 CC 一致）。写操作只落在本插件的原生受管文件（project: `<root>/.dsh/mcp.yml`，
  * user: `~/.dsh/mcp.yml`）；`.mcp.json` 是遗留只读层，list/get
  * 会展示它，remove 遇到只读层的名字时给出指引而不是改文件。
+ * status 只读各层文件与 `.mcp-diag.json` 摘要，不连接运行中的宿主。
  *
  * 不连接运行中的 dsh 宿主：纯静态读写配置文件，宿主经 watcher 热重载自动收敛。
  * 零新依赖（argv 手写解析）。`runCli(argv, io, deps)` 导出供测试注入。
@@ -14,13 +15,13 @@
  */
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { mkdir, readdir } from "node:fs/promises";
+import { mkdir, readdir, readFile } from "node:fs/promises";
 import { extractManagedRows, readPatchFile, updateManagedRows, type PatchRow } from "./mcp-file.js";
 import { byCodeUnit, mcpServerInputSchema, parseCliTransport, patchRowToView, rowNameOf, toPatchRow, type McpServerInput } from "./model.js";
 import { CC_PROJECT_FILE, IGNORE_MCP_JSON_ENV, JSON_MCP_FILE, mcpJsonLayerEnabled, readDshJsonFile, readMcpJsonFile, type JsonReadResult, type McpRowSource, type SourcedRow } from "./json-file.js";
-import { MCP_YML_FILE, dshHomeFor, profileMcpJsonFile, userLayerPathsIn } from "./dsh-paths.js";
+import { MCP_YML_FILE, DIAG_FILE, dshHomeFor, profileMcpJsonFile, userLayerPathsIn } from "./dsh-paths.js";
 import { readJsonServers, toJsonEntry, updateJsonServers } from "./json-write.js";
-import { mergeSourcedRows, projectDshJsonFile, projectMcpFile, projectMcpJsonFile, type IdentityShadow } from "./registry.js";
+import { mergeSourcedRows, parseDiagDocument, projectDshJsonFile, projectMcpFile, projectMcpJsonFile, type DiagDocument, type IdentityShadow } from "./registry.js";
 import { findProjectRoot } from "./project-root.js";
 
 export interface CliIo {
@@ -70,6 +71,7 @@ const HELP = `dsh-mcp —— 项目/用户/profile 级 MCP 服务器管理（原
   dsh-mcp list [--scope project|user]
   dsh-mcp get <name>
   dsh-mcp remove <name> [--scope project|user|profile] [--format yml|json]
+  dsh-mcp status [--scope project|user]
 
 写入位置：
   project（缺省）  <项目根>/.dsh/mcp.yml（--format json → <项目根>/.dsh/mcp.json）
@@ -86,7 +88,8 @@ const HELP = `dsh-mcp —— 项目/用户/profile 级 MCP 服务器管理（原
   -c 缺省：project 为 "."（相对项目根）；user/profile 为空（继承宿主 cwd）。
   值里的 \${VAR} 原样写入，装载时由插件从宿主环境展开（支持串内插值，凭据不落盘）。
   sse 为 MCP SSE 端点传输，不受支持（后端只支持 stdio 与 streamable-http；把 type 改为 http，或删除 type 只留 url）。
-  list/get 展示全部来源层（含遗留只读层），不显示任何密钥值。`
+  list/get 展示全部来源层（含遗留只读层），不显示任何密钥值。
+  status 读取各层文件与诊断摘要（不连接运行中的宿主）。`
 
 function fail(io: CliIo, message: string): number {
   io.err(`错误：${message}`);
@@ -239,10 +242,13 @@ async function readNativeLayer(path: string, source: McpRowSource): Promise<Laye
 }
 
 /** JSON 层（DSH 方言与遗留只读层同用）的错误注记：文件级优先，坏条目次之，两者皆无则 undefined。 */
-function layerNote(result: { fileError?: string; entryErrors: string[] }): string | undefined {
+function layerNote(result: { fileError?: string; entryErrors: string[]; formatHint?: string }): string | undefined {
   if (result.fileError !== undefined) return `读取失败：${result.fileError}`;
-  if (result.entryErrors.length > 0) return `坏条目：${result.entryErrors.join("；")}`;
-  return undefined;
+  const parts = [
+    ...(result.entryErrors.length > 0 ? [`坏条目：${result.entryErrors.join("；")}`] : []),
+    ...(result.formatHint === undefined ? [] : [result.formatHint])
+  ];
+  return parts.length === 0 ? undefined : parts.join("；");
 }
 
 /** 读一个 DSH 自有 JSON 层（缺文件=空层）。 */
@@ -670,13 +676,75 @@ async function findReadOnlyLayerHit(name: string, deps: CliDeps): Promise<LayerR
   return layers.find((layer) => layer.source === "cc-project" && layer.rows.some((r) => r.name === name));
 }
 
+function formatSkippedByReason(skipped: Record<string, number>): string {
+  const parts = Object.entries(skipped).map(([reason, count]) => `${reason}:${count}`);
+  parts.sort(byCodeUnit);
+  return parts.join("，");
+}
+
+async function printDiagStatus(path: string, io: CliIo): Promise<boolean> {
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch {
+    return false;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    io.out(`诊断 ${path}：无法解析`);
+    return true;
+  }
+  const doc: DiagDocument = parseDiagDocument(parsed);
+  io.out(`诊断 ${path}`);
+  if (doc.summary !== undefined) {
+    const skipped = formatSkippedByReason(doc.summary.skippedByReason);
+    const projects = doc.summary.projects === undefined ? "" : `，项目 ${doc.summary.projects}`;
+    io.out(`  行 ${doc.summary.rows}，已装载 ${doc.summary.mounted}${projects}${skipped === "" ? "" : `，跳过 ${skipped}`}`);
+    for (const item of doc.summary.unhealthy) io.out(`  不健康：${item.name} (${item.reason})`);
+  }
+  for (const event of doc.events) {
+    if (event.kind === "foreign-format" && typeof event.message === "string") {
+      io.out(`  ${event.message}`);
+      break;
+    }
+    if (typeof event.foreignFormat === "string") {
+      io.out(`  ${event.foreignFormat}`);
+      break;
+    }
+  }
+  return true;
+}
+
+async function cmdStatus(parsed: ParsedArgs, io: CliIo, deps: CliDeps): Promise<number> {
+  const allLayers = await collectLayers(deps);
+  const layers = parsed.scope === undefined
+    ? allLayers
+    : allLayers.filter((layer) => isProjectSource(layer.source) === (parsed.scope === "project"));
+  let listed = 0;
+  for (const layer of layers) {
+    const names = layer.rows.map((row) => row.name);
+    io.out(`${sourceLabel(layer)}  ${layer.rows.length} 行${names.length === 0 ? "" : `  [${names.join(", ")}]`}${layer.note === undefined ? "" : `  ${layer.note}`}`);
+    listed += layer.rows.length;
+    if (layer.note !== undefined) listed += 1;
+  }
+  const projectRoot = await resolveProjectRootFor(deps);
+  const printedProject = await printDiagStatus(join(projectRoot, ".dsh", DIAG_FILE), io);
+  const printedGlobal = await printDiagStatus(join(dshHomeOf(deps), DIAG_FILE), io);
+  if (listed === 0 && !printedProject && !printedGlobal) {
+    io.out("未配置 MCP 服务器；尚无运行时诊断（宿主未运行或零配置）。");
+  }
+  return 0;
+}
+
 export async function runCli(argv: string[], io: CliIo, deps: CliDeps = {}): Promise<number> {
   const parsed = parseArgs(argv);
   if ("error" in parsed) return fail(io, parsed.error);
   const [command, ...rest] = parsed.positional;
   if (parsed.help || command === undefined || command === "help") {
     io.out(HELP);
-    return command === undefined && !parsed.help ? fail(io, "缺少子命令（add|list|get|remove）") : 0;
+    return command === undefined && !parsed.help ? fail(io, "缺少子命令（add|list|get|remove|status）") : 0;
   }
   switch (command) {
     case "add":
@@ -687,8 +755,10 @@ export async function runCli(argv: string[], io: CliIo, deps: CliDeps = {}): Pro
       return cmdGet(rest, io, deps);
     case "remove":
       return cmdRemove(parsed, rest, io, deps);
+    case "status":
+      return cmdStatus(parsed, io, deps);
     default:
-      return fail(io, `未知子命令：${command}（支持 add|list|get|remove，dsh-mcp --help 查看用法）`);
+      return fail(io, `未知子命令：${command}（支持 add|list|get|remove|status，dsh-mcp --help 查看用法）`);
   }
 }
 

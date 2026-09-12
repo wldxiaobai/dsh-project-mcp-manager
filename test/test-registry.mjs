@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ProjectMcpRegistry, projectMcpFile, mergeSourcedRows, profileNameFromConfigPath } from "../lib/registry.js";
+import { ProjectMcpRegistry, parseDiagDocument, projectMcpFile, mergeSourcedRows, profileNameFromConfigPath } from "../lib/registry.js";
 import { MCP_BLOCK_BEGIN, MCP_BLOCK_END, writeManagedRows } from "../lib/mcp-file.js";
 import { byCodeUnit } from "../lib/model.js";
 
@@ -22,7 +22,10 @@ async function pathExists(path) {
   }
 }
 async function readDiag(projectRoot) {
-  return JSON.parse(await readFile(diagFile(projectRoot), "utf8"));
+  return parseDiagDocument(JSON.parse(await readFile(diagFile(projectRoot), "utf8"))).events;
+}
+async function readDiagSummary(projectRoot) {
+  return parseDiagDocument(JSON.parse(await readFile(diagFile(projectRoot), "utf8"))).summary;
 }
 /** 轮询 diag 直到谓词成立：事件驱动用例里对账链可能仍在落盘（不能用固定 sleep）。 */
 async function waitForDiag(projectRoot, predicate, timeoutMs = 5000) {
@@ -281,6 +284,11 @@ try {
   assert.equal(projAFile.servers[0].scope.kind, "workspace");
   assert.equal(projAFile.servers[0].effectiveServerName, mounted.serverName);
   assert.equal(projAFile.servers[0].fiberPhase, "active");
+  const summaryA = await readDiagSummary(projectA);
+  assert.ok(summaryA !== undefined, "configured project diag includes a summary");
+  assert.ok(summaryA.rows >= 1, "summary counts project rows");
+  assert.ok(summaryA.mounted >= 1, "summary counts mounted servers");
+  assert.equal(await pathExists(diagFile(projectB)), false, "zero-config project still has no diag after summary writes");
   pass("registry snapshot reports project file rows with workspace scope and phase");
 
   // 4. 移除行 → 卸载（fiber dispose）
@@ -408,6 +416,10 @@ try {
     const diagE10 = await readDiag(dir2);
     assert.ok(diagE10.some((row) => row.kind === "scan" && Array.isArray(row.ccEntryErrors) && row.ccEntryErrors.some((note) => note.includes("bad"))), "sse entry error recorded in scan diag");
     assert.ok(diagE10.some((row) => row.kind === "env-missing" && row.rawName === "beta" && row.missingVar === "CC_TEST_MISSING"), "env-missing diag names the variable, not the value");
+    const summaryE10 = await readDiagSummary(dir2);
+    assert.ok(summaryE10 !== undefined, "diag file carries a summary after reconcile");
+    assert.equal(summaryE10.skippedByReason["env-missing"], 1, "summary counts env-missing skips");
+    assert.ok(summaryE10.unhealthy.some((item) => item.name === "beta" && item.reason === "env-missing"), "summary names the env-missing row");
     pass("registry mounts legacy CC-dialect rows and reports per-entry/env failures");
 
     // 11. 快照分区：yml 缺失不出分区；cc-project 分区带行与 entryErrors；用户 yml 分区
@@ -949,7 +961,7 @@ try {
         ctx33.agentsList.push(fakeAgent("session-m4", proj33));
         await registry33.reconcileNow();
         assert.equal(await pathExists(diagFile(proj33)), false, "a zero-config project stays free of .mcp-diag.json");
-        const globalDiag = JSON.parse(await readFile(join(home33, ".mcp-diag.json"), "utf8"));
+        const globalDiag = parseDiagDocument(JSON.parse(await readFile(join(home33, ".mcp-diag.json"), "utf8"))).events;
         assert.ok(globalDiag.some((row) => row.kind === "shadow" && Array.isArray(row.shadowedIdentity)
           && row.shadowedIdentity.some((s) => s.name === "twin-json" && s.winner === "twin-yml")), "global diag records the user-layer identity shadow: " + JSON.stringify(globalDiag.slice(-2)));
         assert.ok(globalDiag.some((row) => row.kind === "shadow" && Array.isArray(row.shadowedByHigherLayer)
@@ -1084,7 +1096,7 @@ try {
         await registryF.reconcileNow();
         const diagF = await readDiag(projF);
         assert.ok(diagF.some((row) => typeof row.foreignFormat === "string" && row.foreignFormat.includes("dsh-mcp-manager")), "project diag names the foreign format: " + JSON.stringify(diagF));
-        const globalDiag = JSON.parse(await readFile(join(homeF, ".mcp-diag.json"), "utf8"));
+        const globalDiag = parseDiagDocument(JSON.parse(await readFile(join(homeF, ".mcp-diag.json"), "utf8"))).events;
         assert.ok(globalDiag.some((row) => row.kind === "foreign-format" && String(row.path).includes("dsh-mcp.json")), "global diag mentions dsh-mcp.json: " + JSON.stringify(globalDiag));
         assert.ok(warnsF.some((w) => w.includes("dsh-mcp-manager")), "host log names the other plugin");
         assert.equal(warnsF.filter((w) => w.includes(join(homeF, "mcp.json")) && w.includes("dsh-mcp-manager")).length, 0, "mcpServers + servers together does not warn");

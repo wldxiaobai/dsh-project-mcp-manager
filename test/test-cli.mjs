@@ -414,6 +414,45 @@ try {
       else process.env.DSH_HOME = savedHome;
     }
   }
+
+  // 21. status：空态、层行数、诊断摘要中的跳过原因
+  {
+    const statusDir = await mkdtemp(join(tmpdir(), "dsh-mcp-status-"));
+    const statusHome = join(statusDir, "home");
+    const statusProj = join(statusDir, "proj");
+    await mkdir(join(statusHome, ".dsh"), { recursive: true });
+    await mkdir(statusProj, { recursive: true });
+    const statusDeps = { home: statusHome, resolveProjectRoot: async () => statusProj };
+    try {
+      const capEmpty = io();
+      assert.equal(await runCli(["status"], capEmpty.io, statusDeps), 0);
+      assert.ok(capEmpty.lines.join("\n").includes("尚无运行时诊断"), "empty status: " + capEmpty.lines.join("\n"));
+      assert.equal(await runCli(["add", "fs", "node", "s.js"], io().io, statusDeps), 0);
+      const capRows = io();
+      assert.equal(await runCli(["status"], capRows.io, statusDeps), 0);
+      const listed = capRows.lines.join("\n");
+      assert.ok(listed.includes("fs"), "status lists configured names: " + listed);
+      await mkdir(join(statusProj, ".dsh"), { recursive: true });
+      await writeFile(join(statusProj, ".dsh", ".mcp-diag.json"), JSON.stringify({
+        summary: {
+          at: "2026-01-01T00:00:00.000Z",
+          rows: 1,
+          mounted: 0,
+          skippedByReason: { "env-missing": 1 },
+          unhealthy: [{ name: "fs", reason: "env-missing" }]
+        },
+        events: []
+      }), "utf8");
+      const capDiag = io();
+      assert.equal(await runCli(["status"], capDiag.io, statusDeps), 0);
+      const text = capDiag.lines.join("\n");
+      assert.ok(text.includes("env-missing"), "status surfaces skip reason: " + text);
+      assert.ok(text.includes("不健康：fs"), "status names the unhealthy row: " + text);
+      pass("cli status shows empty state, layer rows, and diagnostic skip reasons");
+    } finally {
+      await rm(statusDir, { recursive: true, force: true });
+    }
+  }
 } finally {
   await rm(dir, { recursive: true, force: true });
 }

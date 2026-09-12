@@ -525,6 +525,65 @@ export function mergeSourcedRows(candidates: SourcedRow[][]): {
   };
 }
 
+export interface DiagUnhealthy {
+  name: string;
+  reason: string;
+}
+
+/** 对账结束后写入诊断文件的摘要段（`.mcp-diag.json` 的 `summary`）。 */
+export interface DiagSummary {
+  at: string;
+  projects?: number;
+  rows: number;
+  mounted: number;
+  skippedByReason: Record<string, number>;
+  unhealthy: DiagUnhealthy[];
+}
+
+export interface DiagDocument {
+  summary?: DiagSummary;
+  events: Record<string, unknown>[];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** 兼容旧版纯数组诊断文件：数组 → `{ events }`；对象取 `summary` + `events`。 */
+export function parseDiagDocument(raw: unknown): DiagDocument {
+  if (Array.isArray(raw)) return { events: raw.filter(isRecord) };
+  if (!isRecord(raw)) return { events: [] };
+  const events = Array.isArray(raw.events) ? raw.events.filter(isRecord) : [];
+  const summary = parseDiagSummary(raw.summary);
+  return summary === undefined ? { events } : { summary, events };
+}
+
+function parseDiagSummary(raw: unknown): DiagSummary | undefined {
+  if (!isRecord(raw) || typeof raw.at !== "string" || typeof raw.rows !== "number" || typeof raw.mounted !== "number") return undefined;
+  const skippedByReason: Record<string, number> = {};
+  if (isRecord(raw.skippedByReason)) {
+    for (const [key, value] of Object.entries(raw.skippedByReason)) {
+      if (typeof value === "number") skippedByReason[key] = value;
+    }
+  }
+  const unhealthy: DiagUnhealthy[] = [];
+  if (Array.isArray(raw.unhealthy)) {
+    for (const item of raw.unhealthy) {
+      if (isRecord(item) && typeof item.name === "string" && typeof item.reason === "string") {
+        unhealthy.push({ name: item.name, reason: item.reason });
+      }
+    }
+  }
+  return {
+    at: raw.at,
+    ...(typeof raw.projects === "number" ? { projects: raw.projects } : {}),
+    rows: raw.rows,
+    mounted: raw.mounted,
+    skippedByReason,
+    unhealthy
+  };
+}
+
 /**
  * 项目级 MCP 注册表：文件监听、装载/卸载、按会话 deny 重扫、状态快照。
  */
@@ -951,6 +1010,7 @@ export class ProjectMcpRegistry {
     await this.reconcileGlobals(globalMerged.rows, hostGlobalNames);
     this.prunePerProjectState(new Set(desiredByProject.keys()));
     await this.sweepRestrictions();
+    await this.writeSummaries();
   }
 
   /**
@@ -1153,6 +1213,7 @@ export class ProjectMcpRegistry {
 
   // ── 装载诊断（项目：<root>/.dsh/.mcp-diag.json；全局：<dshHome>/.mcp-diag.json）──
   // 调用方只在有异常或有配置行时写入：无配置的干净项目不创建该文件。
+  // 文件形态：`{ summary?, events: [...] }`（旧版纯数组读入后当作 events）。
 
   private async writeDiag(projectRoot: string, event: Record<string, unknown>): Promise<void> {
     await this.writeDiagAt(join(projectRoot, DSH_DIR, DIAG_FILE), event);
@@ -1164,28 +1225,86 @@ export class ProjectMcpRegistry {
     await this.writeDiagAt(join(dirname(mcpYml), DIAG_FILE), event);
   }
 
-  private async writeDiagAt(path: string, event: Record<string, unknown>): Promise<void> {
+  private async writeDiagAt(path: string, event?: Record<string, unknown>, summary?: DiagSummary): Promise<void> {
     const tmp = path + `.tmp-${process.pid}`;
     try {
-      let lines: Record<string, unknown>[] = [];
+      let doc: DiagDocument = { events: [] };
       try {
-        const parsed = JSON.parse(await readFile(path, "utf8"));
-        if (Array.isArray(parsed)) lines = parsed;
+        doc = parseDiagDocument(JSON.parse(await readFile(path, "utf8")));
       } catch {
-        lines = [];
+        doc = { events: [] };
       }
-      lines.push({ ts: new Date().toISOString(), ...event });
-      if (lines.length > 30) lines = lines.slice(-30);
-      // 目录可能已被用户删掉（而仍有活装载）：补建目录，避免诊断静默丢失。
+      if (event !== undefined) {
+        doc.events.push({ ts: new Date().toISOString(), ...event });
+        if (doc.events.length > 30) doc.events = doc.events.slice(-30);
+      }
+      if (summary !== undefined) doc.summary = summary;
+      const payload = doc.summary === undefined ? { events: doc.events } : { summary: doc.summary, events: doc.events };
       await mkdir(dirname(path), { recursive: true });
-      // 原子落盘（临时文件 + rename）：裸 writeFile 会让并发读取方看到半截
-      // JSON（快照/测试轮询都算），与 mcp-file 的写路径同一标准。
-      await writeFile(tmp, JSON.stringify(lines, null, 2), "utf8");
+      await writeFile(tmp, JSON.stringify(payload, null, 2), "utf8");
       await rename(tmp, path);
     } catch {
-      // 诊断失败不影响主流程；清掉半截临时文件
       await rm(tmp, { force: true }).catch(() => {});
     }
+  }
+
+  private summarizeScope(key: string, servers: Map<string, ProjectServerState>, at: string, projects?: number): DiagSummary {
+    const skippedByReason: Record<string, number> = {};
+    const unhealthy: DiagUnhealthy[] = [];
+    const prefix = key + "\u0000";
+    let skippedCount = 0;
+    for (const [mark, reason] of this.skipReasons) {
+      if (!mark.startsWith(prefix)) continue;
+      skippedCount += 1;
+      skippedByReason[reason] = (skippedByReason[reason] ?? 0) + 1;
+      unhealthy.push({ name: mark.slice(prefix.length), reason });
+    }
+    let mounted = 0;
+    for (const state of servers.values()) {
+      if (state.phase === "active" || state.phase === "mounting") mounted += 1;
+      if (state.phase === "failed") {
+        skippedByReason.failed = (skippedByReason.failed ?? 0) + 1;
+        unhealthy.push({ name: state.rawName, reason: state.error ?? "failed" });
+      }
+    }
+    return {
+      at,
+      ...(projects === undefined ? {} : { projects }),
+      rows: servers.size + skippedCount,
+      mounted,
+      skippedByReason,
+      unhealthy
+    };
+  }
+
+  private async writeSummaries(): Promise<void> {
+    const at = new Date().toISOString();
+    for (const [key, entry] of this.projects) {
+      const summary = this.summarizeScope(key, entry.servers, at);
+      const path = join(entry.projectRoot, DSH_DIR, DIAG_FILE);
+      if (summary.rows === 0 && summary.unhealthy.length === 0) {
+        try {
+          await readFile(path);
+        } catch {
+          continue;
+        }
+      }
+      await this.writeDiagAt(path, undefined, summary);
+    }
+    const globalSummary = this.summarizeScope(GLOBAL_SCOPE_KEY, this.globalServers, at, this.projects.size);
+    const userHasContent = this.userLayer.ymlRows.length + this.userLayer.jsonRows.length + this.userLayer.profileRows.length > 0
+      || this.userLayer.ymlError !== null
+      || this.userLayer.jsonError !== null
+      || this.userLayer.profileError !== null;
+    const globalPath = join(dirname(this.resolveUserLayerPaths().mcpYml), DIAG_FILE);
+    if (globalSummary.rows === 0 && globalSummary.unhealthy.length === 0 && !userHasContent) {
+      try {
+        await readFile(globalPath);
+      } catch {
+        return;
+      }
+    }
+    await this.writeDiagAt(globalPath, undefined, globalSummary);
   }
 
   /** 装载一个期望行；返回跳过原因（有则不建装载实例），undefined = 已发起装载。 */

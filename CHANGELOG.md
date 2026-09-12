@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Detect `@wingsky-1/dsh-mcp-manager`'s `{version, servers}` storage at
   `.dsh/mcp.json` and `~/.dsh/dsh-mcp.json`, write a diagnostic instead of
   treating it as a silent empty layer, and document coexistence.
+- Diagnostic files are `{ summary?, events }` (legacy arrays still parse as
+  `events`). After each reconcile the `summary` records row/mount counts,
+  skip reasons and unhealthy names. `dsh-mcp status` prints layer row counts
+  plus that summary without connecting to a running host.
 
 - `package.json` discovery fields: `repository`, `bugs`, and `homepage` point at
   https://github.com/wldxiaobai/dsh-project-mcp-manager so npm and GitHub can
