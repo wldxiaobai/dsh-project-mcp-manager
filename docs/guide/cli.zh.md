@@ -17,6 +17,7 @@ dsh-mcp list          # 全部来源层展示，带遮蔽标注
 dsh-mcp get gitlab    # 优先层条目；密钥值只显示键名
 dsh-mcp remove gitlab # 按优先序在 yml/json 中查找并删除；命中只读层时给出编辑指引
 dsh-mcp status        # 层行数、名称与诊断摘要（不连接宿主）
+dsh-mcp import --from .cursor/mcp.json --dry-run   # 预演 mcpServers 导入，不写盘
 ```
 
 作用域：`--scope project`（缺省，写最近 `.git` 祖先下的 `.dsh/mcp.yml`）、
@@ -33,6 +34,12 @@ user/profile 为 `""`（宿主目录）；`-c` 显式覆盖。
 时文件不存在，命令会说明空态。`--scope project|user` 只过滤层列表，两份
 诊断文件仍都会展示。
 
+**`import`** 把 `{"mcpServers":{...}}` 写入原生 yml 或 JSON（`--scope` /
+`--format` / `--profile` 与 `add` 相同，缺省作用域为 **project**）。同名默认
+跳过，加 `--overwrite` 才覆盖。`--dry-run` 打印增/跳/覆盖计划与影子冲突
+（`shadowViewOf`）且不写盘。VS Code 的 `{servers:{…}}`、单条对象、JSON 数组
+一律拒绝。坏条目逐条报错，合法兄弟仍导入。`--from -` 读 stdin。
+
 没有 `local` 作用域——`--scope local` 会报错并解释。`--transport` 接受
 `stdio`（缺省）与 `http`；MCP SSE 端点传输（`sse`）拒绝并给出可执行出路
 （把 `type` 改为 `"http"`，或删除 `type` 只留 `url`）。
@@ -40,7 +47,7 @@ user/profile 为 `""`（宿主目录）；`-c` 显式覆盖。
 **保留短名**：`-s`/`-t`/`-e`/`-H`/`-c`/`-h` 之外，v0.4.0 起 `-f`（`--format`）与
 `-p`（`--profile`）也是本 CLI 的选项。这两个短名会连带吞掉下一个词元作为选项值：
 要把它们传给被 spawn 的服务器命令，请写在 `--` 之后（`--` 之后全部按位置参数透传）。
-其余以 `-` 开头的未知词元仍原样透传给服务器命令行。
+`--from`、`--dry-run`、`--overwrite` 留给 `import`。其余以 `-` 开头的未知词元仍原样透传给服务器命令行。
 
 **独占契约**：JSON 文件由本 CLI 独占（宿主插件永不写）。写入保留其他顶层键与键序、
 解析失败拒绝覆盖、原子写；`${VAR}` 原样写入，凭据留在环境里（见

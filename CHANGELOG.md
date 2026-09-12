@@ -27,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `events`). After each reconcile the `summary` records row/mount counts,
   skip reasons and unhealthy names. `dsh-mcp status` prints layer row counts
   plus that summary without connecting to a running host.
+- `dsh-mcp import --from <file|->` copies `{"mcpServers":{...}}` into a native
+  yml or JSON file. Same-name keys are skipped unless `--overwrite`;
+  `--dry-run` previews shadow conflicts without writing. VS Code `servers`
+  objects and bare entries/arrays are rejected.
 
 - `package.json` discovery fields: `repository`, `bugs`, and `homepage` point at
   https://github.com/wldxiaobai/dsh-project-mcp-manager so npm and GitHub can

@@ -453,6 +453,72 @@ try {
       await rm(statusDir, { recursive: true, force: true });
     }
   }
+
+  // 22. import：mcpServers 文件/stdin、dry-run 不写盘、同名 skip/overwrite、坏条目、--scope user
+  {
+    const importDir = await mkdtemp(join(tmpdir(), "dsh-mcp-import-"));
+    const importHome = join(importDir, "home");
+    const importProj = join(importDir, "proj");
+    await mkdir(join(importHome, ".dsh"), { recursive: true });
+    await mkdir(importProj, { recursive: true });
+    const importDeps = { home: importHome, resolveProjectRoot: async () => importProj };
+    const srcFile = join(importDir, "mcpServers.json");
+    await writeFile(srcFile, JSON.stringify({
+      mcpServers: {
+        alpha: { command: "node", args: ["a.js"] },
+        beta: { command: "node", args: ["b.js"] },
+        bad: { type: "sse", url: "https://example/" }
+      }
+    }), "utf8");
+    try {
+      const capMiss = io();
+      assert.equal(await runCli(["import"], capMiss.io, importDeps), 1);
+      assert.ok(capMiss.errs.join("\n").includes("--from"), capMiss.errs.join("\n"));
+      const capMissingFile = io();
+      assert.equal(await runCli(["import", "--from", join(importDir, "nope-missing.json")], capMissingFile.io, importDeps), 1);
+      const vscodeFile = join(importDir, "vscode.json");
+      await writeFile(vscodeFile, JSON.stringify({ servers: { vs: { command: "node", args: ["v.js"] } } }), "utf8");
+      const capVs = io();
+      assert.equal(await runCli(["import", "--from", vscodeFile], capVs.io, importDeps), 1);
+      assert.ok(capVs.errs.join("\n").includes("servers"), "vscode dialect: " + capVs.errs.join("\n"));
+      const capDry = io();
+      assert.equal(await runCli(["import", "--from", srcFile, "--dry-run"], capDry.io, importDeps), 1, capDry.errs.join("\n"));
+      assert.ok(capDry.lines.join("\n").includes("将添加"), "dry-run lists adds: " + capDry.lines.join("\n"));
+      assert.ok(capDry.errs.join("\n").includes("bad"), "dry-run reports bad entries: " + capDry.errs.join("\n"));
+      assert.equal(await pathExists(join(importProj, ".dsh", "mcp.yml")), false, "dry-run must not create the target file");
+      const capImp = io();
+      assert.equal(await runCli(["import", "--from", srcFile], capImp.io, importDeps), 1, capImp.errs.join("\n"));
+      assert.ok(capImp.lines.join("\n").includes("alpha"), capImp.lines.join("\n"));
+      assert.ok(await pathExists(join(importProj, ".dsh", "mcp.yml")), "import writes project yml");
+      const capSkip = io();
+      assert.equal(await runCli(["import", "--from", srcFile], capSkip.io, importDeps), 1);
+      assert.ok(capSkip.lines.join("\n").includes("跳过"), "same-name skip: " + capSkip.lines.join("\n"));
+      const srcOw = join(importDir, "overwrite.json");
+      await writeFile(srcOw, JSON.stringify({ mcpServers: { alpha: { command: "node", args: ["a2.js"] } } }), "utf8");
+      const capOw = io();
+      assert.equal(await runCli(["import", "--from", srcOw, "--overwrite"], capOw.io, importDeps), 0, capOw.errs.join("\n"));
+      assert.ok(capOw.lines.join("\n").includes("已覆盖"), capOw.lines.join("\n"));
+      const getAlpha = io();
+      assert.equal(await runCli(["get", "alpha"], getAlpha.io, importDeps), 0);
+      assert.ok(getAlpha.lines.join("\n").includes("a2.js"), "overwrite replaced the command: " + getAlpha.lines.join("\n"));
+      const capStdin = io();
+      assert.equal(await runCli(["import", "--from", "-", "--scope", "user"], capStdin.io, {
+        ...importDeps,
+        readStdin: async () => JSON.stringify({ mcpServers: { fromstdin: { command: "node", args: ["s.js"] } } })
+      }), 0, capStdin.errs.join("\n"));
+      assert.ok(await pathExists(join(importHome, ".dsh", "mcp.yml")), "stdin import writes user yml");
+      const getUser = io();
+      assert.equal(await runCli(["get", "fromstdin"], getUser.io, importDeps), 0);
+      const srcShadow = join(importDir, "shadow.json");
+      await writeFile(srcShadow, JSON.stringify({ mcpServers: { alpha: { command: "node", args: ["other.js"] } } }), "utf8");
+      const capShadow = io();
+      assert.equal(await runCli(["import", "--from", srcShadow, "--scope", "user", "--dry-run"], capShadow.io, importDeps), 0);
+      assert.ok(capShadow.lines.join("\n").includes("不会装载"), "dry-run previews shadow: " + capShadow.lines.join("\n"));
+      pass("cli import reads mcpServers, dry-runs, skips/overwrites, and writes user scope");
+    } finally {
+      await rm(importDir, { recursive: true, force: true });
+    }
+  }
 } finally {
   await rm(dir, { recursive: true, force: true });
 }
