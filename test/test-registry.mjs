@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ProjectMcpRegistry, parseDiagDocument, projectMcpFile, mergeSourcedRows, profileNameFromConfigPath } from "../lib/registry.js";
+import { ProjectMcpRegistry, parseDiagDocument, projectMcpFile, mergeSourcedRows, profileNameFromConfigPath, UNMOUNT_GRACE_MS } from "../lib/registry.js";
 import { bindProjectMcpService, PROJECT_MCP_SERVICE } from "../lib/service.js";
 import { apply } from "../lib/index.js";
 import { MCP_BLOCK_BEGIN, MCP_BLOCK_END, writeManagedRows } from "../lib/mcp-file.js";
@@ -1390,6 +1390,94 @@ try {
   }
   await rmRetry(dirSvc);
   pass("projectMcp service matches registry queries and apply provides it");
+}
+
+{
+  const dirOn = await mkdtemp(join(tmpdir(), "dsh-mcp-ondemand-"));
+  const homeOn = join(dirOn, "home");
+  const projA = join(dirOn, "projA");
+  const projB = join(dirOn, "projB");
+  await mkdir(join(homeOn, ".dsh"), { recursive: true });
+  await mkdir(projA, { recursive: true });
+  await mkdir(projB, { recursive: true });
+  await writeManagedRows(projectMcpFile(projA), [stdioRow("alpha")], { createIfMissing: true });
+  await writeManagedRows(projectMcpFile(projB), [stdioRow("beta")], { createIfMissing: true });
+  const savedCwdOn = process.cwd();
+  let now = 1_000_000_000;
+  const activeNames = (snap, projectRoot) => {
+    const part = snap.find((file) => file.project === projectRoot && (file.source === "dsh-project" || file.source === undefined));
+    return (part?.servers ?? []).filter((row) => row.fiberPhase === "active" || row.fiberPhase === "loading").map((row) => row.serverName);
+  };
+  try {
+    process.chdir(dirOn);
+    const ctxOn = fakeCtx();
+    const registryOn = new ProjectMcpRegistry(ctxOn, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(homeOn, ".dsh", "mcp.yml"), mcpJson: join(homeOn, ".dsh", "mcp.json"), profilesDir: join(homeOn, ".dsh", "profiles") },
+      now: () => now,
+      unmountGraceMs: UNMOUNT_GRACE_MS
+    });
+    const agentA = fakeAgent("session-on-a", projA);
+    ctxOn.agentsList.push(agentA);
+    await registryOn.reconcileNow();
+    let snap = await registryOn.snapshot();
+    assert.deepEqual(activeNames(snap, projA), ["alpha"], "only the session project mounts: " + JSON.stringify(activeNames(snap, projA)));
+    assert.deepEqual(activeNames(snap, projB), [], "unknown idle project is not mounted");
+    assert.equal(ctxOn.mounts.length, 1, "one mount before B appears");
+
+    ctxOn.agentsList.push(fakeAgent("session-on-b", projB));
+    await registryOn.reconcileNow();
+    snap = await registryOn.snapshot();
+    assert.deepEqual(activeNames(snap, projA), ["alpha"]);
+    assert.deepEqual(activeNames(snap, projB), ["beta"], "B session incrementally mounts B");
+
+    ctxOn.agentsList.splice(0, 1);
+    await registryOn.reconcileNow();
+    snap = await registryOn.snapshot();
+    assert.deepEqual(activeNames(snap, projA), ["alpha"], "A stays mounted during the grace window");
+    assert.deepEqual(activeNames(snap, projB), ["beta"]);
+
+    now += UNMOUNT_GRACE_MS - 1;
+    await registryOn.reconcileNow();
+    snap = await registryOn.snapshot();
+    assert.deepEqual(activeNames(snap, projA), ["alpha"], "A still mounted just before grace elapses");
+
+    now += 2;
+    await registryOn.reconcileNow();
+    snap = await registryOn.snapshot();
+    assert.deepEqual(activeNames(snap, projA), [], "A unmounts after the 5 minute grace");
+    assert.deepEqual(activeNames(snap, projB), ["beta"], "B stays mounted while it has a session");
+    const pendingA = snap.find((file) => file.project === projA)?.servers ?? [];
+    assert.equal(pendingA.length, 1, "unmounted project keeps its catalog entry");
+    assert.equal(pendingA[0].fiberPhase, "pending");
+
+    ctxOn.agentsList.unshift(agentA);
+    await registryOn.reconcileNow();
+    snap = await registryOn.snapshot();
+    assert.deepEqual(activeNames(snap, projA), ["alpha"], "returning session remounts A");
+
+    ctxOn.agentsList.length = 0;
+    await registryOn.reconcileNow();
+    now += UNMOUNT_GRACE_MS + 1;
+    await registryOn.reconcileNow();
+    snap = await registryOn.snapshot();
+    assert.deepEqual(activeNames(snap, projA), [], "no session and not cwd: A stays unmounted");
+    assert.deepEqual(activeNames(snap, projB), [], "no session and not cwd: B stays unmounted");
+    process.chdir(projA);
+    await registryOn.reconcileNow();
+    snap = await registryOn.snapshot();
+    assert.deepEqual(activeNames(snap, projA), ["alpha"], "process cwd project stays mounted without a session");
+    assert.deepEqual(activeNames(snap, projB), [], "cwd of A does not mount B");
+
+    for (const disposer of ctxOn.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    pass("registry mounts on demand, keeps servers during the 5 minute grace, and always mounts the process cwd project");
+  } finally {
+    process.chdir(savedCwdOn);
+    await rmRetry(dirOn);
+  }
 }
 
 console.log("\n" + passed + " passed, 0 failed");

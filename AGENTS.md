@@ -46,6 +46,7 @@ npx tsc --noEmit       # 仅类型检查
 - **同名重装载**：必须先 unmount（释放 serverName 预留）再 mount，顺序在 `reconcileContainer` 里已保证。连接死亡自愈（曾经有工具、当前 `mcpToolCount===0`、未 `disabled`）同样走这条顺序，连续 3 次仍为 0 工具则 `give-up` 并停止；JSON `enabled:false` 不在装载集，不会被复活。
 - **配置指纹跳过重读**：`reconcileAll` 入口比对已知项目的 yml/json/cc 与用户层三路径的 `mtimeMs+size`；全同则跳过文件重读、复用上次期望集，仍跑健康巡检 / deny 重扫 / 工具预算 / 摘要。
 - **工具预算护栏**：装载/巡检后按生效名统计 `ctx.tools.schemas()` 的数量与描述/schema 字节；超过 `DSH_MCP_TOOL_BUDGET_WARN`（缺省 200 工具 / 256KiB）告警一次并写入 `summary.toolBudget`，**永不裁剪**。
+- **按需挂载**：扫描与生效名仍按全量已知项目计算；项目层只装「有活跃会话的项目 ∪ 进程 cwd 所在项目」。最后一次会话离开且该项目不是 cwd 后，宽限 `UNMOUNT_GRACE_MS`（5 分钟）再卸载服务器，保留 `ProjectEntry` 与 watcher。全局用户层仍宿主级常驻。
 - **零配置项目不留痕**：无配置行的项目不建 projects 条目、不写 `.dsh/.mcp-diag.json`（诊断只在有异常或有行时写；文件形态 `{ summary?, events }`，events 保留最近 30 条；对账结束刷新 `summary`）；全局层的诊断写 `$DSH_HOME/.mcp-diag.json`。
 - **`!!js` 标签不支持**：受管块内出现未解析 YAML 标签必须显式报错（否则值静默降级为字面量字符串），env/headers/disabled 只能写字面值。
 - **reconnect 上限镜像**：`MAX_TIMER_DELAY_MS = 2147483647` 必须与 dsh-mcp-client 保持一致，越界值要在本地 zod 校验拦下而非留到 ctx.plugin 爆 plugin-throw。

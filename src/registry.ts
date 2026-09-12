@@ -8,6 +8,9 @@
  * 装载模型：
  *   - 每个 (项目, serverName) 在宿主 ctx 上装载一个 @deepseek-ai/dsh-mcp-client
  *     实例（ctx.plugin），注册进全局工具层——同一项目内多会话共享同一连接；
+ *     扫描与生效名按全量已知项目计算，但项目层只给「有活跃会话 ∪ 进程 cwd」
+ *     的项目发起装载；会话离开且非 cwd 后宽限 5 分钟再卸载，条目与 watcher 保留；
+ *     用户层仍宿主级常驻一条；
  *   - 生效名：原始 serverName 在整个目录（全局行 + 全部项目行）中唯一时保持
  *     原名；否则按 model.effectiveServerNames 规则改名（确定性、与装载顺序
  *     无关），避免 dsh-mcp-client 按进程根的 serverName 预留冲突；
@@ -185,6 +188,8 @@ export interface ProjectMcpRegistryOptions {
   statFile?: (path: string) => Promise<{ mtimeMs: number; size: number } | null>;
   /** 工具预算告警阈值（测试注入）；缺省读 `DSH_MCP_TOOL_BUDGET_WARN`。 */
   toolBudget?: { maxTools: number; maxBytes: number };
+  /** 无会话后卸载宽限（毫秒）；缺省 `UNMOUNT_GRACE_MS`（5 分钟）。测试注入。 */
+  unmountGraceMs?: number;
 }
 
 interface ProjectEntry {
@@ -327,6 +332,8 @@ export const GLOBAL_SCOPE_KEY = "\u0000global";
 export const HEALTH_REMOUNT_LIMIT = 3;
 /** 两次健康重挂之间的缺省退避（毫秒）。测试可经 options 注入 0。 */
 export const HEALTH_REMOUNT_BACKOFF_MS = 5_000;
+/** 项目无活跃会话且不是进程 cwd 之后，再卸载其服务器的缺省宽限。 */
+export const UNMOUNT_GRACE_MS = 5 * 60 * 1000;
 
 /** 服务身份键：stdio 看「可执行文件 + 参数」，http 看 url。command/url 缺失或为空的行
  * 不注册身份键（disabled 占名行常无 config，只占名字不冒充服务）。Windows 下路径大小写
@@ -668,6 +675,8 @@ export class ProjectMcpRegistry {
    */
   private readonly warnGates = new Map<string, string>();
   private timer: ReturnType<typeof setTimeout> | undefined;
+  /** 无会话宽限期到期后补一次对账（注入 `now` 时由测试自行 reconcileNow）。 */
+  private graceTimer: ReturnType<typeof setTimeout> | undefined;
   private chain: Promise<void> = Promise.resolve();
   private disposed = false;
   /** 配置文件读取次数（scan / 用户层；测试用指纹跳过断言）。 */
@@ -683,6 +692,8 @@ export class ProjectMcpRegistry {
   private readonly healthByMount = new Map<string, { everHadTools: boolean; remountCount: number; nextRemountAt: number; givenUp: boolean }>();
   /** 作用域键 → 超预算的生效名（写入 diag summary；每轮重算）。 */
   private readonly toolBudgetHits = new Map<string, { name: string; tools: number; bytes: number }[]>();
+  /** 项目离开活跃挂载集的时刻（宽限内仍保持装载）。 */
+  private readonly idleSince = new Map<string, number>();
 
   constructor(ctx: any, providers: ProjectMcpRegistryOptions) {
     this.ctx = ctx;
@@ -698,6 +709,9 @@ export class ProjectMcpRegistry {
     ctx.on("agent/disposed", ({ agent }: any) => {
       if (agent === undefined) return;
       this.releaseAgent(agent);
+      this.enqueue(async () => {
+        await this.reconcileAll();
+      });
     });
     // 会话生命周期开始（含恢复/重挂的会话）也补扫一次，覆盖启动时序缺口。
     ctx.on("agent/session-start", ({ agent }: any) => {
@@ -719,6 +733,7 @@ export class ProjectMcpRegistry {
     ctx.effect(() => () => {
       this.disposed = true;
       if (this.timer !== undefined) clearTimeout(this.timer);
+      if (this.graceTimer !== undefined) clearTimeout(this.graceTimer);
       if (this.watcher !== undefined) void this.watcher.close().catch(() => {});
       if (this.userWatcher !== undefined) void this.userWatcher.close().catch(() => {});
       for (const disposer of this.restrictions.values()) {
@@ -1027,6 +1042,73 @@ export class ProjectMcpRegistry {
     return this.providers.healthRemountLimit ?? HEALTH_REMOUNT_LIMIT;
   }
 
+  private unmountGraceMs(): number {
+    return this.providers.unmountGraceMs ?? UNMOUNT_GRACE_MS;
+  }
+
+  /** 有活跃会话的项目 ∪ 进程 cwd 所在项目：只对这些项目发起装载。 */
+  private async liveMountKeys(): Promise<Set<string>> {
+    const keys = new Set<string>();
+    for (const agent of this.liveAgents()) {
+      const project = this.agentProjects.get(agent.id) ?? await this.resolveProject(agent);
+      if (project !== undefined) {
+        this.agentProjects.set(agent.id, project);
+        keys.add(project);
+      }
+    }
+    try {
+      keys.add(projectKeyOf(await findProjectRoot(process.cwd())));
+    } catch {
+      // 启动目录不可解析：不强制挂载
+    }
+    return keys;
+  }
+
+  /**
+   * 刚离开活跃集且当前仍有装载的项目记下 idle 起点；已在宽限中的保持原时间戳。
+   */
+  private touchIdleSince(live: Set<string>): void {
+    const now = this.nowMs();
+    for (const [key, entry] of this.projects) {
+      if (live.has(key)) {
+        this.idleSince.delete(key);
+        continue;
+      }
+      if (entry.servers.size > 0 && !this.idleSince.has(key)) this.idleSince.set(key, now);
+    }
+  }
+
+  private shouldKeepMounts(key: string, live: Set<string>): boolean {
+    if (live.has(key)) return true;
+    const since = this.idleSince.get(key);
+    if (since === undefined) return false;
+    return this.nowMs() - since < this.unmountGraceMs();
+  }
+
+  private scheduleGraceUnmount(): void {
+    if (this.graceTimer !== undefined) {
+      clearTimeout(this.graceTimer);
+      this.graceTimer = undefined;
+    }
+    if (this.providers.now !== undefined) return;
+    const grace = this.unmountGraceMs();
+    if (grace <= 0) return;
+    const now = Date.now();
+    let delayMs: number | undefined;
+    for (const since of this.idleSince.values()) {
+      const remaining = since + grace - now;
+      if (remaining <= 0) continue;
+      if (delayMs === undefined || remaining < delayMs) delayMs = remaining;
+    }
+    if (delayMs === undefined) return;
+    this.graceTimer = setTimeout(() => {
+      this.graceTimer = undefined;
+      this.enqueue(async () => {
+        await this.reconcileAll();
+      }).catch(() => {});
+    }, delayMs);
+  }
+
   private async statConfigFile(path: string): Promise<{ mtimeMs: number; size: number } | "missing"> {
     try {
       if (this.providers.statFile !== undefined) {
@@ -1126,8 +1208,10 @@ export class ProjectMcpRegistry {
     const globalNames = [...hostGlobalNames, ...globalMerged.rows.map((row) => row.rawName)];
     this.effective = effectiveServerNames(catalogProjects, globalNames);
 
+    const live = await this.liveMountKeys();
+    this.touchIdleSince(live);
     for (const [key, entry] of desiredByProject) {
-      await this.reconcileProject(key, entry);
+      await this.reconcileProject(key, entry, this.shouldKeepMounts(key, live));
     }
     await this.reconcileGlobals(globalMerged.rows, hostGlobalNames);
     this.prunePerProjectState(new Set(desiredByProject.keys()));
@@ -1135,6 +1219,7 @@ export class ProjectMcpRegistry {
     await this.sweepRestrictions();
     this.inspectToolBudgets();
     await this.writeSummaries();
+    this.scheduleGraceUnmount();
   }
 
   /**
@@ -1244,7 +1329,7 @@ export class ProjectMcpRegistry {
     }
   }
 
-  private async reconcileProject(key: string, entry: { projectRoot: string; rows: DesiredProjectRow[] }) {
+  private async reconcileProject(key: string, entry: { projectRoot: string; rows: DesiredProjectRow[] }, keepMounts: boolean) {
     let project = this.projects.get(key);
     if (project === undefined) {
       // 只为「确实有行要装载」的项目建条目：否则会话/进程访问过的每个目录都会
@@ -1254,7 +1339,8 @@ export class ProjectMcpRegistry {
       project = { projectRoot: entry.projectRoot, servers: new Map() };
       this.projects.set(key, project);
     }
-    await this.reconcileContainer(this.projectContainer(key, project), entry.rows);
+    const desired = keepMounts ? entry.rows : [];
+    await this.reconcileContainer(this.projectContainer(key, project), desired);
   }
 
   /** 全局（用户层）对账：与项目数量无关，宿主级只挂一条连接。 */

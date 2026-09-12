@@ -46,6 +46,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Unstable `ctx.provide("projectMcp", { snapshot, serverView, globalState,
   reload })` query surface so other plugins can read mount state without
   opening diagnostic files. `reload` is one `reconcileAll`.
+- On-demand project mounts: scan and effective names stay full-catalog;
+  fibers are created only for projects with a live session or the process
+  cwd. After the last session leaves (and the project is not cwd) servers
+  unload following a 5 minute grace; the project entry and watcher remain.
+  User-layer globals stay host-wide.
 
 - `package.json` discovery fields: `repository`, `bugs`, and `homepage` point at
   https://github.com/wldxiaobai/dsh-project-mcp-manager so npm and GitHub can
