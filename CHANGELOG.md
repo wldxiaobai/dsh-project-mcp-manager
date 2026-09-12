@@ -40,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport alias lookup uses `Object.hasOwn` on a null-prototype map, so
   values like `toString` fail as unknown transports instead of hitting
   `Object.prototype`.
+- Illegal `tools.allow` / `tools.deny` globs (for example `[z-a]`) warn
+  once per entry instead of silently never matching.
 
 ## [0.6.0] - 2026-09-12
 

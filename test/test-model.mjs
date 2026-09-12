@@ -13,6 +13,7 @@ import {
   isUrlOrEnvRef,
   jsonTypeOfTransport,
   matchToolGlob,
+  invalidToolGlobs,
   mcpServerInputSchema,
   mergeSecretPatch,
   namespacedServerName,
@@ -296,6 +297,9 @@ assert.equal(matchToolGlob("file.[jt]s", "file.py"), false);
 assert.equal(matchToolGlob("[!a]*", "bcd"), true);
 assert.equal(matchToolGlob("[!a]*", "abc"), false);
 assert.equal(matchToolGlob("**", "a/b"), true);
+assert.equal(matchToolGlob("[z-a]", "z"), false, "illegal class is a non-match, not a throw");
+assert.deepEqual(invalidToolGlobs({ deny: ["[z-a]", "ok_*", "[z-a]"] }), ["[z-a]"]);
+assert.deepEqual(invalidToolGlobs({ allow: ["read_*"] }), []);
 const filtered = deniedToolsForFilter("gh", { allow: ["read_*"], deny: ["read_secret"] }, [
   "mcp__gh__read_file",
   "mcp__gh__read_secret",

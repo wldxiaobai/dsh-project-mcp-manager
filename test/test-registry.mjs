@@ -1359,6 +1359,31 @@ try {
     await rmRetry(dirT);
     pass("registry expands tools.allow/deny to registered names and retries unknown denies");
 
+    const dirGlob = await mkdtemp(join(tmpdir(), "dsh-mcp-badglob-"));
+    const projGlob = join(dirGlob, "proj");
+    await mkdir(projGlob, { recursive: true });
+    await writeManagedRows(projectMcpFile(projGlob), [{
+      ...stdioRow("box"),
+      config: { ...stdioRow("box").config, tools: { deny: ["[z-a]", "delete_*"] } }
+    }], { createIfMissing: true });
+    const ctxGlob = fakeCtx();
+    const warnsGlob = [];
+    ctxGlob.logger.warn = (msg) => { warnsGlob.push(String(msg)); };
+    const registryGlob = new ProjectMcpRegistry(ctxGlob, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(dirGlob, "home", ".dsh", "mcp.yml"), mcpJson: join(dirGlob, "home", ".dsh", "mcp.json"), profilesDir: join(dirGlob, "home", ".dsh", "profiles") }
+    });
+    ctxGlob.agentsList.push(fakeAgent("session-glob", projGlob));
+    await registryGlob.reconcileNow();
+    assert.equal(ctxGlob.mounts.length, 1, "illegal glob still mounts the server");
+    assert.ok(warnsGlob.some((w) => w.includes("工具过滤 glob 无效") && w.includes("[z-a]")), "illegal glob is warned: " + warnsGlob.join("|"));
+    for (const disposer of ctxGlob.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    await rmRetry(dirGlob);
+    pass("registry warns on illegal tool globs without skipping the row");
+
     const dirBgt = await mkdtemp(join(tmpdir(), "dsh-mcp-budget-"));
     const projBgt = join(dirBgt, "proj");
     await mkdir(projBgt, { recursive: true });

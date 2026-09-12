@@ -70,6 +70,7 @@ import {
   effectiveServerNames,
   expandEnvRefs,
   inputFromPatchRow,
+  invalidToolGlobs,
   mcpServerInputSchema,
   configFromPatchRow,
   patchRowToView,
@@ -970,6 +971,9 @@ export class ProjectMcpRegistry {
     this.warnFileIssues(paths.mcpYml, `用户层 MCP（${paths.mcpYml}）`, yml.error ?? undefined, []);
     this.warnFileIssues(paths.mcpJson, `用户层 MCP（${paths.mcpJson}）`, json.fileError, jsonIssueNotes(json));
     if (profileJson !== null) this.warnFileIssues(profileJson, `用户层 MCP（${profileJson}）`, profile.fileError, jsonIssueNotes(profile));
+    this.warnInvalidToolGlobs(paths.mcpYml, `用户层 MCP（${paths.mcpYml}）`, yml.rows);
+    this.warnInvalidToolGlobs(paths.mcpJson, `用户层 MCP（${paths.mcpJson}）`, json.rows);
+    if (profileJson !== null) this.warnInvalidToolGlobs(profileJson, `用户层 MCP（${profileJson}）`, profile.rows);
     if (json.formatHint !== undefined) {
       await this.writeGlobalDiag({ kind: "foreign-format", path: paths.mcpJson, message: json.formatHint });
     }
@@ -991,6 +995,19 @@ export class ProjectMcpRegistry {
   private warnFileIssues(gateKey: string, label: string, fileError: string | undefined, entryErrors: string[]): void {
     const notes = [...(fileError === undefined ? [] : [fileError]), ...entryErrors];
     this.warnGated("entries\u0000" + gateKey, notes.join("\u0001"), () => {
+      for (const note of notes) this.ctx.logger.warn(`${label}：${note}`);
+    });
+  }
+
+  /** 非法 glob 仍装载该行，但告警一次：matchToolGlob 会把编译失败当成永不命中。 */
+  private warnInvalidToolGlobs(gateKey: string, label: string, rows: ReadonlyArray<{ rawName: string; row: PatchRow }>): void {
+    const notes: string[] = [];
+    for (const item of rows) {
+      for (const pattern of invalidToolGlobs(toolFilterFromConfig(configFromPatchRow(item.row)))) {
+        notes.push(`"${item.rawName}": 工具过滤 glob 无效（${pattern}），该模式不会命中任何工具`);
+      }
+    }
+    this.warnGated("globs\u0000" + gateKey, notes.join("\u0001"), () => {
       for (const note of notes) this.ctx.logger.warn(`${label}：${note}`);
     });
   }
@@ -1289,6 +1306,9 @@ export class ProjectMcpRegistry {
     if (diag !== null) await this.writeDiag(projectRoot, diag);
     this.warnFileIssues(key + "\u0000json", `项目 MCP（.dsh/${JSON_MCP_FILE}，${projectRoot}）`, projectJson.fileError, jsonIssueNotes(projectJson));
     this.warnFileIssues(key + "\u0000cc", `项目 MCP（${CC_PROJECT_FILE}，${projectRoot}）`, cc.fileError, jsonIssueNotes(cc));
+    this.warnInvalidToolGlobs(key + "\u0000yml", `项目 MCP（.dsh/${MCP_YML_FILE}，${projectRoot}）`, yml.rows);
+    this.warnInvalidToolGlobs(key + "\u0000json", `项目 MCP（.dsh/${JSON_MCP_FILE}，${projectRoot}）`, projectJson.rows);
+    this.warnInvalidToolGlobs(key + "\u0000cc", `项目 MCP（${CC_PROJECT_FILE}，${projectRoot}）`, cc.rows);
     // 源级隔离：某个源坏了只清空该源的 rows（读取器已保证），其余源照常进
     // desired。绝不能整项目一票否决——那会把坏文件的代价转嫁给好文件的行。
     // 项目容器只装项目层行；用户层行由全局容器装载（见 reconcileGlobals）。

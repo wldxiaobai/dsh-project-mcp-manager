@@ -101,6 +101,29 @@ export function matchToolGlob(pattern: string, name: string): boolean {
   }
 }
 
+/** 非法字符类等会导致 `RegExp` 抛错的 glob；合法则返回 undefined。 */
+export function toolGlobCompileError(pattern: string): string | undefined {
+  try {
+    globToRegExp(pattern);
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+/** 过滤里无法编译的 glob 原文（去重）；调用方记条目警告，匹配仍跳过该模式。 */
+export function invalidToolGlobs(filter: ToolFilter | undefined): string[] {
+  if (filter === undefined) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const pattern of [...(filter.allow ?? []), ...(filter.deny ?? [])]) {
+    if (seen.has(pattern)) continue;
+    seen.add(pattern);
+    if (toolGlobCompileError(pattern) !== undefined) out.push(pattern);
+  }
+  return out;
+}
+
 export interface ToolFilter {
   allow?: string[];
   deny?: string[];
