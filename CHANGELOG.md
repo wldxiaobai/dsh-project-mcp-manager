@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `SUPPORTED_MCP_TRANSPORTS` mirrors `@deepseek-ai/dsh-mcp-client` 0.1.5-rc.1
+  (`stdio` | `streamable-http`). Schema, CLI `--transport`, JSON `type`
+  mapping and error copy all derive from it; unknown values fail locally
+  instead of reaching `ctx.plugin`.
+
 - `package.json` discovery fields: `repository`, `bugs`, and `homepage` point at
   https://github.com/wldxiaobai/dsh-project-mcp-manager so npm and GitHub can
   surface the source, issues, and README.

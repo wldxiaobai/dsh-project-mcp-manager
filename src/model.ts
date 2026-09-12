@@ -58,6 +58,74 @@ const secretMapSchema = z.record(z.string(), z.string().nullable()).optional();
  * 本地校验、到 ctx.plugin 装载时才以 plugin-throw 爆错，归因更晚更难查。
  */
 export const MAX_TIMER_DELAY_MS = 2147483647;
+
+/**
+ * 官方 `@deepseek-ai/dsh-mcp-client` 0.1.5-rc.1 支持的 MCP 传输集合
+ * （config.transport 判别联合：`stdio` | `streamable-http`）。本插件不实现
+ * 传输，只负责表达；schema / CLI / JSON 读取器 / 报错文案全部从这里派生。
+ * 官方新增传输时：常量加值 + 一条 CLI/JSON 别名映射 + 文档 + 测试，不要再
+ * 加判定分支。性质与 `MAX_TIMER_DELAY_MS` 相同。
+ */
+export const SUPPORTED_MCP_TRANSPORTS = ["stdio", "streamable-http"] as const;
+export type SupportedMcpTransport = (typeof SUPPORTED_MCP_TRANSPORTS)[number];
+
+/** JSON/CLI 用户面写法 → 官方 transport。`http` 是 Cursor/CC 通行别名。 */
+export const MCP_TRANSPORT_ALIASES: Record<string, SupportedMcpTransport> = {
+  stdio: "stdio",
+  http: "streamable-http",
+  "streamable-http": "streamable-http"
+};
+
+/**
+ * 已知但不被装载后端支持的传输。走统一报错路径，不隐式回退、不静默跳过。
+ * 官方若日后支持其中某一项：从本表删掉、加入 `SUPPORTED_MCP_TRANSPORTS` 与别名即可。
+ */
+export const UNSUPPORTED_MCP_TRANSPORTS = ["sse"] as const;
+
+/** 官方 transport → JSON 方言 `type`（Cursor/CC 写 `http` 而非 `streamable-http`）。 */
+export function jsonTypeOfTransport(transport: SupportedMcpTransport): "stdio" | "http" {
+  return transport === "stdio" ? "stdio" : "http";
+}
+
+export function isSupportedMcpTransport(value: string): value is SupportedMcpTransport {
+  return (SUPPORTED_MCP_TRANSPORTS as readonly string[]).includes(value);
+}
+
+export function isUnsupportedMcpTransport(value: string): boolean {
+  return (UNSUPPORTED_MCP_TRANSPORTS as readonly string[]).includes(value);
+}
+
+export function supportedTransportsLabel(separator = " | "): string {
+  return SUPPORTED_MCP_TRANSPORTS.join(separator);
+}
+
+/** 未知/不受支持传输的报错（CLI 与 JSON 读取器共用）。 */
+export function unsupportedTransportMessage(value: string): string {
+  return `不支持 ${value} 传输：装载后端（dsh-mcp-client）只有 ${supportedTransportsLabel(" 与 ")}`;
+}
+
+/**
+ * 用户面传输值（CLI `--transport`、JSON `type`/`transport`）→ 官方 transport。
+ * 别名命中则映射；其余一律报错（含 `UNSUPPORTED_MCP_TRANSPORTS` 与完全陌生的值）。
+ */
+export function resolveMcpTransport(raw: string): { transport: SupportedMcpTransport } | { error: string } {
+  const mapped = MCP_TRANSPORT_ALIASES[raw];
+  if (mapped !== undefined) return { transport: mapped };
+  return { error: unsupportedTransportMessage(raw) };
+}
+
+/**
+ * CLI `--transport`：官方名与 `http` 别名；内部仍用 `stdio` | `http`
+ * （`add` 的用户面口径，与 `jsonTypeOfTransport` 一致）。
+ * 已知不支持值走 `unsupportedTransportMessage`；完全陌生的值提示合法集合。
+ */
+export function parseCliTransport(value: string): { transport: "stdio" | "http" } | { error: string } {
+  const mapped = MCP_TRANSPORT_ALIASES[value];
+  if (mapped !== undefined) return { transport: jsonTypeOfTransport(mapped) };
+  if (isUnsupportedMcpTransport(value)) return { error: unsupportedTransportMessage(value) };
+  return { error: `--transport 只支持 stdio|http（别名 streamable-http），收到：${value}` };
+}
+
 const reconnectSchema = z.object({
   enabled: z.boolean().default(DEFAULT_RECONNECT.enabled),
   initialDelayMs: z.number().int().min(1).max(MAX_TIMER_DELAY_MS).default(DEFAULT_RECONNECT.initialDelayMs),
@@ -410,8 +478,8 @@ export function inputFromPatchRow(row: PatchRow): McpServerInput {
   // 显式拒绝未知 transport：此前非 "streamable-http" 一律落 stdio 分支，
   // `transport: http` 之类的笔误报的是「command 必填」而非「未知 transport」。
   const transportRaw = config.transport;
-  if (transportRaw !== undefined && transportRaw !== "stdio" && transportRaw !== "streamable-http") {
-    throw new Error('transport 必须为 "stdio" 或 "streamable-http"，当前为 ' + JSON.stringify(transportRaw));
+  if (transportRaw !== undefined && (typeof transportRaw !== "string" || !isSupportedMcpTransport(transportRaw))) {
+    throw new Error("transport 必须为 " + SUPPORTED_MCP_TRANSPORTS.map((item) => JSON.stringify(item)).join(" 或 ") + "，当前为 " + JSON.stringify(transportRaw));
   }
   const serverName = asString(config.serverName, serverNameFromRowId(row.id) ?? "");
   const common = {

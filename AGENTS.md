@@ -46,6 +46,7 @@ npx tsc --noEmit       # 仅类型检查
 - **零配置项目不留痕**：无配置行的项目不建 projects 条目、不写 `.dsh/.mcp-diag.json`（诊断只在有异常或有行时写，保留最近 30 条）；全局层的诊断写 `$DSH_HOME/.mcp-diag.json`。
 - **`!!js` 标签不支持**：受管块内出现未解析 YAML 标签必须显式报错（否则值静默降级为字面量字符串），env/headers/disabled 只能写字面值。
 - **reconnect 上限镜像**：`MAX_TIMER_DELAY_MS = 2147483647` 必须与 dsh-mcp-client 保持一致，越界值要在本地 zod 校验拦下而非留到 ctx.plugin 爆 plugin-throw。
+- **传输值域镜像**：`SUPPORTED_MCP_TRANSPORTS`（`stdio` | `streamable-http`）必须与 dsh-mcp-client 的 `config.transport` 判别联合保持一致。schema、CLI `--transport`、JSON `type` 映射与报错文案全部从它派生；未知/不受支持值（含 MCP SSE 端点传输）在本地给出可执行文案，不留到 `ctx.plugin` 爆 plugin-throw。官方新增传输时：常量加值 + 一条别名映射 + 文档 + 测试，不要再加判定分支。
 - **Windows 路径键**：Map 键一律经 `projectKeyOf()`（win32 下小写规范化），不要直接拿路径字符串比较。
 - **文件写**：改 `.dsh/mcp.yml` 必须走 `writeManagedRows()`；改 JSON 必须走 `updateJsonServers`/`writeJsonServers`（锁 + 原子写 + 写前自校验）；宿主侧永不写任何配置文件。
 

@@ -1,23 +1,29 @@
 import assert from "node:assert/strict";
 import {
   MAX_TIMER_DELAY_MS,
+  MCP_TRANSPORT_ALIASES,
   SERVER_NAME_RE,
+  SUPPORTED_MCP_TRANSPORTS,
   byCodeUnit,
   denySetFor,
   effectiveServerNames,
   expandEnvRefs,
   inputFromPatchRow,
   isUrlOrEnvRef,
+  jsonTypeOfTransport,
   mcpServerInputSchema,
   mergeSecretPatch,
   namespacedServerName,
+  parseCliTransport,
   patchRowToView,
   projectKeyOf,
+  resolveMcpTransport,
   rowIdForServerName,
   rowNameOf,
   serverNameFromRowId,
   toOfficialConfig,
-  toPatchRow
+  toPatchRow,
+  unsupportedTransportMessage
 } from "../lib/model.js";
 import { jsonServerEntrySchema } from "../lib/json-file.js";
 import { dshHomeDir, dshHomeFor, isValidProfileName, profileMcpJsonFile, userLayerPathsIn } from "../lib/dsh-paths.js";
@@ -250,6 +256,26 @@ assert.equal(rowNameOf({ id: "panel-mcp-fromid", name: "@deepseek-ai/dsh-mcp-cli
 assert.equal(rowNameOf({ name: "@deepseek-ai/dsh-mcp-client", config: { serverName: "onlyconfig" } }), "onlyconfig", "config.serverName is the fallback");
 assert.equal(rowNameOf({ id: "other-prefix", name: "@deepseek-ai/dsh-mcp-client", config: {} }), undefined, "no name at all");
 pass("rowNameOf prefers the managed row id");
+
+// 18. 传输值域镜像：schema/CLI/JSON 映射从同一常量派生
+assert.deepEqual([...SUPPORTED_MCP_TRANSPORTS], ["stdio", "streamable-http"]);
+assert.equal(MCP_TRANSPORT_ALIASES.http, "streamable-http");
+assert.equal(jsonTypeOfTransport("stdio"), "stdio");
+assert.equal(jsonTypeOfTransport("streamable-http"), "http");
+assert.deepEqual(resolveMcpTransport("http"), { transport: "streamable-http" });
+assert.deepEqual(resolveMcpTransport("stdio"), { transport: "stdio" });
+assert.equal(resolveMcpTransport("sse").error, unsupportedTransportMessage("sse"));
+assert.match(unsupportedTransportMessage("sse"), /stdio 与 streamable-http/);
+assert.deepEqual(parseCliTransport("streamable-http"), { transport: "http" });
+assert.deepEqual(parseCliTransport("stdio"), { transport: "stdio" });
+assert.match(parseCliTransport("websocket").error, /stdio\|http/);
+assert.match(parseCliTransport("sse").error, /不支持 sse 传输/);
+expectThrow(
+  "unknown yml transport still names the mirrored set",
+  () => inputFromPatchRow({ id: "panel-mcp-x", name: "@deepseek-ai/dsh-mcp-client", config: { serverName: "x", transport: "websocket" } }),
+  /"stdio" 或 "streamable-http"/
+);
+pass("SUPPORTED_MCP_TRANSPORTS is the single source for aliases, CLI parsing, and errors");
 
 console.log("\n" + passed + " passed, 0 failed");
 console.log("ALL MCP MODEL TESTS PASSED");

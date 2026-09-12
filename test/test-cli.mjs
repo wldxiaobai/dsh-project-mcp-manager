@@ -77,10 +77,16 @@ try {
     const cap2 = io();
     assert.equal(await runCli(["add", "-t", "sse", "x", "https://e/"], cap2.io, deps), 1, "sse rejected");
     assert.ok(cap2.errs.join("\n").includes("sse"));
+    const capUnknown = io();
+    assert.equal(await runCli(["add", "-t", "websocket", "x", "https://e/"], capUnknown.io, deps), 1, "unknown transport rejected");
+    assert.ok(capUnknown.errs.join("\n").includes("stdio|http"), "unknown --transport names the accepted set");
+    const capAlias = io();
+    assert.equal(await runCli(["add", "-t", "streamable-http", "aliashttp", "https://example/mcp"], capAlias.io, deps), 0, capAlias.errs.join("\n"));
+    assert.ok((await readFile(projectYml, "utf8")).includes("serverName: aliashttp"), "streamable-http alias writes an http row");
     const cap3 = io();
     assert.equal(await runCli(["add", "y", "node", "--scope", "local"], cap3.io, deps), 1, "local scope guidance");
     assert.ok(cap3.errs.join("\n").includes("local"));
-    pass("cli rejects invalid names, sse transport, and explains local scope");
+    pass("cli rejects invalid names, unknown transports, and explains local scope");
   }
 
   // 5. list：三个来源 + 遮蔽标注

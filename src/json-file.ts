@@ -12,7 +12,8 @@
  * 本插件永不读取任何 Claude 用户态状态文件（凭据/历史混杂的单体文件），也永不写入上述任一文件。
  *
  * 条目映射：stdio（`command`/`args`/`env`/`cwd`）与 http（`url`/`headers`）之外，
- * 容忍 `type`（`stdio`|`http`|`streamable-http`；`sse` 逐条拒绝）与 DSH 透传键
+ * 容忍 `type`（官方 `SUPPORTED_MCP_TRANSPORTS` + 别名 `http`；未知值与 `sse`
+ * 走 `resolveMcpTransport` 逐条拒绝）与 DSH 透传键
  * （`toolCallTimeoutMs`/`failOnStartupError`/`reconnect`）。未知键忽略。
  * `enabled:false` 静默跳过且不占名；`disabled:true` 占名但不装载（与原生 yml 一致）。
  * `${VAR}` 占位保持字面值进行，由 model.expandEnvRefs 在 mount 时运行时展开。
@@ -21,7 +22,7 @@ import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { z } from "zod";
 import { type PatchRow } from "./mcp-file.js";
-import { MAX_TIMER_DELAY_MS, SERVER_NAME_RE, mcpServerInputSchema, toPatchRow, type McpServerInput } from "./model.js";
+import { MAX_TIMER_DELAY_MS, SERVER_NAME_RE, mcpServerInputSchema, resolveMcpTransport, toPatchRow, type McpServerInput } from "./model.js";
 
 /** DSH 自有 JSON 配置文件名（位于 `<root>/.dsh/`、`$DSH_HOME/`、`$DSH_HOME/profiles/<name>/`）。 */
 export const JSON_MCP_FILE = "mcp.json";
@@ -85,7 +86,7 @@ const jsonReconnectSchema = z
  * `type` 缺省视为 stdio（有 url 无 command 时按 http 推断）。
  */
 export const jsonServerEntrySchema = z.looseObject({
-  type: z.enum(["stdio", "http", "streamable-http", "sse"]).optional(),
+  type: z.string().optional(),
   command: z.string().optional(),
   args: z.array(z.string()).optional(),
   env: z.record(z.string(), z.string()).optional(),
@@ -116,13 +117,13 @@ function passthroughKeys(entry: JsonServerEntry): Record<string, unknown> {
 
 /** 单条 JSON 条目 → 官方输入。坏条目返回 `{ error }` 由调用方逐条收集。 */
 export function jsonEntryToInput(name: string, entry: JsonServerEntry, options: JsonReadOptions): { input: McpServerInput } | { error: string } {
-  if (entry.type === "sse") {
-    return { error: "sse transport not supported（dsh-mcp-client 仅支持 stdio | streamable-http）" };
-  }
   try {
     // url 而无 type/command：按 http 处理（手写文件常见，官方要求 type 但容忍度向实用倾斜）
     const inferredHttp = entry.type === undefined && typeof entry.url === "string" && entry.command === undefined;
-    if (entry.type === "http" || entry.type === "streamable-http" || inferredHttp) {
+    const typeResolved = entry.type === undefined ? undefined : resolveMcpTransport(entry.type);
+    if (typeResolved !== undefined && "error" in typeResolved) return { error: typeResolved.error };
+    const official = typeResolved?.transport;
+    if (official === "streamable-http" || inferredHttp) {
       if (typeof entry.url !== "string" || entry.url === "") return { error: 'type:"http" 条目缺少 url' };
       const input = mcpServerInputSchema.parse({
         serverName: name,

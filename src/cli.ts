@@ -16,7 +16,7 @@ import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { mkdir, readdir } from "node:fs/promises";
 import { extractManagedRows, readPatchFile, updateManagedRows, type PatchRow } from "./mcp-file.js";
-import { byCodeUnit, mcpServerInputSchema, patchRowToView, rowNameOf, toPatchRow, type McpServerInput } from "./model.js";
+import { byCodeUnit, mcpServerInputSchema, parseCliTransport, patchRowToView, rowNameOf, toPatchRow, type McpServerInput } from "./model.js";
 import { CC_PROJECT_FILE, IGNORE_MCP_JSON_ENV, JSON_MCP_FILE, mcpJsonLayerEnabled, readDshJsonFile, readMcpJsonFile, type JsonReadResult, type McpRowSource, type SourcedRow } from "./json-file.js";
 import { MCP_YML_FILE, dshHomeFor, profileMcpJsonFile, userLayerPathsIn } from "./dsh-paths.js";
 import { readJsonServers, toJsonEntry, updateJsonServers } from "./json-write.js";
@@ -134,17 +134,12 @@ function applyOption(parsed: ParsedArgs, name: string, value: string): string | 
       if (value === "") return "--profile 需要 profile 名";
       parsed.profile = value;
       return undefined;
-    case "--transport":
-      if (value === "stdio" || value === "http") {
-        parsed.transport = value;
-        return undefined;
-      }
-      if (value === "sse") return "不支持 sse 传输：装载后端（dsh-mcp-client）只有 stdio 与 streamable-http";
-      if (value === "streamable-http") {
-        parsed.transport = "http";
-        return undefined;
-      }
-      return `--transport 只支持 stdio|http（别名 streamable-http），收到：${value}`;
+    case "--transport": {
+      const parsedTransport = parseCliTransport(value);
+      if ("error" in parsedTransport) return parsedTransport.error;
+      parsed.transport = parsedTransport.transport;
+      return undefined;
+    }
     case "--env":
       return applyKvOption(parsed.env, value, "=", "env", false);
     case "--header":

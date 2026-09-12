@@ -12,7 +12,7 @@
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { writeFileAtomic, withPatchLock } from "./mcp-file.js";
-import { DEFAULT_RECONNECT, DEFAULT_TOOL_CALL_TIMEOUT_MS, type McpServerInput } from "./model.js";
+import { DEFAULT_RECONNECT, DEFAULT_TOOL_CALL_TIMEOUT_MS, jsonTypeOfTransport, type McpServerInput } from "./model.js";
 
 /**
  * `mcpServers` 映射。值类型是 unknown 而非对象：文件里可能存在非对象条目
@@ -98,15 +98,16 @@ export function toJsonEntry(input: McpServerInput): Record<string, unknown> {
   const entry: Record<string, unknown> = {};
   if (input.transport === "stdio") {
     // 显式写 type：这些文件也可能被生态里要求 type 的工具读到（本插件自己按
-    // 缺省 stdio / 有 url 推断 http，不依赖它）。
-    entry.type = "stdio";
+    // 缺省 stdio / 有 url 推断 http，不依赖它）。取值由 jsonTypeOfTransport
+    // 从 SUPPORTED_MCP_TRANSPORTS 派生，不在此处写死。
+    entry.type = jsonTypeOfTransport(input.transport);
     entry.command = input.command;
     if (input.args.length > 0) entry.args = [...input.args];
     const env = Object.entries(input.env ?? {}).filter((pair): pair is [string, string] => typeof pair[1] === "string");
     if (env.length > 0) entry.env = Object.fromEntries(env);
     if (input.cwd !== "" && input.cwd !== ".") entry.cwd = input.cwd;
   } else {
-    entry.type = "http";
+    entry.type = jsonTypeOfTransport(input.transport);
     entry.url = input.url;
     const headers = Object.entries(input.headers ?? {}).filter((pair): pair is [string, string] => typeof pair[1] === "string");
     if (headers.length > 0) entry.headers = Object.fromEntries(headers);
