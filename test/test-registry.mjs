@@ -3,6 +3,8 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promise
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ProjectMcpRegistry, parseDiagDocument, projectMcpFile, mergeSourcedRows, profileNameFromConfigPath } from "../lib/registry.js";
+import { bindProjectMcpService, PROJECT_MCP_SERVICE } from "../lib/service.js";
+import { apply } from "../lib/index.js";
 import { MCP_BLOCK_BEGIN, MCP_BLOCK_END, writeManagedRows } from "../lib/mcp-file.js";
 import { byCodeUnit } from "../lib/model.js";
 
@@ -75,7 +77,14 @@ function fakeCtx() {
     agentsList: agents,
     disposers,
     schemas,
+    provided: {},
     on() {},
+    provide(name, value) {
+      this.provided[name] = value;
+      return () => {
+        delete this.provided[name];
+      };
+    },
     effect(callback) {
       if (typeof callback === "function") disposers.push(callback);
     },
@@ -1312,6 +1321,75 @@ try {
     process.chdir(savedCwd);
     await rmRetry(dirH);
   }
+}
+
+{
+  const dirSvc = await mkdtemp(join(tmpdir(), "dsh-mcp-service-"));
+  const homeSvc = join(dirSvc, "home");
+  const projSvc = join(dirSvc, "proj");
+  await mkdir(join(homeSvc, ".dsh"), { recursive: true });
+  await mkdir(projSvc, { recursive: true });
+  await writeManagedRows(projectMcpFile(projSvc), [stdioRow("query")], { createIfMissing: true });
+  const ctxSvc = fakeCtx();
+  const registrySvc = new ProjectMcpRegistry(ctxSvc, {
+    globalNames: async () => [],
+    userLayerPaths: { mcpYml: join(homeSvc, ".dsh", "mcp.yml"), mcpJson: join(homeSvc, ".dsh", "mcp.json"), profilesDir: join(homeSvc, ".dsh", "profiles") }
+  });
+  ctxSvc.agentsList.push(fakeAgent("session-svc", projSvc));
+  const service = bindProjectMcpService(registrySvc);
+  await service.reload();
+  const snapService = await service.snapshot();
+  const snapRegistry = await registrySvc.snapshot();
+  assert.deepEqual(snapService, snapRegistry, "provided snapshot matches registry.snapshot");
+  const viewService = await service.serverView(projSvc, "query");
+  const viewRegistry = await registrySvc.serverView(projSvc, "query");
+  assert.deepEqual(viewService, viewRegistry, "provided serverView matches registry.serverView");
+  assert.equal(viewService?.serverName, "query");
+  assert.equal(service.globalState("query"), registrySvc.globalState("query"));
+  assert.equal(service.globalState("query"), undefined, "project rows are not global state");
+  const before = registrySvc.debugReconcileCount;
+  await service.reload();
+  assert.ok(registrySvc.debugReconcileCount > before, "reload runs reconcileNow");
+  for (const disposer of ctxSvc.disposers) {
+    const cleanup = disposer();
+    if (typeof cleanup === "function") cleanup();
+  }
+
+  const savedHome = process.env.DSH_HOME;
+  const savedProfile = process.env.DSH_MCP_PROFILE;
+  const savedCwdSvc = process.cwd();
+  try {
+    process.env.DSH_HOME = join(dirSvc, "dsh-home");
+    delete process.env.DSH_MCP_PROFILE;
+    await mkdir(process.env.DSH_HOME, { recursive: true });
+    process.chdir(projSvc);
+    const ctxApply = fakeCtx();
+    ctxApply.agentsList.push(fakeAgent("session-apply", projSvc));
+    apply(ctxApply);
+    const provided = ctxApply.provided[PROJECT_MCP_SERVICE];
+    assert.ok(provided, "apply provides projectMcp");
+    assert.equal(typeof provided.snapshot, "function");
+    assert.equal(typeof provided.serverView, "function");
+    assert.equal(typeof provided.globalState, "function");
+    assert.equal(typeof provided.reload, "function");
+    await provided.reload();
+    const applyView = await provided.serverView(projSvc, "query");
+    assert.equal(applyView?.serverName, "query", "apply service.serverView matches the project row");
+    const applySnap = await provided.snapshot();
+    assert.ok(applySnap.some((part) => part.servers?.some((row) => row.serverName === "query")), "apply service.snapshot contains the project row");
+    for (const disposer of ctxApply.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+  } finally {
+    process.chdir(savedCwdSvc);
+    if (savedHome === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = savedHome;
+    if (savedProfile === undefined) delete process.env.DSH_MCP_PROFILE;
+    else process.env.DSH_MCP_PROFILE = savedProfile;
+  }
+  await rmRetry(dirSvc);
+  pass("projectMcp service matches registry queries and apply provides it");
 }
 
 console.log("\n" + passed + " passed, 0 failed");

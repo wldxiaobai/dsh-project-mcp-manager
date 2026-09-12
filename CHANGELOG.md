@@ -43,6 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   measured via `ctx.tools.schemas()`. Crossing `DSH_MCP_TOOL_BUDGET_WARN`
   (default 200 tools / 256KiB) warns once and records `summary.toolBudget`;
   tools are never clipped.
+- Unstable `ctx.provide("projectMcp", { snapshot, serverView, globalState,
+  reload })` query surface so other plugins can read mount state without
+  opening diagnostic files. `reload` is one `reconcileAll`.
 
 - `package.json` discovery fields: `repository`, `bugs`, and `homepage` point at
   https://github.com/wldxiaobai/dsh-project-mcp-manager so npm and GitHub can
