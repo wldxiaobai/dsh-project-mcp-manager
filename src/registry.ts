@@ -619,6 +619,41 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function parseSkippedByReason(raw: unknown): Record<string, number> {
+  const skippedByReason: Record<string, number> = {};
+  if (!isRecord(raw)) return skippedByReason;
+  for (const [key, value] of Object.entries(raw)) {
+    if (typeof value === "number") skippedByReason[key] = value;
+  }
+  return skippedByReason;
+}
+
+function parseUnhealthyList(raw: unknown): DiagUnhealthy[] {
+  if (!Array.isArray(raw)) return [];
+  const unhealthy: DiagUnhealthy[] = [];
+  for (const item of raw) {
+    if (isRecord(item) && typeof item.name === "string" && typeof item.reason === "string") {
+      unhealthy.push({ name: item.name, reason: item.reason });
+    }
+  }
+  return unhealthy;
+}
+
+function parseIdleNames(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const idle: string[] = [];
+  for (const item of raw) {
+    if (typeof item === "string") idle.push(item);
+  }
+  return idle;
+}
+
+function parseToolBudgetHits(raw: unknown): { name: string; tools: number; bytes: number }[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  return raw.filter((item): item is { name: string; tools: number; bytes: number } =>
+    isRecord(item) && typeof item.name === "string" && typeof item.tools === "number" && typeof item.bytes === "number");
+}
+
 /** 兼容旧版纯数组诊断文件：数组 → `{ events }`；对象取 `summary` + `events`。 */
 export function parseDiagDocument(raw: unknown): DiagDocument {
   if (Array.isArray(raw)) return { events: raw.filter(isRecord) };
@@ -630,40 +665,17 @@ export function parseDiagDocument(raw: unknown): DiagDocument {
 
 function parseDiagSummary(raw: unknown): DiagSummary | undefined {
   if (!isRecord(raw) || typeof raw.at !== "string" || typeof raw.rows !== "number" || typeof raw.mounted !== "number") return undefined;
-  const skippedByReason: Record<string, number> = {};
-  if (isRecord(raw.skippedByReason)) {
-    for (const [key, value] of Object.entries(raw.skippedByReason)) {
-      if (typeof value === "number") skippedByReason[key] = value;
-    }
-  }
-  const unhealthy: DiagUnhealthy[] = [];
-  if (Array.isArray(raw.unhealthy)) {
-    for (const item of raw.unhealthy) {
-      if (isRecord(item) && typeof item.name === "string" && typeof item.reason === "string") {
-        unhealthy.push({ name: item.name, reason: item.reason });
-      }
-    }
-  }
-  const idle: string[] = [];
-  if (Array.isArray(raw.idle)) {
-    for (const item of raw.idle) {
-      if (typeof item === "string") idle.push(item);
-    }
-  }
+  const idle = parseIdleNames(raw.idle);
+  const toolBudget = parseToolBudgetHits(raw.toolBudget);
   return {
     at: raw.at,
     ...(typeof raw.projects === "number" ? { projects: raw.projects } : {}),
     rows: raw.rows,
     mounted: raw.mounted,
-    skippedByReason,
-    unhealthy,
+    skippedByReason: parseSkippedByReason(raw.skippedByReason),
+    unhealthy: parseUnhealthyList(raw.unhealthy),
     ...(idle.length > 0 ? { idle } : {}),
-    ...(Array.isArray(raw.toolBudget)
-      ? {
-        toolBudget: raw.toolBudget.filter((item): item is { name: string; tools: number; bytes: number } =>
-          isRecord(item) && typeof item.name === "string" && typeof item.tools === "number" && typeof item.bytes === "number")
-      }
-      : {})
+    ...(toolBudget === undefined ? {} : { toolBudget })
   };
 }
 
@@ -745,7 +757,7 @@ export class ProjectMcpRegistry {
    * 上一轮扫描的分文件目录（snapshot / serverView 的内存拼装；含被遮蔽行与
    * entryErrors）。与 lastScanDesired 同生命周期，随 prunePerProjectState 剪。
    */
-  private lastScanFiles = new Map<string, ProjectScanFiles>();
+  private readonly lastScanFiles = new Map<string, ProjectScanFiles>();
   /** 上一轮用户层合并后的全局期望行（摘要按目录计，不按当前装载 Map）。 */
   private lastGlobalDesired: DesiredProjectRow[] = [];
   /** 装载行的健康巡检内存（unmount 会删掉 ProjectServerState，不能只挂在 state 上）。 */
@@ -790,40 +802,42 @@ export class ProjectMcpRegistry {
       await this.reconcileAll();
     });
 
-    ctx.effect(() => () => {
-      this.disposed = true;
-      if (this.timer !== undefined) clearTimeout(this.timer);
-      if (this.graceTimer !== undefined) clearTimeout(this.graceTimer);
-      if (this.watcher !== undefined) void this.watcher.close().catch(() => {});
-      if (this.userWatcher !== undefined) void this.userWatcher.close().catch(() => {});
-      for (const disposer of this.restrictions.values()) {
-        try {
-          disposer();
-        } catch {
-          // agent 已销毁时 disposer 可能已失效
-        }
+    ctx.effect(() => () => this.disposeRuntime(), "dsh-project-mcp-manager: project mcp registry");
+  }
+
+  private disposeRuntime(): void {
+    this.disposed = true;
+    if (this.timer !== undefined) clearTimeout(this.timer);
+    if (this.graceTimer !== undefined) clearTimeout(this.graceTimer);
+    if (this.watcher !== undefined) void this.watcher.close().catch(() => {});
+    if (this.userWatcher !== undefined) void this.userWatcher.close().catch(() => {});
+    for (const disposer of this.restrictions.values()) {
+      try {
+        disposer();
+      } catch {
+        // agent 已销毁时 disposer 可能已失效
       }
-      this.restrictions.clear();
-      for (const entry of this.projects.values()) {
-        for (const state of entry.servers.values()) {
-          try {
-            state.fiber?.dispose();
-          } catch {
-            // fiber 随插件 ctx 一并销毁
-          }
-        }
-      }
-      this.projects.clear();
-      for (const state of this.globalServers.values()) {
+    }
+    this.restrictions.clear();
+    for (const entry of this.projects.values()) {
+      for (const state of entry.servers.values()) {
         try {
           state.fiber?.dispose();
         } catch {
           // fiber 随插件 ctx 一并销毁
         }
       }
-      this.globalServers.clear();
-      this.suppressedGlobals.clear();
-    }, "dsh-project-mcp-manager: project mcp registry");
+    }
+    this.projects.clear();
+    for (const state of this.globalServers.values()) {
+      try {
+        state.fiber?.dispose();
+      } catch {
+        // fiber 随插件 ctx 一并销毁
+      }
+    }
+    this.globalServers.clear();
+    this.suppressedGlobals.clear();
   }
 
   // ── 串行化与调度 ─────────────────────────────────────────────────────
@@ -1445,6 +1459,16 @@ export class ProjectMcpRegistry {
     this.pruneWarnGates(knownKeys);
   }
 
+  private isStaleProjectFileGate(gate: string, knownKeys: Set<string>): boolean {
+    if (!gate.startsWith("entries\u0000") && !gate.startsWith("globs\u0000")) return false;
+    const rest = gate.slice(gate.indexOf("\u0000") + 1);
+    const sep = rest.lastIndexOf("\u0000");
+    if (sep <= 0) return false;
+    const suffix = rest.slice(sep + 1);
+    if (suffix !== "yml" && suffix !== "json" && suffix !== "cc") return false;
+    return !knownKeys.has(rest.slice(0, sep));
+  }
+
   /**
    * 告警门控按已知项目剪：`entries\0` / `globs\0` 里带项目键的前缀、以及已不在
    * 装载集里的 `budget\0<effectiveName>`。用户层路径门控与 profile 名门控保留。
@@ -1455,19 +1479,12 @@ export class ProjectMcpRegistry {
       for (const state of entry.servers.values()) liveBudget.add(state.effectiveName);
     }
     for (const state of this.globalServers.values()) liveBudget.add(state.effectiveName);
-    for (const gate of [...this.warnGates.keys()]) {
+    for (const gate of this.warnGates.keys()) {
       if (gate.startsWith("budget\u0000")) {
         if (!liveBudget.has(gate.slice("budget\u0000".length))) this.warnGates.delete(gate);
         continue;
       }
-      if (!gate.startsWith("entries\u0000") && !gate.startsWith("globs\u0000")) continue;
-      const rest = gate.slice(gate.indexOf("\u0000") + 1);
-      const sep = rest.lastIndexOf("\u0000");
-      if (sep <= 0) continue;
-      const suffix = rest.slice(sep + 1);
-      if (suffix !== "yml" && suffix !== "json" && suffix !== "cc") continue;
-      const projectKey = rest.slice(0, sep);
-      if (!knownKeys.has(projectKey)) this.warnGates.delete(gate);
+      if (this.isStaleProjectFileGate(gate, knownKeys)) this.warnGates.delete(gate);
     }
   }
 
@@ -1628,6 +1645,26 @@ export class ProjectMcpRegistry {
     }
   }
 
+  private collectSkipMarks(
+    key: string,
+    skippedByReason: Record<string, number>,
+    idle: string[],
+    addUnhealthy: (name: string, reason: string) => void
+  ): void {
+    const prefix = key + "\u0000";
+    for (const [mark, reason] of this.skipReasons) {
+      if (!mark.startsWith(prefix)) continue;
+      const name = mark.slice(prefix.length);
+      if (reason !== "idle") {
+        addUnhealthy(name, reason);
+        continue;
+      }
+      if (idle.includes(name)) continue;
+      idle.push(name);
+      skippedByReason.idle = (skippedByReason.idle ?? 0) + 1;
+    }
+  }
+
   private summarizeScope(key: string, servers: Map<string, ProjectServerState>, catalog: DesiredProjectRow[], at: string, projects?: number): DiagSummary {
     const skippedByReason: Record<string, number> = {};
     const unhealthy: DiagUnhealthy[] = [];
@@ -1639,7 +1676,6 @@ export class ProjectMcpRegistry {
       unhealthy.push({ name, reason });
       skippedByReason[reason] = (skippedByReason[reason] ?? 0) + 1;
     };
-    const prefix = key + "\u0000";
     let mounted = 0;
     for (const state of servers.values()) {
       const health = this.healthByMount.get(this.healthKey(key, state.rawName));
@@ -1650,17 +1686,7 @@ export class ProjectMcpRegistry {
       if (state.phase === "active" || state.phase === "mounting") mounted += 1;
       if (state.phase === "failed") addUnhealthy(state.rawName, state.error ?? "failed");
     }
-    for (const [mark, reason] of this.skipReasons) {
-      if (!mark.startsWith(prefix)) continue;
-      const name = mark.slice(prefix.length);
-      if (reason === "idle") {
-        if (idle.includes(name)) continue;
-        idle.push(name);
-        skippedByReason.idle = (skippedByReason.idle ?? 0) + 1;
-        continue;
-      }
-      addUnhealthy(name, reason);
-    }
+    this.collectSkipMarks(key, skippedByReason, idle, addUnhealthy);
     return {
       at,
       ...(projects === undefined ? {} : { projects }),
@@ -1855,58 +1881,69 @@ export class ProjectMcpRegistry {
       await this.remountUnhealthyIn(this.projectContainer(key, entry));
     }
     await this.remountUnhealthyIn(this.globalMountContainer());
-    for (const mark of [...this.healthByMount.keys()]) {
+    for (const mark of this.healthByMount.keys()) {
       const sep = mark.lastIndexOf("\u0000");
       const scopeKey = mark.slice(0, sep);
       const rawName = mark.slice(sep + 1);
       const servers = scopeKey === GLOBAL_SCOPE_KEY ? this.globalServers : this.projects.get(scopeKey)?.servers;
-      if (servers === undefined || !servers.has(rawName)) this.healthByMount.delete(mark);
+      if (!servers?.has(rawName)) this.healthByMount.delete(mark);
     }
   }
 
-  private async remountUnhealthyIn(container: MountContainer): Promise<void> {
-    const snapshot = [...container.servers.values()];
-    for (const state of snapshot) {
-      if (this.disposed || !container.isCurrent(state)) continue;
-      if (state.row.disabled === true) continue;
-      const health = this.healthOf(container.key, state.rawName);
-      const tools = mcpToolCount(this.ctx, state.effectiveName);
-      const markKey = container.key + "\u0000" + state.rawName;
-      if (tools > 0) {
-        health.everHadTools = true;
-        health.remountCount = 0;
-        health.givenUp = false;
-        health.nextRemountAt = 0;
-        if (this.skipReasons.get(markKey) === "give-up") this.skipReasons.delete(markKey);
-        continue;
-      }
-      if (state.phase !== "active" || health.givenUp) continue;
-      const now = this.nowMs();
-      if (health.nextRemountAt === 0) {
-        health.nextRemountAt = now + this.remountBackoffMs();
-        continue;
-      }
-      if (now < health.nextRemountAt) continue;
-      if (health.everHadTools) {
-        if (health.remountCount >= this.remountLimit()) {
-          await this.markGiveUp(container, state, health);
-          continue;
-        }
-        health.remountCount += 1;
-        health.nextRemountAt = 0;
-        await container.diag({ kind: "remount", rawName: state.rawName, effectiveName: state.effectiveName, attempt: health.remountCount });
-        this.ctx.logger.warn(`${container.label} "${state.effectiveName}" 连接巡检：工具数为 0，第 ${health.remountCount} 次重挂`);
-        const item: DesiredProjectRow = { rawName: state.rawName, row: state.row, source: state.source };
-        await this.unmountServer(container, state.rawName, "generation");
-        await this.mountServer(container, item);
-        continue;
-      }
-      if (health.remountCount > 0) {
-        health.remountCount += 1;
-        health.nextRemountAt = now + this.remountBackoffMs();
-        if (health.remountCount >= this.remountLimit()) await this.markGiveUp(container, state, health);
-      }
+  private recoverMountHealth(health: MountHealth, markKey: string): void {
+    health.everHadTools = true;
+    health.remountCount = 0;
+    health.givenUp = false;
+    health.nextRemountAt = 0;
+    if (this.skipReasons.get(markKey) === "give-up") this.skipReasons.delete(markKey);
+  }
+
+  private async remountDeadFiber(container: MountContainer, state: ProjectServerState, health: MountHealth): Promise<void> {
+    if (health.remountCount >= this.remountLimit()) {
+      await this.markGiveUp(container, state, health);
+      return;
     }
+    health.remountCount += 1;
+    health.nextRemountAt = 0;
+    await container.diag({ kind: "remount", rawName: state.rawName, effectiveName: state.effectiveName, attempt: health.remountCount });
+    this.ctx.logger.warn(`${container.label} "${state.effectiveName}" 连接巡检：工具数为 0，第 ${health.remountCount} 次重挂`);
+    const item: DesiredProjectRow = { rawName: state.rawName, row: state.row, source: state.source };
+    await this.unmountServer(container, state.rawName, "generation");
+    await this.mountServer(container, item);
+  }
+
+  private async noteZeroToolsGeneration(container: MountContainer, state: ProjectServerState, health: MountHealth, now: number): Promise<void> {
+    if (health.remountCount <= 0) return;
+    health.remountCount += 1;
+    health.nextRemountAt = now + this.remountBackoffMs();
+    if (health.remountCount >= this.remountLimit()) await this.markGiveUp(container, state, health);
+  }
+
+  private async remountUnhealthyIn(container: MountContainer): Promise<void> {
+    for (const state of [...container.servers.values()]) {
+      if (this.disposed || !container.isCurrent(state) || state.row.disabled === true) continue;
+      const health = this.healthOf(container.key, state.rawName);
+      if (mcpToolCount(this.ctx, state.effectiveName) > 0) {
+        this.recoverMountHealth(health, container.key + "\u0000" + state.rawName);
+        continue;
+      }
+      await this.maybeRemountZeroTools(container, state, health);
+    }
+  }
+
+  private async maybeRemountZeroTools(container: MountContainer, state: ProjectServerState, health: MountHealth): Promise<void> {
+    if (state.phase !== "active" || health.givenUp) return;
+    const now = this.nowMs();
+    if (health.nextRemountAt === 0) {
+      health.nextRemountAt = now + this.remountBackoffMs();
+      return;
+    }
+    if (now < health.nextRemountAt) return;
+    if (health.everHadTools) {
+      await this.remountDeadFiber(container, state, health);
+      return;
+    }
+    await this.noteZeroToolsGeneration(container, state, health, now);
   }
 
   private async markGiveUp(container: MountContainer, state: ProjectServerState, health: MountHealth): Promise<void> {
@@ -1973,23 +2010,25 @@ export class ProjectMcpRegistry {
   }
 
   /** 本会话可见的服务器上，条目 tools.allow/deny 展开成已注册工具名。 */
-  private toolFilterDeniesForSession(sessionProject: string | undefined, toolIds: string[]): string[] {
-    const deny: string[] = [];
-    if (sessionProject !== undefined) {
-      const entry = this.projects.get(sessionProject);
-      if (entry !== undefined) {
-        for (const state of entry.servers.values()) {
-          if (state.phase !== "active") continue;
-          deny.push(...deniedToolsForFilter(state.effectiveName, toolFilterFromConfig(state.row.config), toolIds));
-        }
-      }
-    }
-    const suppressed = sessionProject === undefined ? undefined : this.suppressedGlobals.get(sessionProject);
-    for (const state of this.globalServers.values()) {
+  private appendFilterDenies(
+    deny: string[],
+    servers: Map<string, ProjectServerState>,
+    toolIds: string[],
+    skip?: (state: ProjectServerState) => boolean
+  ): void {
+    for (const state of servers.values()) {
       if (state.phase !== "active") continue;
-      if (suppressed?.has(state.rawName) === true) continue;
+      if (skip?.(state) === true) continue;
       deny.push(...deniedToolsForFilter(state.effectiveName, toolFilterFromConfig(state.row.config), toolIds));
     }
+  }
+
+  private toolFilterDeniesForSession(sessionProject: string | undefined, toolIds: string[]): string[] {
+    const deny: string[] = [];
+    const entry = sessionProject === undefined ? undefined : this.projects.get(sessionProject);
+    if (entry !== undefined) this.appendFilterDenies(deny, entry.servers, toolIds);
+    const suppressed = sessionProject === undefined ? undefined : this.suppressedGlobals.get(sessionProject);
+    this.appendFilterDenies(deny, this.globalServers, toolIds, (state) => suppressed?.has(state.rawName) === true);
     return deny;
   }
 
@@ -2197,96 +2236,112 @@ export class ProjectMcpRegistry {
     return this.enqueue(async () => this.buildSnapshotFromMemory());
   }
 
+  private pushYmlSnapshot(
+    out: ProjectFileState[],
+    key: string,
+    entry: ProjectEntry,
+    files: ProjectScanFiles | undefined,
+    userPaths: UserLayerPaths
+  ): void {
+    const ymlPath = files?.ymlPath ?? projectMcpFile(entry.projectRoot);
+    const skipYmlPartition = files?.skipYmlPartition === true || isSameFilePath(ymlPath, userPaths.mcpYml);
+    const ymlLive = [...entry.servers.values()].some((state) => state.source === "dsh-project" || state.source === undefined);
+    const skipMissingYml = files?.ymlMissing === true && !ymlLive;
+    if (skipYmlPartition || skipMissingYml) return;
+    const ymlOk = files?.ymlOk ?? true;
+    out.push({
+      project: entry.projectRoot,
+      path: ymlPath,
+      ok: ymlOk,
+      error: files?.ymlError ?? null,
+      source: "dsh-project",
+      servers: ymlOk ? this.partitionServers(entry, key, files?.ymlRows ?? [], "dsh-project") : []
+    });
+  }
+
+  private pushJsonLayerSnapshot(
+    out: ProjectFileState[],
+    key: string,
+    entry: ProjectEntry,
+    source: "dsh-project-json" | "cc-project",
+    path: string,
+    result: JsonReadResult,
+    skip: boolean
+  ): void {
+    if (skip) return;
+    const live = [...entry.servers.values()].some((state) => state.source === source);
+    if (result.rows.length === 0 && result.fileError === undefined && result.entryErrors.length === 0 && !live) return;
+    const file: ProjectFileState = {
+      project: entry.projectRoot,
+      path,
+      ok: result.fileError === undefined,
+      error: result.fileError ?? null,
+      source,
+      servers: this.partitionServers(entry, key, result.rows.map((r) => r.row), source)
+    };
+    if (result.entryErrors.length > 0) (file as any).entryErrors = result.entryErrors;
+    out.push(file);
+  }
+
+  private pushGlobalSnapshot(out: ProjectFileState[], path: string, source: McpRowSource, rows: SourcedRow[], error: string | null): void {
+    if (path === "" || (rows.length === 0 && error === null)) return;
+    out.push({
+      project: dirname(path),
+      path,
+      kind: "global",
+      source,
+      ok: error === null,
+      error,
+      servers: rows
+        .map((r) => {
+          const view = patchRowToView(r.row, { kind: "global", path, label: "user" });
+          if (view === undefined) return undefined;
+          const state = this.globalServers.get(r.rawName);
+          const owned = state?.source === source;
+          return {
+            ...view,
+            source,
+            effectiveServerName: state?.effectiveName ?? r.rawName,
+            fiberPhase: fiberPhaseFor(state, r.row, owned),
+            skipReason: skipReasonFor(this.skipReasons, GLOBAL_SCOPE_KEY, r.rawName, state, r.row) ?? null,
+            toolCount: owned && state?.phase === "active" ? mcpToolCount(this.ctx, state.effectiveName) : 0
+          };
+        })
+        .filter((v): v is NonNullable<typeof v> => v !== undefined)
+    });
+  }
+
   private buildSnapshotFromMemory(): ProjectFileState[] {
     const out: ProjectFileState[] = [];
     const userPaths = this.resolveUserLayerPaths();
     for (const [key, entry] of this.projects) {
       const files = this.lastScanFiles.get(key);
-      const ymlPath = files?.ymlPath ?? projectMcpFile(entry.projectRoot);
-      const skipYmlPartition = files?.skipYmlPartition === true || isSameFilePath(ymlPath, userPaths.mcpYml);
-      const ymlLive = [...entry.servers.values()].some((state) => state.source === "dsh-project" || state.source === undefined);
-      const ymlRows = files?.ymlRows ?? [];
-      const ymlError = files?.ymlError ?? null;
-      const ymlOk = files?.ymlOk ?? true;
-      const skipMissingYml = files?.ymlMissing === true && !ymlLive;
-      if (!skipYmlPartition && !skipMissingYml) {
-        const file: ProjectFileState = {
-          project: entry.projectRoot,
-          path: ymlPath,
-          ok: ymlOk,
-          error: ymlError,
-          source: "dsh-project",
-          servers: ymlOk ? this.partitionServers(entry, key, ymlRows, "dsh-project") : []
-        };
-        out.push(file);
-      }
-      {
-        const jsonPath = files?.jsonPath ?? projectDshJsonFile(entry.projectRoot);
-        if (files?.skipJsonPartition !== true && !isSameFilePath(jsonPath, userPaths.mcpJson)) {
-          const pj = files?.json ?? { rows: [], entryErrors: [] };
-          const pjLive = [...entry.servers.values()].some((state) => state.source === "dsh-project-json");
-          if (pj.rows.length > 0 || pj.fileError !== undefined || pj.entryErrors.length > 0 || pjLive) {
-            const pjFile: ProjectFileState = {
-              project: entry.projectRoot,
-              path: jsonPath,
-              ok: pj.fileError === undefined,
-              error: pj.fileError ?? null,
-              source: "dsh-project-json",
-              servers: this.partitionServers(entry, key, pj.rows.map((r) => r.row), "dsh-project-json")
-            };
-            if (pj.entryErrors.length > 0) (pjFile as any).entryErrors = pj.entryErrors;
-            out.push(pjFile);
-          }
-        }
-      }
+      this.pushYmlSnapshot(out, key, entry, files, userPaths);
+      const jsonPath = files?.jsonPath ?? projectDshJsonFile(entry.projectRoot);
+      this.pushJsonLayerSnapshot(
+        out,
+        key,
+        entry,
+        "dsh-project-json",
+        jsonPath,
+        files?.json ?? { rows: [], entryErrors: [] },
+        files?.skipJsonPartition === true || isSameFilePath(jsonPath, userPaths.mcpJson)
+      );
       if (files?.ccEnabled !== false && mcpJsonLayerEnabled()) {
-        const ccPath = files?.ccPath ?? projectMcpJsonFile(entry.projectRoot);
-        const cc = files?.cc ?? { rows: [], entryErrors: [] };
-        const ccLive = [...entry.servers.values()].some((state) => state.source === "cc-project");
-        if (cc.rows.length > 0 || cc.fileError !== undefined || cc.entryErrors.length > 0 || ccLive) {
-          const ccFile: ProjectFileState = {
-            project: entry.projectRoot,
-            path: ccPath,
-            ok: cc.fileError === undefined,
-            error: cc.fileError ?? null,
-            source: "cc-project",
-            servers: this.partitionServers(entry, key, cc.rows.map((r) => r.row), "cc-project")
-          };
-          if (cc.entryErrors.length > 0) (ccFile as any).entryErrors = cc.entryErrors;
-          out.push(ccFile);
-        }
+        this.pushJsonLayerSnapshot(
+          out,
+          key,
+          entry,
+          "cc-project",
+          files?.ccPath ?? projectMcpJsonFile(entry.projectRoot),
+          files?.cc ?? { rows: [], entryErrors: [] },
+          false
+        );
       }
     }
-    const pushGlobal = (path: string, source: McpRowSource, rows: SourcedRow[], error: string | null): void => {
-      if (path === "" || (rows.length === 0 && error === null)) return;
-      out.push({
-        project: dirname(path),
-        path,
-        kind: "global",
-        source,
-        ok: error === null,
-        error,
-        servers: rows
-          .map((r) => {
-            const view = patchRowToView(r.row, { kind: "global", path, label: "user" });
-            if (view === undefined) return undefined;
-            const state = this.globalServers.get(r.rawName);
-            const owned = state?.source === source;
-            return {
-              ...view,
-              source,
-              effectiveServerName: state?.effectiveName ?? r.rawName,
-              fiberPhase: fiberPhaseFor(state, r.row, owned),
-              skipReason: skipReasonFor(this.skipReasons, GLOBAL_SCOPE_KEY, r.rawName, state, r.row) ?? null,
-              toolCount: owned && state?.phase === "active" ? mcpToolCount(this.ctx, state.effectiveName) : 0
-            };
-          })
-          .filter((v): v is NonNullable<typeof v> => v !== undefined)
-      });
-    };
-    pushGlobal(this.userLayer.profileJson ?? "", "dsh-profile-user", this.userLayer.profileRows, this.userLayer.profileError);
-    pushGlobal(this.userLayer.mcpYml, "dsh-user-yml", this.userLayer.ymlRows, this.userLayer.ymlError);
-    pushGlobal(this.userLayer.mcpJson, "dsh-user", this.userLayer.jsonRows, this.userLayer.jsonError);
+    this.pushGlobalSnapshot(out, this.userLayer.profileJson ?? "", "dsh-profile-user", this.userLayer.profileRows, this.userLayer.profileError);
+    this.pushGlobalSnapshot(out, this.userLayer.mcpYml, "dsh-user-yml", this.userLayer.ymlRows, this.userLayer.ymlError);
+    this.pushGlobalSnapshot(out, this.userLayer.mcpJson, "dsh-user", this.userLayer.jsonRows, this.userLayer.jsonError);
     return out;
   }
 
