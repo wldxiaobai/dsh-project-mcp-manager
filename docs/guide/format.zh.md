@@ -48,7 +48,10 @@ insert 列表），每行一个 MCP 服务器：
 ```
 
 模式为 glob（`*`、`**`、`?`、`[…]`），可写裸工具名或完整
-`mcp__<生效名>__<tool>`。JSON 另接受 Gemini 的 `includeTools` → `allow`、
+`mcp__<生效名>__<tool>`。完整名按装载器实际注册的**生效名**匹配
+（`mcp__<effective>__…`），不是文件里的 `serverName`。项目行被改名
+（`p<hash>_…`）后，写死的 `mcp__<原名>__foo` **不会**命中；请改用裸工具名，
+或从 `dsh-mcp get` / 快照看生效名。JSON 另接受 Gemini 的 `includeTools` → `allow`、
 `excludeTools` → `deny`；与 DSH 的 `tools` 同时出现时以 `tools.allow` /
 `tools.deny` 为准。
 

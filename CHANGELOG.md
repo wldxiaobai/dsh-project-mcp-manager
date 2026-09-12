@@ -52,6 +52,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `$DSH_HOME/dsh-mcp.json` that contains this plugin's `mcpServers` dialect
   is still not loaded, and now hints to move the object into `mcp.json`.
 
+### Documentation
+
+- Full-id `tools.*` globs must use the effective server name after a project
+  row is renamed. `dsh-mcp add` has no `--allow` / `--deny`; write the file
+  or use `import`.
+
 ## [0.6.0] - 2026-09-12
 
 Runtime robustness and JSON interop. **On-demand project mounts (B1) are a

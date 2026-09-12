@@ -28,6 +28,9 @@ dsh-mcp import --from .cursor/mcp.json --dry-run   # 预演 mcpServers 导入，
 `~/.dsh/mcp.json`。`add` 的 `cwd` 缺省随作用域而变：project 为 `"."`（项目根），
 user/profile 为 `""`（宿主目录）；`-c` 显式覆盖。
 
+`add` 没有 `--allow` / `--deny`。条目级 `tools.allow` / `tools.deny`（以及 JSON
+的 `includeTools` / `excludeTools`）请写进配置文件，或用 `dsh-mcp import` 带入。
+
 **`status`** 读取六层来源文件与诊断文件（`<项目根>/.dsh/.mcp-diag.json` 与
 `$DSH_HOME/.mcp-diag.json`）：打印每层行数与名称，再打印最近一次对账的
 `summary`（已装载 / 跳过原因 / 不健康行 / 工具预算）。不连接宿主内存；宿主从未对账

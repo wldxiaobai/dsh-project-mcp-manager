@@ -32,6 +32,10 @@ the nearest `.git` ancestor), `--scope user` (writes `~/.dsh/mcp.yml`) and
 (the project root) for project, `""` (the host directory) for user/profile;
 `-c` overrides it explicitly.
 
+`add` does not take `--allow` / `--deny`. Per-entry `tools.allow` /
+`tools.deny` (and JSON `includeTools` / `excludeTools`) must be written in
+the config file or brought in with `dsh-mcp import`.
+
 **`status`** reads the six source layers and the diagnostic files
 (`<projectRoot>/.dsh/.mcp-diag.json` and `$DSH_HOME/.mcp-diag.json`). It
 prints each layer's row count and names, then the latest `summary`

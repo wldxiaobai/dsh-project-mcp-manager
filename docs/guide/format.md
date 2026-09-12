@@ -49,7 +49,12 @@ Per-entry tool visibility (stripped before `ctx.plugin`; deny wins):
 ```
 
 Patterns are globs (`*`, `**`, `?`, `[…]`) and match either the bare tool name
-or a full `mcp__<effectiveName>__<tool>` id. JSON also accepts Gemini's
+or a full `mcp__<effectiveName>__<tool>` id. A full-id pattern is compared
+against the **effective** name the loader actually registered (`mcp__<effective>__…`),
+not the `serverName` written in the file. Project rows that were renamed
+(`p<hash>_…`) therefore do **not** match `mcp__<originalName>__foo`; use the
+bare tool name, or look up the effective name in `dsh-mcp get` / a snapshot.
+JSON also accepts Gemini's
 `includeTools` → `allow` and `excludeTools` → `deny`; if both the DSH `tools`
 object and those keys are present, `tools.allow` / `tools.deny` win.
 
