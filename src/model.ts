@@ -642,7 +642,7 @@ export function inputFromPatchRow(row: PatchRow): McpServerInput {
     serverName,
     toolCallTimeoutMs: asNumber(config.toolCallTimeoutMs, DEFAULT_TOOL_CALL_TIMEOUT_MS),
     failOnStartupError: asBoolean(config.failOnStartupError, false),
-      reconnect: {
+    reconnect: {
       enabled: asBoolean((config.reconnect as any)?.enabled, DEFAULT_RECONNECT.enabled),
       initialDelayMs: asNumber((config.reconnect as any)?.initialDelayMs, DEFAULT_RECONNECT.initialDelayMs),
       maxDelayMs: asNumber((config.reconnect as any)?.maxDelayMs, DEFAULT_RECONNECT.maxDelayMs),
