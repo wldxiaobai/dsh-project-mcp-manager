@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clobber each other.
 - Changing only `tools.allow` / `tools.deny` updates `tools.restrict` without
   tearing down the MCP connection.
+- Tool-budget warn gates reset when a server drops back under the threshold,
+  so the same tools/bytes overage warns again.
 
 ## [0.6.0] - 2026-09-12
 

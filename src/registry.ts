@@ -1762,7 +1762,11 @@ export class ProjectMcpRegistry {
       for (const state of servers.values()) {
         if (state.phase !== "active") continue;
         const stats = mcpToolBudgetStats(this.ctx, state.effectiveName);
-        if (stats.tools <= budget.maxTools && stats.bytes <= budget.maxBytes) continue;
+        const over = stats.tools > budget.maxTools || stats.bytes > budget.maxBytes;
+        if (!over) {
+          this.warnGated("budget\u0000" + state.effectiveName, "", () => {});
+          continue;
+        }
         hits.push({ name: state.effectiveName, tools: stats.tools, bytes: stats.bytes });
         this.warnGated("budget\u0000" + state.effectiveName, `${stats.tools}\u0000${stats.bytes}`, () => {
           this.ctx.logger.warn(`${label} "${state.effectiveName}" 注册了 ${stats.tools} 个工具 / ${stats.bytes} 字节，超过告警阈值 ${budget.maxTools} / ${budget.maxBytes}（只告警不裁剪）`);

@@ -1337,6 +1337,15 @@ try {
     const summaryBgt = await readDiagSummary(projBgt);
     assert.ok(summaryBgt.toolBudget?.some((item) => item.name === heavyName && item.tools === 3), "summary lists over-budget server: " + JSON.stringify(summaryBgt.toolBudget));
     assert.equal(ctxBgt.schemas.length, 3, "budget never clips tools");
+    ctxBgt.schemas.length = 1;
+    await registryBgt.reconcileNow();
+    assert.equal(warnsBgt.filter((w) => w.includes("超过告警阈值")).length, 1, "under-budget clears the gate without warning");
+    ctxBgt.schemas.push(
+      { name: `mcp__${heavyName}__b`, description: "b" },
+      { name: `mcp__${heavyName}__c`, description: "c" }
+    );
+    await registryBgt.reconcileNow();
+    assert.equal(warnsBgt.filter((w) => w.includes("超过告警阈值")).length, 2, "same over-budget count warns again after dropping under the threshold");
     for (const disposer of ctxBgt.disposers) {
       const cleanup = disposer();
       if (typeof cleanup === "function") cleanup();
