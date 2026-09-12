@@ -199,6 +199,20 @@ try {
   const pTheme = await write("theme.json", JSON.stringify({ theme: "dark" }));
   assert.equal((await readDshJsonFile(pTheme, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" })).formatHint, undefined, "unrelated JSON stays a silent empty layer");
   pass("foreign {version, servers} format is diagnosed; mcpServers coexistence is silent");
+
+  const pTools = await write("tools.json", JSON.stringify({
+    mcpServers: {
+      dsh: { command: "node", tools: { allow: ["read_*"], deny: ["read_secret"] }, includeTools: ["ignored"], excludeTools: ["ignored"] },
+      eco: { command: "node", includeTools: ["list_*"], excludeTools: ["list_hidden"] }
+    }
+  }));
+  const rTools = await readDshJsonFile(pTools, { source: "dsh-project-json", cwdPolicy: "project", projectRoot: "/work/p" });
+  assert.deepEqual(rTools.entryErrors, []);
+  const dsh = rTools.rows.find((row) => row.rawName === "dsh");
+  assert.deepEqual(dsh.row.config.tools, { allow: ["read_*"], deny: ["read_secret"] });
+  const eco = rTools.rows.find((row) => row.rawName === "eco");
+  assert.deepEqual(eco.row.config.tools, { allow: ["list_*"], deny: ["list_hidden"] });
+  pass("JSON tools.allow/deny win over includeTools/excludeTools");
 } finally {
   await rm(dir, { recursive: true, force: true });
 }

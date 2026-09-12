@@ -1227,6 +1227,52 @@ try {
     }
     await rmRetry(dirZ);
     pass("registry does not remount servers that never exposed tools");
+
+    const dirT = await mkdtemp(join(tmpdir(), "dsh-mcp-tools-"));
+    const projT = join(dirT, "proj");
+    await mkdir(projT, { recursive: true });
+    const filtered = {
+      ...stdioRow("box"),
+      config: { ...stdioRow("box").config, tools: { allow: ["read_*"], deny: ["read_secret"] } }
+    };
+    await writeManagedRows(projectMcpFile(projT), [filtered], { createIfMissing: true });
+    const ctxT = fakeCtx();
+    const warnsT = [];
+    ctxT.logger.warn = (msg) => { warnsT.push(String(msg)); };
+    const registryT = new ProjectMcpRegistry(ctxT, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(dirT, "home", ".dsh", "mcp.yml"), mcpJson: join(dirT, "home", ".dsh", "mcp.json"), profilesDir: join(dirT, "home", ".dsh", "profiles") }
+    });
+    const agentT = fakeAgent("session-t", projT);
+    let restrictCalls = 0;
+    const innerRestrict = agentT.ctx.tools.restrict;
+    agentT.ctx.tools.restrict = (opts) => {
+      restrictCalls += 1;
+      if (restrictCalls === 1) throw new Error("unknown tool name");
+      return innerRestrict(opts);
+    };
+    ctxT.agentsList.push(agentT);
+    await registryT.reconcileNow();
+    const mountedT = ctxT.mounts[0].serverName;
+    ctxT.schemas.push(
+      { id: `mcp__${mountedT}__read_file` },
+      { id: `mcp__${mountedT}__read_secret` },
+      { id: `mcp__${mountedT}__delete_file` }
+    );
+    await registryT.reconcileNow();
+    assert.ok(warnsT.some((w) => w.includes("暂未应用")), "unknown names are retried: " + warnsT.join("|"));
+    await registryT.reconcileNow();
+    const lastDeny = agentT.denies[agentT.denies.length - 1];
+    assert.ok(lastDeny.includes(`mcp__${mountedT}__delete_file`), "allow-list denies unmatched tools: " + lastDeny);
+    assert.ok(lastDeny.includes(`mcp__${mountedT}__read_secret`), "deny wins over allow: " + lastDeny);
+    assert.ok(!lastDeny.includes(`mcp__${mountedT}__read_file`), "allowed tools stay visible: " + lastDeny);
+    assert.ok(!ctxT.mounts[0].tools, "tools filter is stripped before ctx.plugin");
+    for (const disposer of ctxT.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    await rmRetry(dirT);
+    pass("registry expands tools.allow/deny to registered names and retries unknown denies");
   } finally {
     process.chdir(savedCwd);
     await rmRetry(dirH);

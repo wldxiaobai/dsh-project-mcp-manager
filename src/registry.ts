@@ -62,6 +62,7 @@ import {
 import { findProjectRoot } from "./project-root.js";
 import {
   byCodeUnit,
+  deniedToolsForFilter,
   denySetFor,
   effectiveServerNames,
   expandEnvRefs,
@@ -72,6 +73,7 @@ import {
   projectKeyOf,
   rowNameOf,
   toOfficialConfig,
+  toolFilterFromConfig,
   type McpScopeInfo
 } from "./model.js";
 import { mcpToolCount } from "./status.js";
@@ -1627,8 +1629,31 @@ export class ProjectMcpRegistry {
           if (this.globalServers.has(rawName)) hidden.push(rawName);
         }
       }
-      this.applyRestriction(agent, expandToToolNames(hidden, toolIds));
+      const deny = expandToToolNames(hidden, toolIds);
+      deny.push(...this.toolFilterDeniesForSession(project, toolIds));
+      this.applyRestriction(agent, deny);
     }
+  }
+
+  /** 本会话可见的服务器上，条目 tools.allow/deny 展开成已注册工具名。 */
+  private toolFilterDeniesForSession(sessionProject: string | undefined, toolIds: string[]): string[] {
+    const deny: string[] = [];
+    if (sessionProject !== undefined) {
+      const entry = this.projects.get(sessionProject);
+      if (entry !== undefined) {
+        for (const state of entry.servers.values()) {
+          if (state.phase !== "active") continue;
+          deny.push(...deniedToolsForFilter(state.effectiveName, toolFilterFromConfig(state.row.config), toolIds));
+        }
+      }
+    }
+    const suppressed = sessionProject === undefined ? undefined : this.suppressedGlobals.get(sessionProject);
+    for (const state of this.globalServers.values()) {
+      if (state.phase !== "active") continue;
+      if (suppressed?.has(state.rawName) === true) continue;
+      deny.push(...deniedToolsForFilter(state.effectiveName, toolFilterFromConfig(state.row.config), toolIds));
+    }
+    return deny;
   }
 
   /** 各装载容器里已 active 的生效名，按项目根分组（deny 计算的输入）。 */

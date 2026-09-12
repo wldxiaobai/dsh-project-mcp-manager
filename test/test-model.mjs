@@ -5,12 +5,14 @@ import {
   SERVER_NAME_RE,
   SUPPORTED_MCP_TRANSPORTS,
   byCodeUnit,
+  deniedToolsForFilter,
   denySetFor,
   effectiveServerNames,
   expandEnvRefs,
   inputFromPatchRow,
   isUrlOrEnvRef,
   jsonTypeOfTransport,
+  matchToolGlob,
   mcpServerInputSchema,
   mergeSecretPatch,
   namespacedServerName,
@@ -278,6 +280,41 @@ expectThrow(
   /"stdio" 或 "streamable-http"/
 );
 pass("SUPPORTED_MCP_TRANSPORTS is the single source for aliases, CLI parsing, and errors");
+
+assert.equal(matchToolGlob("delete_*", "delete_file"), true);
+assert.equal(matchToolGlob("delete_*", "read_file"), false);
+assert.equal(matchToolGlob("mcp__gh__*", "mcp__gh__create_issue"), true);
+assert.equal(matchToolGlob("?", "a"), true);
+assert.equal(matchToolGlob("?", "ab"), false);
+assert.equal(matchToolGlob("file.[jt]s", "file.js"), true);
+assert.equal(matchToolGlob("file.[jt]s", "file.py"), false);
+assert.equal(matchToolGlob("[!a]*", "bcd"), true);
+assert.equal(matchToolGlob("[!a]*", "abc"), false);
+assert.equal(matchToolGlob("**", "a/b"), true);
+const filtered = deniedToolsForFilter("gh", { allow: ["read_*"], deny: ["read_secret"] }, [
+  "mcp__gh__read_file",
+  "mcp__gh__read_secret",
+  "mcp__gh__delete_file",
+  "mcp__other__read_file"
+]);
+filtered.sort(byCodeUnit);
+assert.deepEqual(filtered, ["mcp__gh__delete_file", "mcp__gh__read_secret"]);
+const stripped = toOfficialConfig(mcpServerInputSchema.parse({
+  serverName: "gh",
+  transport: "stdio",
+  command: "node",
+  tools: { deny: ["delete_*"] }
+}));
+assert.equal(stripped.tools, undefined);
+const row = toPatchRow(mcpServerInputSchema.parse({
+  serverName: "gh",
+  transport: "stdio",
+  command: "node",
+  tools: { deny: ["delete_*"] }
+}));
+assert.deepEqual(row.config.tools, { deny: ["delete_*"] });
+assert.deepEqual(inputFromPatchRow(row).tools, { deny: ["delete_*"] });
+pass("tool allow/deny globs, deny-over-allow, and official config strips tools");
 
 console.log("\n" + passed + " passed, 0 failed");
 console.log("ALL MCP MODEL TESTS PASSED");

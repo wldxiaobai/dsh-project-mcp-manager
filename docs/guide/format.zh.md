@@ -39,6 +39,19 @@ insert 列表），每行一个 MCP 服务器：
 `transport` 支持 `stdio`（command/args/env/cwd）与 `streamable-http`
 （url/headers）。行加 `disabled: true` 即停用。标记之外的内容逐字节保留。
 
+条目级工具可见性（装载前从官方配置里剥掉；`deny` 优先）：
+
+```yaml
+        tools:
+          allow: ["read_*"]
+          deny: ["read_secret", "mcp__gitlab__delete_*"]
+```
+
+模式为 glob（`*`、`**`、`?`、`[…]`），可写裸工具名或完整
+`mcp__<生效名>__<tool>`。JSON 另接受 Gemini 的 `includeTools` → `allow`、
+`excludeTools` → `deny`；与 DSH 的 `tools` 同时出现时以 `tools.allow` /
+`tools.deny` 为准。
+
 **与原生 cordis 方言的差异**：`!!js` 标签（profile 的 `cordis.patch.yml` 由
 Loader 求值的 js-yaml 表达式，如官方 README 示例 `env: { TOKEN: !!js
 process.env.GITHUB_TOKEN }`）在项目文件里**不支持**——受管块内出现未解析

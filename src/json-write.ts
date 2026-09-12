@@ -123,5 +123,11 @@ export function toJsonEntry(input: McpServerInput): Record<string, unknown> {
   ) {
     entry.reconnect = { ...reconnect };
   }
+  if (input.tools !== undefined) {
+    const tools: Record<string, unknown> = {};
+    if (input.tools.allow !== undefined) tools.allow = [...input.tools.allow];
+    if (input.tools.deny !== undefined) tools.deny = [...input.tools.deny];
+    if (Object.keys(tools).length > 0) entry.tools = tools;
+  }
   return entry;
 }

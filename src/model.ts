@@ -41,6 +41,118 @@ export function byCodeUnit(a: string, b: string): number {
   return 0;
 }
 
+function escapeRegexChar(char: string): string {
+  return /[\\^$*+?.()|{}\[\]]/.test(char) ? "\\" + char : char;
+}
+
+/**
+ * glob → 正则：`*` 不跨 `/`，`**` 跨段，`?` 单字符，`[abc]` / `[!abc]` 字符类。
+ * 工具名通常不含 `/`，`*` 与 `**` 对裸名等价，完整 `mcp__…__…` 路径才用得上 `**`。
+ */
+export function globToRegExp(pattern: string): RegExp {
+  let out = "";
+  for (let index = 0; index < pattern.length; ) {
+    const char = pattern[index];
+    if (char === "*") {
+      if (pattern[index + 1] === "*") {
+        out += ".*";
+        index += 2;
+      } else {
+        out += "[^/]*";
+        index += 1;
+      }
+      continue;
+    }
+    if (char === "?") {
+      out += "[^/]";
+      index += 1;
+      continue;
+    }
+    if (char === "[") {
+      const close = pattern.indexOf("]", index + 1);
+      if (close === -1 || close === index + 1) {
+        out += "\\[";
+        index += 1;
+        continue;
+      }
+      let body = pattern.slice(index + 1, close);
+      let negated = false;
+      if (body.startsWith("!") || body.startsWith("^")) {
+        negated = true;
+        body = body.slice(1);
+      }
+      let cls = "";
+      for (const item of body) cls += item === "\\" ? "\\\\" : item === "]" ? "\\]" : item;
+      out += "[" + (negated ? "^" : "") + cls + "]";
+      index = close + 1;
+      continue;
+    }
+    out += escapeRegexChar(char);
+    index += 1;
+  }
+  return new RegExp("^" + out + "$");
+}
+
+export function matchToolGlob(pattern: string, name: string): boolean {
+  try {
+    return globToRegExp(pattern).test(name);
+  } catch {
+    return false;
+  }
+}
+
+export interface ToolFilter {
+  allow?: string[];
+  deny?: string[];
+}
+
+const toolFilterSchema = z.object({
+  allow: z.array(z.string()).optional(),
+  deny: z.array(z.string()).optional()
+}).optional();
+
+function patternHitsTool(pattern: string, shortName: string, fullName: string): boolean {
+  return matchToolGlob(pattern, pattern.includes("mcp__") ? fullName : shortName);
+}
+
+/**
+ * 条目级工具过滤：`allow` 缺省全开；`deny` 优先。只返回当前已注册的完整工具名
+ * （`mcp__<effective>__<tool>`），供 `tools.restrict` 使用。
+ */
+export function deniedToolsForFilter(effectiveName: string, filter: ToolFilter | undefined, registeredToolIds: string[]): string[] {
+  if (filter === undefined) return [];
+  const allow = filter.allow;
+  const deny = filter.deny;
+  if (allow === undefined && (deny === undefined || deny.length === 0)) return [];
+  const prefix = `mcp__${effectiveName}__`;
+  const denied: string[] = [];
+  for (const id of registeredToolIds) {
+    if (!id.startsWith(prefix) || id.length <= prefix.length) continue;
+    const shortName = id.slice(prefix.length);
+    const denyHit = deny !== undefined && deny.some((pattern) => patternHitsTool(pattern, shortName, id));
+    if (denyHit) {
+      denied.push(id);
+      continue;
+    }
+    if (allow === undefined) continue;
+    if (!allow.some((pattern) => patternHitsTool(pattern, shortName, id))) denied.push(id);
+  }
+  return denied;
+}
+
+export function toolFilterFromConfig(config: Record<string, unknown> | undefined): ToolFilter | undefined {
+  const raw = config?.tools;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const record = raw as Record<string, unknown>;
+  const allow = Array.isArray(record.allow) ? record.allow.filter((item): item is string => typeof item === "string") : undefined;
+  const deny = Array.isArray(record.deny) ? record.deny.filter((item): item is string => typeof item === "string") : undefined;
+  if (allow === undefined && deny === undefined) return undefined;
+  return {
+    ...(allow === undefined ? {} : { allow }),
+    ...(deny === undefined ? {} : { deny })
+  };
+}
+
 export const DEFAULT_TOOL_CALL_TIMEOUT_MS = 60000;
 export const DEFAULT_RECONNECT = {
   enabled: true,
@@ -150,7 +262,8 @@ export const stdioServerSchema = z.object({
   cwd: z.string().default(""),
   toolCallTimeoutMs: z.number().int().min(1).default(DEFAULT_TOOL_CALL_TIMEOUT_MS),
   failOnStartupError: z.boolean().default(false),
-  reconnect: reconnectSchema
+  reconnect: reconnectSchema,
+  tools: toolFilterSchema
 });
 
 export const httpServerSchema = z.object({
@@ -160,7 +273,8 @@ export const httpServerSchema = z.object({
   headers: secretMapSchema,
   toolCallTimeoutMs: z.number().int().min(1).default(DEFAULT_TOOL_CALL_TIMEOUT_MS),
   failOnStartupError: z.boolean().default(false),
-  reconnect: reconnectSchema
+  reconnect: reconnectSchema,
+  tools: toolFilterSchema
 });
 
 export const mcpServerInputSchema = z.discriminatedUnion("transport", [stdioServerSchema, httpServerSchema]);
@@ -391,11 +505,13 @@ export function toOfficialConfig(input: McpServerInput): Record<string, unknown>
 
 /** 输入 → cordis.patch.yml / 项目 mcp.yml 行。 */
 export function toPatchRow(input: McpServerInput, enabled = true): PatchRow {
+  const config = toOfficialConfig(input);
+  if (input.tools !== undefined) config.tools = input.tools;
   return {
     id: rowIdForServerName(input.serverName),
     name: MCP_PLUGIN_NAME,
     ...(enabled ? {} : { disabled: true }),
-    config: toOfficialConfig(input)
+    config
   };
 }
 
@@ -494,12 +610,13 @@ export function inputFromPatchRow(row: PatchRow): McpServerInput {
     serverName,
     toolCallTimeoutMs: asNumber(config.toolCallTimeoutMs, DEFAULT_TOOL_CALL_TIMEOUT_MS),
     failOnStartupError: asBoolean(config.failOnStartupError, false),
-    reconnect: {
+      reconnect: {
       enabled: asBoolean((config.reconnect as any)?.enabled, DEFAULT_RECONNECT.enabled),
       initialDelayMs: asNumber((config.reconnect as any)?.initialDelayMs, DEFAULT_RECONNECT.initialDelayMs),
       maxDelayMs: asNumber((config.reconnect as any)?.maxDelayMs, DEFAULT_RECONNECT.maxDelayMs),
       maxAttempts: asNumber((config.reconnect as any)?.maxAttempts, DEFAULT_RECONNECT.maxAttempts)
-    }
+    },
+    ...(config.tools === undefined ? {} : { tools: config.tools })
   };
   if (config.transport === "streamable-http") {
     return mcpServerInputSchema.parse({

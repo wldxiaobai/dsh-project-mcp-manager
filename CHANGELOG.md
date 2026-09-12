@@ -36,6 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `disabled: true` / `enabled: false` rows are never revived. Unchanged
   config fingerprints (`mtimeMs+size`) skip file rereads but still run
   remount, deny sweep and diag summaries.
+- Per-server `tools.allow` / `tools.deny` (full glob; deny wins). JSON also
+  maps `includeTools` / `excludeTools`; DSH `tools.*` keys win. Patterns are
+  stripped before `ctx.plugin` and expanded to registered tool names only.
 
 - `package.json` discovery fields: `repository`, `bugs`, and `homepage` point at
   https://github.com/wldxiaobai/dsh-project-mcp-manager so npm and GitHub can

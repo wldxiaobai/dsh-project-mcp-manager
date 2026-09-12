@@ -125,7 +125,13 @@ export const jsonServerEntrySchema = z.looseObject({
   disabled: z.boolean().optional(),
   toolCallTimeoutMs: z.number().int().min(1).optional(),
   failOnStartupError: z.boolean().optional(),
-  reconnect: jsonReconnectSchema
+  reconnect: jsonReconnectSchema,
+  tools: z.object({
+    allow: z.array(z.string()).optional(),
+    deny: z.array(z.string()).optional()
+  }).optional(),
+  includeTools: z.array(z.string()).optional(),
+  excludeTools: z.array(z.string()).optional()
 });
 
 export type JsonServerEntry = z.infer<typeof jsonServerEntrySchema>;
@@ -141,6 +147,13 @@ function passthroughKeys(entry: JsonServerEntry): Record<string, unknown> {
   if (entry.failOnStartupError !== undefined) out.failOnStartupError = entry.failOnStartupError;
   if (entry.reconnect !== undefined) out.reconnect = entry.reconnect;
   return out;
+}
+
+function resolveJsonToolFilter(entry: JsonServerEntry): { tools?: { allow?: string[]; deny?: string[] } } {
+  const allow = entry.tools?.allow !== undefined ? entry.tools.allow : entry.includeTools;
+  const deny = entry.tools?.deny !== undefined ? entry.tools.deny : entry.excludeTools;
+  if (allow === undefined && deny === undefined) return {};
+  return { tools: { ...(allow === undefined ? {} : { allow }), ...(deny === undefined ? {} : { deny }) } };
 }
 
 function nonEmptyString(value: unknown): string | undefined {
@@ -186,7 +199,8 @@ export function jsonEntryToInput(name: string, entry: JsonServerEntry, options: 
         transport: "streamable-http",
         url: remoteUrl,
         headers: entry.headers,
-        ...passthroughKeys(entry)
+        ...passthroughKeys(entry),
+        ...resolveJsonToolFilter(entry)
       });
       return { input };
     }
@@ -207,7 +221,8 @@ export function jsonEntryToInput(name: string, entry: JsonServerEntry, options: 
       args: entry.args ?? [],
       env: entry.env,
       cwd,
-      ...passthroughKeys(entry)
+      ...passthroughKeys(entry),
+      ...resolveJsonToolFilter(entry)
     });
     return { input };
   } catch (error) {

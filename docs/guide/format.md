@@ -40,6 +40,19 @@ Uses the same managed-block format as the profile `cordis.patch.yml` (a YAML
 (url/headers). Add `disabled: true` to a line to deactivate it. Content outside
 the markers is preserved byte-for-byte.
 
+Per-entry tool visibility (stripped before `ctx.plugin`; deny wins):
+
+```yaml
+        tools:
+          allow: ["read_*"]
+          deny: ["read_secret", "mcp__gitlab__delete_*"]
+```
+
+Patterns are globs (`*`, `**`, `?`, `[…]`) and match either the bare tool name
+or a full `mcp__<effectiveName>__<tool>` id. JSON also accepts Gemini's
+`includeTools` → `allow` and `excludeTools` → `deny`; if both the DSH `tools`
+object and those keys are present, `tools.allow` / `tools.deny` win.
+
 **Divergences from the native cordis dialect**: the `!!js` tag (a js-yaml
 expression evaluated by the profile loader, e.g. the official README's
 `env: { TOKEN: !!js process.env.GITHUB_TOKEN }`) is **not supported** in
