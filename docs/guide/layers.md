@@ -38,6 +38,16 @@ described in [configuration format](format.md).
   line, the user-layer row is **skipped** and recorded as
   `skipReason: "name-taken"` in the snapshot (no renaming, to avoid
   `serverName` reservation conflicts).
+- **On-demand project mounts** (v0.6.0): the catalog and effective names are
+  still computed for every known project. Project-layer fibers are created
+  only for projects with a live session or the process cwd. After the last
+  session leaves (and the project is not cwd) servers unmount after a
+  5 minute grace; the project entry and file watcher remain. User-layer
+  globals stay resident.
+
+A server that registers more than `DSH_MCP_TOOL_BUDGET_WARN` tools or
+description/schema bytes (default 200 / 256KiB) is warned once and listed in
+the diagnostic `summary.toolBudget`. Tools are never clipped.
 
 **Shadow priority** — layers merge first-come-first-served (1 → 6 above), and
 a row is shadowed when it collides with an earlier row on **any** of three

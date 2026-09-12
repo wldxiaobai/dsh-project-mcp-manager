@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-12
+
+Runtime robustness and JSON interop. **On-demand project mounts (B1) are a
+semantic change**: inactive projects no longer keep stdio children resident.
+VS Code `.vscode/mcp.json` (C3) is not in this release.
+
 ### Added
 
 - `SUPPORTED_MCP_TRANSPORTS` mirrors `@deepseek-ai/dsh-mcp-client` 0.1.5-rc.1
@@ -607,7 +613,8 @@ carry an explicit `type`.
 Security note: `stdio` lines in `.dsh/mcp.yml` spawn their `command` inside the dsh host
 process, so project files are executable-code carriers — add them only in trusted projects.
 
-[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.3...HEAD
+[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.3...v0.6.0
 [0.4.3]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.0...v0.4.1

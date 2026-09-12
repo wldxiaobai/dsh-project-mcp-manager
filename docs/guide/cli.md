@@ -35,7 +35,7 @@ the nearest `.git` ancestor), `--scope user` (writes `~/.dsh/mcp.yml`) and
 **`status`** reads the six source layers and the diagnostic files
 (`<projectRoot>/.dsh/.mcp-diag.json` and `$DSH_HOME/.mcp-diag.json`). It
 prints each layer's row count and names, then the latest `summary`
-(mounted / skipped / unhealthy). It does not inspect host memory: if the
+(mounted / skipped / unhealthy / tool-budget hits). It does not inspect host memory: if the
 host has never reconciled, the files are absent and the command reports
 that. `--scope project|user` filters which layers are listed; both
 diagnostic files are still shown.

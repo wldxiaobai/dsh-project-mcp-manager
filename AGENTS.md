@@ -2,7 +2,7 @@
 
 ## 项目概览
 
-`dsh-project-mcp-manager`（v0.4.3）是一个 **DSH 插件**（无 UI）：为每个项目自动装载 MCP 服务器。项目配置放 `<projectRoot>/.dsh/mcp.yml`（原生受管块）或 `<projectRoot>/.dsh/mcp.json`（JSON 方言），dsh 会话在该项目开启时自动经 `@deepseek-ai/dsh-mcp-client` 装载，文件改动热重载，工具可见性按会话 cwd 隔离。用户层（`~/.dsh/mcp.yml`、`~/.dsh/mcp.json`、`~/.dsh/profiles/<name>/mcp.json`）为**全局装载**（宿主级一条连接）。遗留 Claude Code 项目文件 `<projectRoot>/.mcp.json` 只读兼容；`~/.claude.json` 自 v0.4.0 起不再读取。`dsh-mcp` CLI 可写原生 yml 或 DSH JSON。
+`dsh-project-mcp-manager`（v0.6.0）是一个 **DSH 插件**（无 UI）：为每个项目自动装载 MCP 服务器。项目配置放 `<projectRoot>/.dsh/mcp.yml`（原生受管块）或 `<projectRoot>/.dsh/mcp.json`（JSON 方言），dsh 会话在该项目开启时自动经 `@deepseek-ai/dsh-mcp-client` 装载，文件改动热重载，工具可见性按会话 cwd 隔离。用户层（`~/.dsh/mcp.yml`、`~/.dsh/mcp.json`、`~/.dsh/profiles/<name>/mcp.json`）为**全局装载**（宿主级一条连接）。遗留 Claude Code 项目文件 `<projectRoot>/.mcp.json` 只读兼容；`~/.claude.json` 自 v0.4.0 起不再读取。`dsh-mcp` CLI 可写原生 yml 或 DSH JSON。
 
 - 语言：TypeScript（ESM，`"type": "module"`），`target ES2022` / `module NodeNext`，`strict: true`（`noImplicitAny: false`）。
 - 编译产物：`src/` → `lib/`（`main: lib/index.js`）。
@@ -24,7 +24,7 @@
 - `src/service.ts`：`projectMcp` cordis 服务面（`bindProjectMcpService` + Context 模块增强）；不承诺稳定 API。
 - `test/`：`test-model.mjs`、`test-mcp-file.mjs`、`test-json-file.mjs`、`test-json-write.mjs`、`test-registry.mjs`、`test-cli.mjs`（node 直接跑，无测试框架）。
 - `README.md` / `docs/README.zh.md`：项目介绍、安装/构建、工作原理与安全边界（中英双版，各自链接同语言文档）。
-- `docs/`：按用途分目录——`guide/`（功能文档中英双版：`format.md`/`.zh.md` 配置格式、`layers.md`/`.zh.md` 六层来源与影子优先序、`env-expansion.md`/`.zh.md` `${VAR}` 展开、`cli.md`/`.zh.md` `dsh-mcp` CLI）、`releases/`（`v0.3.1.md`、`v0.4.0.md`、`v0.4.1.md`、`v0.4.2.md`、`v0.4.3.md` 发布说明）、`design/`（`adaptation-dsh-0.1.5-rc2.md` / `adaptation-dsh-0.1.5-rc1.md` / `adaptation-dsh-0.1.2-rc1.md` 宿主适配记录、`proposal-json-mcp-config.md` JSON 层设计提案、`proposal-runtime-robustness-and-json-interop.md` 运行时稳健性与 JSON 互通提案）；`docs/README.zh.md` 为中文 README。
+- `docs/`：按用途分目录——`guide/`（功能文档中英双版：`format.md`/`.zh.md` 配置格式、`layers.md`/`.zh.md` 六层来源与影子优先序、`env-expansion.md`/`.zh.md` `${VAR}` 展开、`cli.md`/`.zh.md` `dsh-mcp` CLI）、`releases/`（`v0.3.1.md`、`v0.4.0.md`、`v0.4.1.md`、`v0.4.2.md`、`v0.4.3.md`、`v0.6.0.md` 发布说明）、`design/`（`adaptation-dsh-0.1.5-rc2.md` / `adaptation-dsh-0.1.5-rc1.md` / `adaptation-dsh-0.1.2-rc1.md` 宿主适配记录、`proposal-json-mcp-config.md` JSON 层设计提案、`proposal-runtime-robustness-and-json-interop.md` 运行时稳健性与 JSON 互通提案）；`docs/README.zh.md` 为中文 README。
 - `CHANGELOG.md`：版本变更记录（`[Unreleased]` 起累积）。
 
 ## 常用命令
@@ -41,7 +41,7 @@ npx tsc --noEmit       # 仅类型检查
 ## 关键行为约定（改动前必读）
 
 - **生效名 vs 原名**：装载与工具隔离一律用 effectiveServerName（可能与文件里写的 serverName 不同）；模型提示里的工具名为 `mcp__<生效名>__<tool>`。**只有项目行会改名**（`p<hash>_`），全局用户层行保持原名。
-- **全局 vs 项目**：用户层（profile json / 用户 yml / 用户 json）宿主级只挂一条，与项目数无关、不参与按项目的 deny；项目层每项目一条，经 `tools.restrict({ deny })` 隔离。项目行遮蔽全局行时，只对该项目的会话 deny 全局工具（项目侧压制），全局实例不卸载。
+- **全局 vs 项目**：用户层（profile json / 用户 yml / 用户 json）宿主级只挂一条，与项目数无关、不参与按项目的 deny；项目层按需挂载（有会话或进程 cwd），经 `tools.restrict({ deny })` 隔离。项目行遮蔽全局行时，只对该项目的会话 deny 全局工具（项目侧压制），全局实例不卸载。
 - **会话隔离**：deny 传的是**精确工具名**（tools.restrict 对 unknown names 报错），必须先把 serverName 展开成当前注册的工具名再 deny；装载未 settle 时会失败，靠下一次 sweep 补上——不要改成一次性应用。条目 `tools.allow`/`tools.deny`（JSON 亦映射 `includeTools`/`excludeTools`）同样只展开已注册名，glob 匹配，deny 优先，且在 `toOfficialConfig` 时剥掉以免传给 client。
 - **同名重装载**：必须先 unmount（释放 serverName 预留）再 mount，顺序在 `reconcileContainer` 里已保证。连接死亡自愈（曾经有工具、当前 `mcpToolCount===0`、未 `disabled`）同样走这条顺序，连续 3 次仍为 0 工具则 `give-up` 并停止；JSON `enabled:false` 不在装载集，不会被复活。
 - **配置指纹跳过重读**：`reconcileAll` 入口比对已知项目的 yml/json/cc 与用户层三路径的 `mtimeMs+size`；全同则跳过文件重读、复用上次期望集，仍跑健康巡检 / deny 重扫 / 工具预算 / 摘要。
