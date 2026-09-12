@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Diagnostic file read-modify-write uses the same per-path lock as config
   writes, so a `kind:active` event and the post-reconcile `summary` cannot
   clobber each other.
+- Changing only `tools.allow` / `tools.deny` updates `tools.restrict` without
+  tearing down the MCP connection.
 
 ## [0.6.0] - 2026-09-12
 

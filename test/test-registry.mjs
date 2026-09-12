@@ -1291,6 +1291,17 @@ try {
     assert.ok(lastDeny.includes(`mcp__${mountedT}__read_secret`), "deny wins over allow: " + lastDeny);
     assert.ok(!lastDeny.includes(`mcp__${mountedT}__read_file`), "allowed tools stay visible: " + lastDeny);
     assert.ok(!ctxT.mounts[0].tools, "tools filter is stripped before ctx.plugin");
+    const mountsAfterFilter = ctxT.mounts.length;
+    const denyAfter = agentT.denies[agentT.denies.length - 1];
+    await writeManagedRows(projectMcpFile(projT), [{
+      ...filtered,
+      config: { ...filtered.config, tools: { allow: ["read_*"], deny: ["read_secret", "read_file"] } }
+    }]);
+    await registryT.reconcileNow();
+    assert.equal(ctxT.mounts.length, mountsAfterFilter, "tools-only edits must not remount");
+    const denyAfterEdit = agentT.denies[agentT.denies.length - 1];
+    assert.ok(denyAfterEdit.includes(`mcp__${mountedT}__read_file`), "tools.deny change updates restrict without remount: " + denyAfterEdit);
+    assert.notEqual(denyAfterEdit.join("\n"), denyAfter.join("\n"), "restrict deny set changes after tools.deny edit");
     for (const disposer of ctxT.disposers) {
       const cleanup = disposer();
       if (typeof cleanup === "function") cleanup();

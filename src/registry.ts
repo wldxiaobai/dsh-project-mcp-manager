@@ -227,9 +227,10 @@ export interface ProjectChangePlan {
   toMount: DesiredProjectRow[];
 }
 
-/** 行配置的规范化序列化（键排序），用于判断行是否实质变化。 */
+/** 行配置的规范化序列化（键排序），用于判断行是否实质变化。`tools` 只影响 restrict，不拆连接。 */
 function canonicalConfig(config: Record<string, unknown> | undefined): string {
-  return JSON.stringify(config ?? null, (key, value) => {
+  const body = config === undefined ? null : Object.fromEntries(Object.entries(config).filter(([key]) => key !== "tools"));
+  return JSON.stringify(body, (key, value) => {
     if (value !== null && typeof value === "object" && !Array.isArray(value)) {
       const keys = Object.keys(value);
       keys.sort(byCodeUnit);
@@ -1440,6 +1441,13 @@ export class ProjectMcpRegistry {
     for (const rawName of plan.toUnmount) {
       await this.unmountServer(container, rawName);
       this.skipReasons.delete(container.key + "\u0000" + rawName);
+    }
+    // 仍挂着的行就地换成本轮 desired（含只改 tools.allow/deny），再 kickSweep 即可，不必拆连接。
+    for (const item of desired) {
+      const state = container.servers.get(item.rawName);
+      if (state === undefined) continue;
+      state.row = item.row;
+      state.source = item.source;
     }
     for (const item of plan.toMount) {
       const skip = await this.mountServer(container, item);
