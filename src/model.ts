@@ -182,11 +182,16 @@ export const SUPPORTED_MCP_TRANSPORTS = ["stdio", "streamable-http"] as const;
 export type SupportedMcpTransport = (typeof SUPPORTED_MCP_TRANSPORTS)[number];
 
 /** JSON/CLI 用户面写法 → 官方 transport。`http` 是 Cursor/CC 通行别名。 */
-export const MCP_TRANSPORT_ALIASES: Record<string, SupportedMcpTransport> = {
+export const MCP_TRANSPORT_ALIASES: Record<string, SupportedMcpTransport> = Object.assign(Object.create(null), {
   stdio: "stdio",
   http: "streamable-http",
   "streamable-http": "streamable-http"
-};
+});
+
+function aliasedMcpTransport(raw: string): SupportedMcpTransport | undefined {
+  if (!Object.hasOwn(MCP_TRANSPORT_ALIASES, raw)) return undefined;
+  return MCP_TRANSPORT_ALIASES[raw];
+}
 
 /**
  * 已知但不被装载后端支持的传输。走统一报错路径，不隐式回退、不静默跳过。
@@ -229,7 +234,7 @@ export function unsupportedTransportMessage(value: string): string {
  * 别名命中则映射；其余一律报错（含 `UNSUPPORTED_MCP_TRANSPORTS` 与完全陌生的值）。
  */
 export function resolveMcpTransport(raw: string): { transport: SupportedMcpTransport } | { error: string } {
-  const mapped = MCP_TRANSPORT_ALIASES[raw];
+  const mapped = aliasedMcpTransport(raw);
   if (mapped !== undefined) return { transport: mapped };
   return { error: unsupportedTransportMessage(raw) };
 }
@@ -240,7 +245,7 @@ export function resolveMcpTransport(raw: string): { transport: SupportedMcpTrans
  * 已知不支持值走 `unsupportedTransportMessage`；完全陌生的值提示合法集合。
  */
 export function parseCliTransport(value: string): { transport: "stdio" | "http" } | { error: string } {
-  const mapped = MCP_TRANSPORT_ALIASES[value];
+  const mapped = aliasedMcpTransport(value);
   if (mapped !== undefined) return { transport: jsonTypeOfTransport(mapped) };
   if (isUnsupportedMcpTransport(value)) return { error: unsupportedTransportMessage(value) };
   return { error: `--transport 只支持 stdio|http（别名 streamable-http），收到：${value}` };

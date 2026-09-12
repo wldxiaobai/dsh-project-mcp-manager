@@ -37,6 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The user-layer watcher also watches `$DSH_HOME/dsh-mcp.json` so creating
   the other plugin's file diagnoses it without waiting for an unrelated
   reconcile.
+- Transport alias lookup uses `Object.hasOwn` on a null-prototype map, so
+  values like `toString` fail as unknown transports instead of hitting
+  `Object.prototype`.
 
 ## [0.6.0] - 2026-09-12
 

@@ -276,6 +276,9 @@ assert.deepEqual(parseCliTransport("streamable-http"), { transport: "http" });
 assert.deepEqual(parseCliTransport("stdio"), { transport: "stdio" });
 assert.match(parseCliTransport("websocket").error, /stdio\|http/);
 assert.match(parseCliTransport("sse").error, /MCP SSE 端点传输/);
+assert.match(resolveMcpTransport("toString").error, /toString/);
+assert.match(resolveMcpTransport("constructor").error, /constructor/);
+assert.match(parseCliTransport("toString").error, /stdio\|http/);
 expectThrow(
   "unknown yml transport still names the mirrored set",
   () => inputFromPatchRow({ id: "panel-mcp-x", name: "@deepseek-ai/dsh-mcp-client", config: { serverName: "x", transport: "websocket" } }),
