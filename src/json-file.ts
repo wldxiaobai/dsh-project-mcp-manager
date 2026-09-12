@@ -182,6 +182,70 @@ function resolveDeclaredTransport(entry: JsonServerEntry): { transport?: Support
   return { transport: fromTransport?.transport ?? fromType?.transport };
 }
 
+/** cwd 缺省语义：显式写的非空 cwd 原样保留；项目层缺省落到项目根；全局层留空串（继承宿主工作目录）。 */
+function jsonStdioCwd(entry: JsonServerEntry, options: JsonReadOptions): string {
+  if (typeof entry.cwd === "string" && entry.cwd !== "") return entry.cwd;
+  if (options.cwdPolicy === "project") return options.projectRoot;
+  return "";
+}
+
+function parseJsonHttpEntry(name: string, entry: JsonServerEntry, remoteUrl: string): McpServerInput {
+  return mcpServerInputSchema.parse({
+    serverName: name,
+    transport: "streamable-http",
+    url: remoteUrl,
+    headers: entry.headers,
+    ...passthroughKeys(entry),
+    ...resolveJsonToolFilter(entry)
+  });
+}
+
+function parseJsonStdioEntry(name: string, entry: JsonServerEntry, options: JsonReadOptions): McpServerInput {
+  return mcpServerInputSchema.parse({
+    serverName: name,
+    transport: "stdio",
+    command: entry.command,
+    args: entry.args ?? [],
+    env: entry.env,
+    cwd: jsonStdioCwd(entry, options),
+    ...passthroughKeys(entry),
+    ...resolveJsonToolFilter(entry)
+  });
+}
+
+function wantsJsonHttp(
+  declared: SupportedMcpTransport | undefined,
+  remoteUrl: string | undefined,
+  httpUrl: string | undefined,
+  entry: JsonServerEntry
+): boolean {
+  if (declared === "streamable-http" || httpUrl !== undefined) return true;
+  return declared === undefined && remoteUrl !== undefined && entry.command === undefined;
+}
+
+function jsonEntryFromDeclared(
+  name: string,
+  entry: JsonServerEntry,
+  options: JsonReadOptions,
+  declared: SupportedMcpTransport | undefined,
+  remoteUrl: string | undefined,
+  httpUrl: string | undefined
+): { input: McpServerInput } | { error: string } {
+  const hasCommand = typeof entry.command === "string" && entry.command !== "";
+  if (declared === undefined && hasCommand && remoteUrl !== undefined) {
+    return { error: "同时有 command 与 url，请显式写 type 或 transport" };
+  }
+  if (wantsJsonHttp(declared, remoteUrl, httpUrl, entry)) {
+    if (remoteUrl === undefined) return { error: 'type:"http" 条目缺少 url' };
+    return { input: parseJsonHttpEntry(name, entry, remoteUrl) };
+  }
+  if (!hasCommand) {
+    const typedStdio = declared === "stdio" || entry.type === "stdio";
+    return { error: typedStdio ? 'type:"stdio" 条目缺少 command' : '条目缺少 command（且无 type:"http"/url）' };
+  }
+  return { input: parseJsonStdioEntry(name, entry, options) };
+}
+
 /** 单条 JSON 条目 → 官方输入。坏条目返回 `{ error }` 由调用方逐条收集。 */
 export function jsonEntryToInput(name: string, entry: JsonServerEntry, options: JsonReadOptions): { input: McpServerInput } | { error: string } {
   const url = nonEmptyString(entry.url);
@@ -196,45 +260,7 @@ export function jsonEntryToInput(name: string, entry: JsonServerEntry, options: 
     return { error: "httpUrl 表示 streamable-http，与 transport/type 声明的 stdio 冲突" };
   }
   try {
-    const inferredHttp = declared.transport === undefined && remoteUrl !== undefined && entry.command === undefined;
-    const wantHttp = declared.transport === "streamable-http" || httpUrl !== undefined || inferredHttp;
-    const hasCommand = typeof entry.command === "string" && entry.command !== "";
-    if (declared.transport === undefined && hasCommand && remoteUrl !== undefined) {
-      return { error: "同时有 command 与 url，请显式写 type 或 transport" };
-    }
-    if (wantHttp) {
-      if (remoteUrl === undefined) return { error: 'type:"http" 条目缺少 url' };
-      const input = mcpServerInputSchema.parse({
-        serverName: name,
-        transport: "streamable-http",
-        url: remoteUrl,
-        headers: entry.headers,
-        ...passthroughKeys(entry),
-        ...resolveJsonToolFilter(entry)
-      });
-      return { input };
-    }
-    if (typeof entry.command !== "string" || entry.command === "") {
-      return { error: declared.transport === "stdio" || entry.type === "stdio" ? 'type:"stdio" 条目缺少 command' : '条目缺少 command（且无 type:"http"/url）' };
-    }
-    // cwd 缺省语义：显式写的非空 cwd 原样保留；项目层缺省落到项目根；全局层留空串（继承宿主工作目录）。
-    let cwd = "";
-    if (typeof entry.cwd === "string" && entry.cwd !== "") {
-      cwd = entry.cwd;
-    } else if (options.cwdPolicy === "project") {
-      cwd = options.projectRoot;
-    }
-    const input = mcpServerInputSchema.parse({
-      serverName: name,
-      transport: "stdio",
-      command: entry.command,
-      args: entry.args ?? [],
-      env: entry.env,
-      cwd,
-      ...passthroughKeys(entry),
-      ...resolveJsonToolFilter(entry)
-    });
-    return { input };
+    return jsonEntryFromDeclared(name, entry, options, declared.transport, remoteUrl, httpUrl);
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
   }
