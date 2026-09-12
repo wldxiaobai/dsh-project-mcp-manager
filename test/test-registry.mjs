@@ -1190,6 +1190,11 @@ try {
     const mountsAtGiveUp = ctxH.mounts.length;
     await registryH.reconcileNow();
     assert.equal(ctxH.mounts.length, mountsAtGiveUp, "give-up stops further remounts");
+    const summaryGive = await readDiagSummary(projH);
+    assert.ok(summaryGive?.unhealthy.some((item) => item.name === "alive" && item.reason === "give-up"), "give-up is unhealthy in summary: " + JSON.stringify(summaryGive));
+    assert.ok((summaryGive?.skippedByReason["give-up"] ?? 0) >= 1, "summary counts give-up skips");
+    const giveView = (await registryH.snapshot()).flatMap((file) => file.servers ?? []).find((row) => row.serverName === "alive");
+    assert.equal(giveView?.skipReason, "give-up", "snapshot skipReason is give-up while the fiber is still active");
     const snapCount = registryH.debugReconcileCount;
     await registryH.snapshot();
     await registryH.snapshot();
@@ -1461,6 +1466,10 @@ try {
     const pendingA = snap.find((file) => file.project === projA)?.servers ?? [];
     assert.equal(pendingA.length, 1, "unmounted project keeps its catalog entry");
     assert.equal(pendingA[0].fiberPhase, "pending");
+    assert.equal(pendingA[0].skipReason, "idle", "idle unmount is visible as skipReason");
+    const summaryIdleA = await readDiagSummary(projA);
+    assert.ok(summaryIdleA !== undefined && summaryIdleA.rows >= 1, "idle unmount still counts catalog rows: " + JSON.stringify(summaryIdleA));
+    assert.equal(summaryIdleA.skippedByReason.idle, 1, "summary records idle skip");
 
     ctxOn.agentsList.unshift(agentA);
     await registryOn.reconcileNow();
@@ -1488,6 +1497,57 @@ try {
   } finally {
     process.chdir(savedCwdOn);
     await rmRetry(dirOn);
+  }
+}
+
+{
+  const dirT3 = await mkdtemp(join(tmpdir(), "dsh-mcp-h2-idle-"));
+  const homeT3 = join(dirT3, "home");
+  const projT3 = join(dirT3, "proj");
+  await mkdir(join(homeT3, ".dsh"), { recursive: true });
+  await mkdir(projT3, { recursive: true });
+  const missingRow = { ...stdioRow("secret"), config: { ...stdioRow("secret").config, env: { TOKEN: "${H2_MISSING_VAR}" } } };
+  await writeManagedRows(projectMcpFile(projT3), [stdioRow("ok"), missingRow], { createIfMissing: true });
+  const savedCwdT3 = process.cwd();
+  const savedMissing = process.env.H2_MISSING_VAR;
+  delete process.env.H2_MISSING_VAR;
+  let now = 2_000_000_000;
+  try {
+    process.chdir(dirT3);
+    const ctxT3 = fakeCtx();
+    const registryT3 = new ProjectMcpRegistry(ctxT3, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(homeT3, ".dsh", "mcp.yml"), mcpJson: join(homeT3, ".dsh", "mcp.json"), profilesDir: join(homeT3, ".dsh", "profiles") },
+      now: () => now,
+      unmountGraceMs: UNMOUNT_GRACE_MS
+    });
+    ctxT3.agentsList.push(fakeAgent("session-t3", projT3));
+    await registryT3.reconcileNow();
+    const summaryLive = await readDiagSummary(projT3);
+    assert.equal(summaryLive.skippedByReason["env-missing"], 1, "live summary counts env-missing: " + JSON.stringify(summaryLive));
+    assert.ok(summaryLive.rows >= 2, "catalog counts both rows while one is mounted: " + JSON.stringify(summaryLive));
+    ctxT3.agentsList.length = 0;
+    await registryT3.reconcileNow();
+    now += UNMOUNT_GRACE_MS + 1;
+    await registryT3.reconcileNow();
+    const summaryIdle = await readDiagSummary(projT3);
+    assert.ok(summaryIdle.rows >= 2, "idle unmount keeps catalog row count: " + JSON.stringify(summaryIdle));
+    assert.equal(summaryIdle.skippedByReason["env-missing"], 1, "env-missing survives idle prune");
+    assert.equal(summaryIdle.skippedByReason.idle, 1, "mounted row becomes idle");
+    const snapT3 = (await registryT3.snapshot()).find((file) => file.project === projT3);
+    const byName = Object.fromEntries((snapT3?.servers ?? []).map((row) => [row.serverName, row.skipReason]));
+    assert.equal(byName.ok, "idle");
+    assert.equal(byName.secret, "env-missing");
+    for (const disposer of ctxT3.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    pass("idle unmount keeps catalog rows and preserves env-missing skips");
+  } finally {
+    process.chdir(savedCwdT3);
+    if (savedMissing === undefined) delete process.env.H2_MISSING_VAR;
+    else process.env.H2_MISSING_VAR = savedMissing;
+    await rmRetry(dirT3);
   }
 }
 

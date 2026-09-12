@@ -507,10 +507,15 @@ function fiberPhaseFor(state: ProjectServerState | undefined, row: PatchRow, own
   return owned ? phaseToFiberPhase(state.phase) : null;
 }
 
-/** 跳过原因只在「无装载实例且该行不是 disabled 占名行」时有值。 */
+/**
+ * 跳过原因：无装载实例且非 disabled 占名行时照常返回；`give-up` 在实例仍
+ * 挂着（已停止自愈）时也要暴露，否则 status / 快照会把它显示成健康装载。
+ */
 function skipReasonFor(skipReasons: Map<string, string>, key: string, rawName: string, state: ProjectServerState | undefined, row: PatchRow): string | undefined {
+  const marked = skipReasons.get(key + "\u0000" + rawName);
+  if (marked === "give-up") return marked;
   if (state !== undefined || row.disabled === true) return undefined;
-  return skipReasons.get(key + "\u0000" + rawName);
+  return marked;
 }
 
 /**
@@ -686,8 +691,10 @@ export class ProjectMcpRegistry {
   /** watcher 文件事件代数：agent/巡检触发的对账可跳过重读，文件事件必须重读。 */
   private configEpoch = 0;
   private lastFingerprintEpoch = -1;
-  /** 上一轮 scanProject 的期望行（指纹未变时复用）。 */
+  /** 上一轮 scanProject 的期望行（指纹未变时复用；摘要 rows 也按这份目录计）。 */
   private lastScanDesired = new Map<string, { projectRoot: string; rows: DesiredProjectRow[] }>();
+  /** 上一轮用户层合并后的全局期望行（摘要按目录计，不按当前装载 Map）。 */
+  private lastGlobalDesired: DesiredProjectRow[] = [];
   /** 装载行的健康巡检内存（unmount 会删掉 ProjectServerState，不能只挂在 state 上）。 */
   private readonly healthByMount = new Map<string, { everHadTools: boolean; remountCount: number; nextRemountAt: number; givenUp: boolean }>();
   /** 作用域键 → 超预算的生效名（写入 diag summary；每轮重算）。 */
@@ -1181,6 +1188,7 @@ export class ProjectMcpRegistry {
     await this.syncUserWatcher();
 
     const globalMerged = mergeSourcedRows([this.userLayer.profileRows, this.userLayer.ymlRows, this.userLayer.jsonRows]);
+    this.lastGlobalDesired = globalMerged.rows;
     const hostGlobalNames = await this.providers.globalNames().catch(() => []);
     const hostTaken = new Set(hostGlobalNames);
     const globalMountable = new Set(globalMerged.rows.map((row) => row.rawName).filter((rawName) => !hostTaken.has(rawName)));
@@ -1341,8 +1349,16 @@ export class ProjectMcpRegistry {
       project = { projectRoot: entry.projectRoot, servers: new Map() };
       this.projects.set(key, project);
     }
-    const desired = keepMounts ? entry.rows : [];
-    await this.reconcileContainer(this.projectContainer(key, project), desired);
+    const catalog = entry.rows;
+    const desired = keepMounts ? catalog : [];
+    await this.reconcileContainer(this.projectContainer(key, project), desired, new Set(), catalog);
+    if (!keepMounts) {
+      for (const item of catalog) {
+        if (project.servers.has(item.rawName)) continue;
+        const markKey = key + "\u0000" + item.rawName;
+        if (!this.skipReasons.has(markKey)) this.skipReasons.set(markKey, "idle");
+      }
+    }
   }
 
   /** 全局（用户层）对账：与项目数量无关，宿主级只挂一条连接。 */
@@ -1369,7 +1385,7 @@ export class ProjectMcpRegistry {
         this.ctx.logger.warn(`全局用户层 MCP "${rawName}" 未装载：同名服务器已由宿主全局 patch 行（bundle 层或 profile patch 层）占用；请改名或从用户层移除`);
       }
     });
-    await this.reconcileContainer(this.globalMountContainer(), desired, blocked);
+    await this.reconcileContainer(this.globalMountContainer(), desired, blocked, rows);
   }
 
   private globalMountContainer(): MountContainer {
@@ -1399,7 +1415,7 @@ export class ProjectMcpRegistry {
   }
 
   /** 装载容器的通用对账（项目层与全局层共用）：算变更计划 → 卸载 → 装载。 */
-  private async reconcileContainer(container: MountContainer, desired: DesiredProjectRow[], blocked: Set<string> = new Set()): Promise<void> {
+  private async reconcileContainer(container: MountContainer, desired: DesiredProjectRow[], blocked: Set<string> = new Set(), catalog: DesiredProjectRow[] = desired): Promise<void> {
     const current = [...container.servers.values()].map((state) => ({ rawName: state.rawName, effectiveName: state.effectiveName, row: state.row }));
     // 全局行保持原名：生效名映射就地合成，避免污染项目生效名表。
     const effectiveMap = container.scope === "global"
@@ -1407,12 +1423,13 @@ export class ProjectMcpRegistry {
       : this.effective;
     const plan = planProjectChanges(current, desired, effectiveMap, container.key);
     // 清理死键：从未挂上（被跳过）的行若从文件里删掉，既不在 toMount 也不在
-    // toUnmount，其 skipReasons 标记没人再触碰——按当前 desired 集合剪掉。
+    // toUnmount，其 skipReasons 标记没人再触碰——按配置目录剪掉，不能按本轮
+    // 装载集（idle 卸载 desired=[] 时否则会把 env-missing 一并抹掉）。
     // blocked（撞名被拒）的行保留其标记，供快照展示 skipReason。
-    const desiredNames = new Set([...desired.map((item) => item.rawName), ...blocked]);
+    const catalogNames = new Set([...catalog.map((item) => item.rawName), ...blocked]);
     const markPrefix = container.key + "\u0000";
     for (const markKey of this.skipReasons.keys()) {
-      if (markKey.startsWith(markPrefix) && !desiredNames.has(markKey.slice(markPrefix.length))) this.skipReasons.delete(markKey);
+      if (markKey.startsWith(markPrefix) && !catalogNames.has(markKey.slice(markPrefix.length))) this.skipReasons.delete(markKey);
     }
     // 先卸载（同名重装载必须先释放 serverName 预留），再装载。
     for (const rawName of plan.toUnmount) {
@@ -1464,29 +1481,35 @@ export class ProjectMcpRegistry {
     }
   }
 
-  private summarizeScope(key: string, servers: Map<string, ProjectServerState>, at: string, projects?: number): DiagSummary {
+  private summarizeScope(key: string, servers: Map<string, ProjectServerState>, catalog: DesiredProjectRow[], at: string, projects?: number): DiagSummary {
     const skippedByReason: Record<string, number> = {};
     const unhealthy: DiagUnhealthy[] = [];
-    const prefix = key + "\u0000";
-    let skippedCount = 0;
-    for (const [mark, reason] of this.skipReasons) {
-      if (!mark.startsWith(prefix)) continue;
-      skippedCount += 1;
+    const seenUnhealthy = new Set<string>();
+    const addUnhealthy = (name: string, reason: string) => {
+      if (seenUnhealthy.has(name)) return;
+      seenUnhealthy.add(name);
+      unhealthy.push({ name, reason });
       skippedByReason[reason] = (skippedByReason[reason] ?? 0) + 1;
-      unhealthy.push({ name: mark.slice(prefix.length), reason });
-    }
+    };
+    const prefix = key + "\u0000";
     let mounted = 0;
     for (const state of servers.values()) {
-      if (state.phase === "active" || state.phase === "mounting") mounted += 1;
-      if (state.phase === "failed") {
-        skippedByReason.failed = (skippedByReason.failed ?? 0) + 1;
-        unhealthy.push({ name: state.rawName, reason: state.error ?? "failed" });
+      const health = this.healthByMount.get(this.healthKey(key, state.rawName));
+      if (health?.givenUp === true) {
+        addUnhealthy(state.rawName, "give-up");
+        continue;
       }
+      if (state.phase === "active" || state.phase === "mounting") mounted += 1;
+      if (state.phase === "failed") addUnhealthy(state.rawName, state.error ?? "failed");
+    }
+    for (const [mark, reason] of this.skipReasons) {
+      if (!mark.startsWith(prefix)) continue;
+      addUnhealthy(mark.slice(prefix.length), reason);
     }
     return {
       at,
       ...(projects === undefined ? {} : { projects }),
-      rows: servers.size + skippedCount,
+      rows: catalog.length,
       mounted,
       skippedByReason,
       unhealthy,
@@ -1497,7 +1520,8 @@ export class ProjectMcpRegistry {
   private async writeSummaries(): Promise<void> {
     const at = new Date().toISOString();
     for (const [key, entry] of this.projects) {
-      const summary = this.summarizeScope(key, entry.servers, at);
+      const catalog = this.lastScanDesired.get(key)?.rows ?? [];
+      const summary = this.summarizeScope(key, entry.servers, catalog, at);
       const path = join(entry.projectRoot, DSH_DIR, DIAG_FILE);
       if (summary.rows === 0 && summary.unhealthy.length === 0) {
         try {
@@ -1508,7 +1532,7 @@ export class ProjectMcpRegistry {
       }
       await this.writeDiagAt(path, undefined, summary);
     }
-    const globalSummary = this.summarizeScope(GLOBAL_SCOPE_KEY, this.globalServers, at, this.projects.size);
+    const globalSummary = this.summarizeScope(GLOBAL_SCOPE_KEY, this.globalServers, this.lastGlobalDesired, at, this.projects.size);
     const userHasContent = this.userLayer.ymlRows.length + this.userLayer.jsonRows.length + this.userLayer.profileRows.length > 0
       || this.userLayer.ymlError !== null
       || this.userLayer.jsonError !== null
@@ -2111,7 +2135,7 @@ export class ProjectMcpRegistry {
         source,
         ...(effectiveName === undefined ? {} : { effectiveServerName: effectiveName }),
         fiberPhase: fiberPhaseFor(state, row, owned),
-        skipReason: skipReasonFor(this.skipReasons, key, rawName, state, row) ?? null, // env-missing / env-invalid / config-invalid / plugin-throw；fiberPhase 保持生命周期枚举
+        skipReason: skipReasonFor(this.skipReasons, key, rawName, state, row) ?? null, // env-missing / env-invalid / config-invalid / plugin-throw / idle / give-up
         toolCount: owned && state?.phase === "active" ? mcpToolCount(this.ctx, state.effectiveName) : 0
       });
     }
