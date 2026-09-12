@@ -19,6 +19,8 @@ against the mount schema before spawn, and a malformed result (e.g. a non-URL
 reaching the mount backend. In the snapshot/row views, `fiberPhase` stays on
 the mount-lifecycle vocabulary (`pending` for a row that never mounted) and
 the reason rides on a separate `skipReason` field (`env-missing` /
-`env-invalid` / `config-invalid` / `plugin-throw`). Values are never
+`env-invalid` / `config-invalid` / `plugin-throw`; other skip reasons such as
+`name-taken`, `idle` and `give-up` are described in
+[configuration sources and layers](layers.md)). Values are never
 persisted anywhere by the plugin; the CLI writes `${VAR}` through literally,
 so secrets can live in the environment while configs live in git.

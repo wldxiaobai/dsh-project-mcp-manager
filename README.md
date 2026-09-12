@@ -127,10 +127,12 @@ pnpm test          # node test/test-model.mjs / test-mcp-file / test-json-file /
   `<projectRoot>/.dsh/mcp.json` and `<projectRoot>/.mcp.json` — trigger a full
   reconciliation after a 150 ms debounce: added rows are mounted, removed rows
   are unmounted, and config changes are remounted. A second watcher covers the
-  user layer as three **exact file paths** — `~/.dsh/mcp.yml`,
-  `~/.dsh/mcp.json` and `~/.dsh/profiles/<active profile>/mcp.json` (chokidar
-  v5 can deliver an event for a watched missing file when it is created, as
-  long as its parent directory exists) — never the home directory at large.
+  user layer as **exact file paths** — `~/.dsh/mcp.yml`,
+  `~/.dsh/mcp.json`, `~/.dsh/profiles/<active profile>/mcp.json`, and
+  `$DSH_HOME/dsh-mcp.json` (the other plugin's global store; watched only so
+  creating it can be diagnosed, never mounted). chokidar v5 can deliver an
+  event for a watched missing file when it is created, as long as its parent
+  directory exists — never the home directory at large.
 - **Profile name resolution**: derived from the loader root include's
   `config.path` (`~/.dsh/profiles/<name>/cordis.yml`) or `ctx.baseUrl`, and
   overridable with `DSH_MCP_PROFILE=<name>`; when it cannot be resolved the
@@ -177,7 +179,10 @@ servers, but they do **not** share a file format:
    key is a legal empty layer here, so the other format would otherwise look
    like "I configured it but nothing happens". The loader now writes a
    diagnostic naming that format and suggesting `mcpServers` or
-   `.dsh/mcp.yml`. The same hint applies to `~/.dsh/dsh-mcp.json`.
+   `.dsh/mcp.yml`. The same hint applies to `~/.dsh/dsh-mcp.json`. If that
+   file already uses this plugin's `mcpServers` dialect, the diagnostic tells
+   you to move the object into `mcp.json` — it is still not loaded from the
+   other plugin's filename.
 2. **The same `serverName` can be started twice** (once by each plugin).
    stdio servers may contend for ports or exclusive resources.
 3. **Prefer one plugin per project**, or keep this plugin on `.dsh/mcp.yml`

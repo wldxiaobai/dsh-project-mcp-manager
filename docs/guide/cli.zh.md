@@ -30,6 +30,7 @@ user/profile 为 `""`（宿主目录）；`-c` 显式覆盖。
 
 `add` 没有 `--allow` / `--deny`。条目级 `tools.allow` / `tools.deny`（以及 JSON
 的 `includeTools` / `excludeTools`）请写进配置文件，或用 `dsh-mcp import` 带入。
+`list` / `get` 仍会展示这些过滤（只显示模式文本）。
 
 **`status`** 读取六层来源文件与诊断文件（`<项目根>/.dsh/.mcp-diag.json` 与
 `$DSH_HOME/.mcp-diag.json`）：打印每层行数与名称，再打印最近一次对账的
@@ -41,7 +42,7 @@ user/profile 为 `""`（宿主目录）；`-c` 显式覆盖。
 
 **`import`** 把 `{"mcpServers":{...}}` 写入原生 yml 或 JSON（`--scope` /
 `--format` / `--profile` 与 `add` 相同，缺省作用域为 **project**）。同名默认
-跳过，加 `--overwrite` 才覆盖。`--dry-run` 打印增/跳/覆盖计划与影子冲突
+跳过，加 `--overwrite` 才覆盖（skip/overwrite 在文件锁内判定，与 `add` 一致）。`--dry-run` 打印增/跳/覆盖计划与影子冲突
 （`shadowViewOf`）且不写盘。VS Code 的 `{servers:{…}}`、单条对象、JSON 数组
 一律拒绝。坏条目逐条报错，合法兄弟仍导入。`--from -` 读 stdin。
 

@@ -4,6 +4,11 @@
 [v0.6.0 发布说明](../releases/v0.6.0.md) ·
 [运行时稳健性与 JSON 互通提案](../design/proposal-runtime-robustness-and-json-interop.md)
 
+> 本文所列 M1–M3 / L1–L3 / L5–L6 已在 `dcdcdab` 及后续 commit 落地（健康配额恢复清零、
+> 查询面进 enqueue 走内存目录、同世代 0 工具去抖、`warnGates` 剪枝、`schemaToolId` 统一、
+> idle 进 `summary.idle`、`status --scope profile`、诊断锁超时告警），随 v0.6.0 一并发布。
+> L4（显式 `type:"stdio"` 仍可带 `url`）与 L7（`timer.unref()`）按审查建议保持现状。
+
 **审查日期**：2026-09-13 ｜ **区间**：`7e0088d`…`804662f`（含两端；git 口径
 `7e0088d^..804662f`）｜ 分支 `feat/runtime-robustness-and-json-interop`
 **范围**：`src/*.ts`——6 文件 `+334 / −147`（`registry.ts` +256、`cli.ts` +145、

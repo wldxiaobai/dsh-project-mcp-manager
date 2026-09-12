@@ -5,11 +5,11 @@
 [上一轮审查（v0.3.1 以来，已在 v0.4.1 落地）](ts-review-since-v0.3.1.zh.md)
 
 > 本文 H1–H2 / M1–M8 / L1–L12 已在 `7e0088d`…`804662f` 落地（L4/L9 以文档关闭）。
+> 复查批次余下的 M1–M3 / L1–L3 / L5–L6 已在 `dcdcdab` 及后续 commit 落地，随 v0.6.0 一并发布。
 > 修复批次的复查见 [7e0088d 至 804662f](ts-review-7e0088d-to-804662f.zh.md)。
 
-**审查日期**：2026-09-12 ｜ **区间**：`v0.4.3..HEAD`（HEAD = `8996af1`，分支
-`feat/runtime-robustness-and-json-interop`；尚未打 `v0.6.0` tag，内容即发布说明所述的
-v0.6.0）
+**审查日期**：2026-09-12 ｜ **区间**：`v0.4.3..HEAD`（审查时 HEAD = `8996af1`，分支
+`feat/runtime-robustness-and-json-interop`；发布切点为 `v0.6.0` tag）
 **范围**：`src/*.ts` 全部修改——9 文件 `+1213 / −104`（新增 `src/service.ts`），即提案
 A0/A1/A2b/A3/A4/A5/B1/B2/B3/C1/C2/C4（C3 本轮不做）。`src/mcp-file.ts` /
 `src/project-root.ts` 本区间无改动。

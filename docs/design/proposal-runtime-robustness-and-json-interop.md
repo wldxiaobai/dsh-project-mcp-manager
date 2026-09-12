@@ -123,6 +123,10 @@
 - 上限：单行连续重挂 N 次（建议 3）仍为 0 工具 → 停止重挂并写诊断 `kind: "give-up"`。
 - 新增状态字段（仅内存）：`everHadTools`、`remountCount`、`nextRemountAt`。
 
+> **落地口径（v0.6.0）**：`everHadTools` 按 fiber 世代（新一代首连窗口交给官方重连）；
+> 同世代短暂 0 工具去抖（单次巡检不拆）；`tools > 0` 清 `remountCount` / `givenUp`
+> （连续失败而非寿命配额）。
+
 **涉及文件**：`src/registry.ts`（tracker、`reconcileAll`）、`src/status.ts`（复用）、`src/model.ts`（若退避/上限需常量）。
 
 **风险**：合法 0 工具服务器被误判。缓解：`everHadTools` 前置 + 退避 + 次数上限；诊断可回溯。
@@ -232,6 +236,8 @@
 **问题**：`snapshot()`/`serverView()`/`globalState()` 只对内；别的插件（或宿主 UI）无法消费本插件的状态。
 
 **提案**：以官方 storageDomain/service 模式 `ctx.provide("projectMcp", { snapshot, serverView, globalState, reload })`，并补类型声明合并。插件现有导出面（`inject = ["tools","agents"]`、`globalNames()`、`activeProfile()`）保持不变。
+
+> **落地口径（v0.6.0）**：`snapshot` / `serverView` / `globalState` 进 enqueue 与对账互斥，按上一轮 `lastScanFiles` / `userLayer` 内存拼装，不读盘、不跑 `reconcileAll`；`reload` 才对账一次。
 
 **风险**：服务名与稳定性承诺需评审；`reload` 的语义限定为"触发一次 reconcileAll"。
 

@@ -34,12 +34,13 @@ the nearest `.git` ancestor), `--scope user` (writes `~/.dsh/mcp.yml`) and
 
 `add` does not take `--allow` / `--deny`. Per-entry `tools.allow` /
 `tools.deny` (and JSON `includeTools` / `excludeTools`) must be written in
-the config file or brought in with `dsh-mcp import`.
+the config file or brought in with `dsh-mcp import`. `list` and `get` still
+show those filters (pattern text only).
 
 **`status`** reads the six source layers and the diagnostic files
 (`<projectRoot>/.dsh/.mcp-diag.json` and `$DSH_HOME/.mcp-diag.json`). It
 prints each layer's row count and names, then the latest `summary`
-(mounted / skipped / unhealthy / tool-budget hits). It does not inspect host memory: if the
+(mounted / skipped / unhealthy / idle-not-mounted / tool-budget hits). It does not inspect host memory: if the
 host has never reconciled, the files are absent and the command reports
 that. `--scope project|user|profile` filters which layers are listed and which
 diagnostic file is printed (project `.dsh/.mcp-diag.json` vs
@@ -50,7 +51,8 @@ not-mounted (no session), not as unhealthy.
 
 **`import`** copies `{"mcpServers":{...}}` into a native yml or JSON file
 (`--scope` / `--format` / `--profile` match `add`; default scope is
-**project**). Same-name keys are skipped unless `--overwrite` is set.
+**project**). Same-name keys are skipped unless `--overwrite` is set
+(the skip/overwrite decision runs inside the file lock, matching `add`).
 `--dry-run` prints the add/skip/overwrite plan and any shadow conflicts
 (`shadowViewOf`) without writing. VS Code `{servers:{…}}`, a bare entry
 object, and a JSON array are rejected. Bad entries are reported one by

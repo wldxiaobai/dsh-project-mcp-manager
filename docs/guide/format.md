@@ -54,7 +54,8 @@ against the **effective** name the loader actually registered (`mcp__<effective>
 not the `serverName` written in the file. Project rows that were renamed
 (`p<hash>_…`) therefore do **not** match `mcp__<originalName>__foo`; use the
 bare tool name, or look up the effective name in `dsh-mcp get` / a snapshot.
-JSON also accepts Gemini's
+Illegal character classes (for example `[z-a]`) warn once per entry and never
+match, instead of failing silently. JSON also accepts Gemini's
 `includeTools` → `allow` and `excludeTools` → `deny`; if both the DSH `tools`
 object and those keys are present, `tools.allow` / `tools.deny` win.
 
@@ -87,7 +88,9 @@ Follows the ecosystem (Cursor / Claude Code's `mcpServers` shape):
 ```
 
 - `command`/`args`/`env`/`cwd` are stdio; `url`/`headers` are streamable-http;
-  an optional `type` (`stdio`|`http`|`streamable-http`). `type: "sse"` is the
+  an optional `type` (`stdio`|`http`|`streamable-http`). An entry that gives
+  both `command` and `url`/`httpUrl` without `type`/`transport` fails per
+  entry instead of silently loading as stdio — spell the transport. `type: "sse"` is the
   **MCP SSE endpoint transport** (protocol version 2024-11-05) and is rejected
   per entry with an actionable diagnostic: the mount backend
   (`dsh-mcp-client`) only speaks `stdio` and streamable-http — if the server

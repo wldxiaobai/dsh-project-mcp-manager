@@ -42,12 +42,16 @@ described in [configuration format](format.md).
   still computed for every known project. Project-layer fibers are created
   only for projects with a live session or the process cwd. After the last
   session leaves (and the project is not cwd) servers unmount after a
-  5 minute grace; the project entry and file watcher remain. User-layer
+  5 minute grace; the project entry and file watcher remain, and the row is
+  listed in `summary.idle` with `skipReason: "idle"` (more specific skips
+  such as `env-missing` are preserved). Idle is not `unhealthy`. User-layer
   globals stay resident.
 
 A server that registers more than `DSH_MCP_TOOL_BUDGET_WARN` tools or
-description/schema bytes (default 200 / 256KiB) is warned once and listed in
-the diagnostic `summary.toolBudget`. Tools are never clipped.
+description/schema bytes (default 200 / 256KiB) is warned once per crossing
+and listed in the diagnostic `summary.toolBudget`. Dropping back under the
+threshold clears the gate so the same overage warns again. Tools are never
+clipped.
 
 **Shadow priority** — layers merge first-come-first-served (1 → 6 above), and
 a row is shadowed when it collides with an earlier row on **any** of three
@@ -127,7 +131,10 @@ the on-disk dialects differ. This plugin reads `mcpServers`; the other
 stores `{ version, servers: [] }`. A file in the other format is a legal
 empty layer here (missing `mcpServers`), so the loader now writes a
 `foreignFormat` diagnostic instead of staying silent. The same check applies
-to `~/.dsh/dsh-mcp.json`.
+to `~/.dsh/dsh-mcp.json`; the user-layer watcher also watches that path so
+creating it diagnoses immediately. If that file contains this plugin's
+`mcpServers` dialect, the diagnostic tells you to move the object into
+`mcp.json` — it is still not loaded from the other plugin's filename.
 
 If both plugins run in one host, the same `serverName` can be spawned twice.
 Prefer a single plugin per project, or keep this plugin on `.dsh/mcp.yml` and

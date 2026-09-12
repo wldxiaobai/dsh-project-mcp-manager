@@ -32,10 +32,13 @@
   `skipReason: "name-taken"`（不改名，避免 `serverName` 预留冲突）。
 - **按需挂载**（v0.6.0）：扫描与生效名仍按全量已知项目计算；项目层只给有活跃会话
   或进程 cwd 的项目发起装载。最后一次会话离开且该项目不是 cwd 后，宽限 5 分钟再
-  卸载服务器，条目与文件监听保留。用户层仍常驻。
+  卸载服务器，条目与文件监听保留，行记 `skipReason: "idle"` 并进入
+  `summary.idle`（已有更具体的 `env-missing` 等不覆盖）。idle **不算**
+  `unhealthy`。用户层仍常驻。
 
 某生效名注册的工具数或描述/schema 字节超过 `DSH_MCP_TOOL_BUDGET_WARN`（缺省 200 /
-256KiB）时告警一次，并写入诊断摘要 `summary.toolBudget`，**永不裁剪**。
+256KiB）时每次越过阈值告警一次，并写入诊断摘要 `summary.toolBudget`；回落到
+阈值以下会清门控，同样的超量会再告警。**永不裁剪**。
 
 **影子优先序**——按上表 1→6 先到先得合并，后到行与已收录行命中**三把键中的任何
 一把**即被遮蔽：精确 `serverName`；*归一化名称*（转小写去掉非字母数字后相同
@@ -93,7 +96,9 @@
 两个插件都会读 `<projectRoot>/.dsh/mcp.json`，但方言不同。本插件认
 `mcpServers`；对方存 `{ version, servers: [] }`。对方格式在本插件是合法空层
 （缺 `mcpServers`），所以装载器现在会写 `foreignFormat` 诊断而不是静默无行。
-全局 `~/.dsh/dsh-mcp.json` 同样检查。
+全局 `~/.dsh/dsh-mcp.json` 同样检查，用户层 watcher 也监听该路径，创建时立刻
+诊断。若该文件已经是本插件的 `mcpServers` 方言，诊断会建议把对象搬到
+`mcp.json`——仍不会从对方文件名装载。
 
 若两个插件同时在一个宿主里跑，同名服务器可能被启动两次。建议同一项目只启用
 一个，或让本插件走 `.dsh/mcp.yml`、对方走 `.dsh/mcp.json`。`globalNames()`

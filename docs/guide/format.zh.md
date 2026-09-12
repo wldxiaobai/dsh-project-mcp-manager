@@ -51,7 +51,8 @@ insert 列表），每行一个 MCP 服务器：
 `mcp__<生效名>__<tool>`。完整名按装载器实际注册的**生效名**匹配
 （`mcp__<effective>__…`），不是文件里的 `serverName`。项目行被改名
 （`p<hash>_…`）后，写死的 `mcp__<原名>__foo` **不会**命中；请改用裸工具名，
-或从 `dsh-mcp get` / 快照看生效名。JSON 另接受 Gemini 的 `includeTools` → `allow`、
+或从 `dsh-mcp get` / 快照看生效名。非法字符类（例如 `[z-a]`）按条目告警一次且
+永不匹配，不会静默失效。JSON 另接受 Gemini 的 `includeTools` → `allow`、
 `excludeTools` → `deny`；与 DSH 的 `tools` 同时出现时以 `tools.allow` /
 `tools.deny` 为准。
 
@@ -59,7 +60,7 @@ insert 列表），每行一个 MCP 服务器：
 Loader 求值的 js-yaml 表达式，如官方 README 示例 `env: { TOKEN: !!js
 process.env.GITHUB_TOKEN }`）在项目文件里**不支持**——受管块内出现未解析
 标签会使该文件整体报错跳过（写入 `.dsh/.mcp-diag.json` 并打日志），不会把
-表达式当字面量字符串静默装载。`env`/`headers` 的值 otherwise 是字面量，仅
+表达式当字面量字符串静默装载。`env`/`headers` 的值其余情况下是字面量，仅
 `${VAR}` 引用会在装载时做串内插值（见 [`${VAR}` 展开](env-expansion.zh.md)）；
 `disabled` 只能是 `true`/`false`。反之项目文件是超集语法：`env`/`headers`
 允许 `KEY: null` 表示删除该键（装载时被剔除），这在官方 mcp-client 校验里会被
@@ -81,7 +82,9 @@ process.env.GITHUB_TOKEN }`）在项目文件里**不支持**——受管块内�
 ```
 
 - `command`/`args`/`env`/`cwd` 为 stdio；`url`/`headers` 为 streamable-http；
-  可选 `type`（`stdio`|`http`|`streamable-http`）。`type: "sse"` 是 **MCP SSE
+  可选 `type`（`stdio`|`http`|`streamable-http`）。同时给出 `command` 与
+  `url`/`httpUrl` 却没有 `type`/`transport` 的条目会报错跳过，不会静默当
+  stdio 装载——请显式写传输。`type: "sse"` 是 **MCP SSE
   端点传输**（规范 2024-11-05），逐条拒绝并给出可执行诊断：装载后端
   （`dsh-mcp-client`）只支持 `stdio` 与 streamable-http——服务端已支持
   Streamable HTTP 时把 `type` 改为 `"http"`；或删除 `type` 只留 `url`

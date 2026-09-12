@@ -107,9 +107,11 @@ pnpm test          # node 直跑 test/ 下六个 .mjs（model / mcp-file / json-
   .svn），但只有**已知项目根的精确配置文件**（`<projectRoot>/.dsh/mcp.yml`、
   `<projectRoot>/.dsh/mcp.json` 与 `<projectRoot>/.mcp.json`）的改动经 150ms
   防抖触发全量对账：新增行装载、删除行卸载、配置变化重装。另有独立 watcher 以
-  **精确文件路径**监听用户层：`~/.dsh/mcp.yml`、`~/.dsh/mcp.json` 与
-  `~/.dsh/profiles/<当前 profile>/mcp.json`（chokidar v5 对被监听的缺失文件能在
-  其创建时补发事件，前提是父目录已存在）——不监听家目录整体。
+  **精确文件路径**监听用户层：`~/.dsh/mcp.yml`、`~/.dsh/mcp.json`、
+  `~/.dsh/profiles/<当前 profile>/mcp.json`，以及 `$DSH_HOME/dsh-mcp.json`
+  （对方插件的全局存储；只监听以便创建时能立刻诊断，从不装载）。chokidar v5
+  对被监听的缺失文件能在其创建时补发事件，前提是父目录已存在——不监听家目录
+  整体。
 - **profile 名解析**：从 loader 根 include 的 `config.path`
   （`~/.dsh/profiles/<name>/cordis.yml`）或 `ctx.baseUrl` 推导，可用
   `DSH_MCP_PROFILE=<name>` 覆盖；解析不出时不读 profile 层（其余层照常）。
@@ -142,7 +144,8 @@ pnpm test          # node 直跑 test/ 下六个 .mjs（model / mcp-file / json-
    `{ mcpServers: { … } }`；对方在同一路径存 `{ version, servers: [] }`。缺
    `mcpServers` 在本插件是合法空层，对方格式会表现为「我配了但没生效」。装载器
    现在会写一条诊断，指认该格式并建议改用 `mcpServers` 或 `.dsh/mcp.yml`。
-   全局 `~/.dsh/dsh-mcp.json` 同样提示。
+   全局 `~/.dsh/dsh-mcp.json` 同样提示；若该文件已经是本插件的 `mcpServers`
+   方言，诊断会建议把对象搬到 `mcp.json`——仍不会从对方文件名装载。
 2. **同名服务器会被两个插件各启动一次**，stdio 可能互相抢端口或独占资源。
 3. **建议同一项目只启用一个**，或让两者分居 `mcp.yml`（本插件）与
    `.dsh/mcp.json`（对方）。
