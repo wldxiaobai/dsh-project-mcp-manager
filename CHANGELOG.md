@@ -7,6 +7,113 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-13
+
+Runtime robustness and JSON interop. **On-demand project mounts (B1) are a
+semantic change**: inactive projects no longer keep stdio children resident.
+VS Code `.vscode/mcp.json` (C3) is not in this release.
+
+### Added
+
+- `SUPPORTED_MCP_TRANSPORTS` mirrors `@deepseek-ai/dsh-mcp-client` 0.1.5-rc.1
+  (`stdio` | `streamable-http`). Schema, CLI `--transport`, JSON `type`
+  mapping and error copy all derive from it; unknown values fail locally
+  instead of reaching `ctx.plugin`.
+- Actionable diagnostics for the **MCP SSE endpoint transport** (`type: "sse"`
+  / `--transport sse`): the error names two fixes (change `type` to `"http"`,
+  or drop `type` and keep `url`) and does not silently fall back.
+- JSON dialect accepts Gemini's `httpUrl` (explicit streamable-http) and the
+  native `transport` key. Conflicting `url`/`httpUrl` or `transport`/`type`
+  pairs fail per entry. Bare `url` remains Streamable HTTP here (the opposite
+  of Gemini CLI) and is documented as such.
+- Detect `@wingsky-1/dsh-mcp-manager`'s `{version, servers}` storage at
+  `.dsh/mcp.json` and `~/.dsh/dsh-mcp.json`, write a diagnostic instead of
+  treating it as a silent empty layer, and document coexistence. The user-layer
+  watcher also watches `$DSH_HOME/dsh-mcp.json` so creating the other plugin's
+  file diagnoses it without waiting for an unrelated reconcile. A
+  `dsh-mcp.json` that already uses this plugin's `mcpServers` dialect is still
+  not loaded, and hints to move the object into `mcp.json`.
+- Diagnostic files are `{ summary?, events }` (legacy arrays still parse as
+  `events`). After each reconcile the `summary` records catalog row/mount
+  counts (`rows` from `lastScanDesired`, not the live mount map), skip
+  reasons, `idle` names and unhealthy names (`give-up` is unhealthy).
+  `dsh-mcp status` prints layer row counts plus that summary without connecting
+  to a running host. `--scope project|user|profile` filters layers and which
+  diagnostic file is printed (`profile` lists profile json layers; `--profile`
+  narrows to one name). Idle rows print as not-mounted rather than unhealthy.
+- `dsh-mcp import --from <file|->` copies `{"mcpServers":{...}}` into a native
+  yml or JSON file. Same-name keys are skipped unless `--overwrite`, and that
+  decision runs inside the file lock (matching `add`). `--dry-run` previews
+  shadow conflicts without writing. VS Code `servers` objects and bare
+  entries/arrays are rejected.
+- Connection health remount: after **the current fiber generation** has
+  exposed tools, a later `mcpToolCount === 0` that lasts past the backoff
+  window triggers unmount-then-mount. A single 0-tool inspect (`list_changed`
+  flicker) does not remount. A new fiber's first connect window is left to the
+  official client's reconnect. `tools > 0` resets `remountCount` and `givenUp`
+  (consecutive failures, not a lifetime quota; 3 consecutive deaths without
+  recovery → `give-up`). `disabled: true` / `enabled: false` rows are never
+  revived. Unchanged config fingerprints (`mtimeMs+size`, plus the active
+  profile name and sorted host global names) skip file rereads but still run
+  remount, deny sweep and diag summaries.
+- Per-server `tools.allow` / `tools.deny` (full glob; deny wins). JSON also
+  maps `includeTools` / `excludeTools`; DSH `tools.*` keys win. Patterns are
+  stripped before `ctx.plugin` and expanded to registered tool names only.
+  `patchRowToView` / `dsh-mcp get` / `list` expose the pattern text. Changing
+  only `tools.*` updates `tools.restrict` without tearing down the connection.
+- Tool-budget guardrail: after inspect, each active effective name is
+  measured via `ctx.tools.schemas()` (`schemaToolId`: `name` then `id`, shared
+  with deny expansion). Crossing `DSH_MCP_TOOL_BUDGET_WARN` (default 200 tools
+  / 256KiB) warns once per crossing and records `summary.toolBudget`; dropping
+  back under the threshold clears the gate. Tools are never clipped.
+- Unstable `ctx.provide("projectMcp", { snapshot, serverView, globalState,
+  reload })` query surface so other plugins can read mount state without
+  opening diagnostic files. `snapshot` / `serverView` / `globalState` enqueue
+  without running reconcile and assemble from the last scan's in-memory
+  catalog; `reload` is one `reconcileAll`. `serverView` is typed as
+  `McpServerRuntimeView`.
+- On-demand project mounts: scan and effective names stay full-catalog;
+  fibers are created only for projects with a live session or the process
+  cwd. After the last session leaves (and the project is not cwd) servers
+  unload following a 5 minute grace; the project entry and watcher remain,
+  and the row is recorded as `skipReason: "idle"` in `summary.idle` (not
+  `unhealthy`; more specific skips such as `env-missing` are preserved).
+  User-layer globals stay host-wide.
+
+- `package.json` discovery fields: `repository`, `bugs`, and `homepage` point at
+  https://github.com/wldxiaobai/dsh-project-mcp-manager so npm and GitHub can
+  surface the source, issues, and README.
+
+### Changed
+
+- Documented compatibility with dsh **0.1.5-rc.2**
+  (`docs/design/adaptation-dsh-0.1.5-rc2.md`). Official rc.2 is UI-only relative
+  to rc.1; `dsh-mcp-client` / `dsh-tools` `lib/` are byte-identical, so the
+  existing `^0.1.5-rc.1` range already covers the new host. No runtime change.
+
+### Fixed
+
+- JSON entries that give both `command` and `url`/`httpUrl` without
+  `type`/`transport` fail per entry instead of silently loading as stdio.
+- Transport alias lookup uses `Object.hasOwn` on a null-prototype map, so
+  values like `toString` fail as unknown transports instead of hitting
+  `Object.prototype`.
+- Illegal `tools.allow` / `tools.deny` globs (for example `[z-a]`) warn
+  once per entry instead of silently never matching.
+- Diagnostic file read-modify-write uses the same per-path lock as config
+  writes, so a `kind:active` event and the post-reconcile `summary` cannot
+  clobber each other. Lock timeout or write failure logs a warning instead
+  of dropping the summary silently.
+- Config fingerprints reuse the signature from the skip check instead of
+  statting files twice. Per-project `idleSince` / `lastScanDesired` /
+  `lastScanFiles` / `warnGates` tables drop keys that are no longer known.
+
+### Documentation
+
+- Full-id `tools.*` globs must use the effective server name after a project
+  row is renamed. `dsh-mcp add` has no `--allow` / `--deny`; write the file
+  or use `import`.
+
 ## [0.4.3] - 2026-09-10
 
 Host-alignment release for dsh 0.1.5-rc.1. **No user-visible behaviour
@@ -551,7 +658,8 @@ carry an explicit `type`.
 Security note: `stdio` lines in `.dsh/mcp.yml` spawn their `command` inside the dsh host
 process, so project files are executable-code carriers — add them only in trusted projects.
 
-[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.3...HEAD
+[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.3...v0.6.0
 [0.4.3]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.0...v0.4.1

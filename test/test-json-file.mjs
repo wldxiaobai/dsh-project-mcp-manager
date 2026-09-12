@@ -74,7 +74,9 @@ try {
   assert.equal(r3.rows.length, 1);
   assert.equal(r3.rows[0].rawName, "survivor");
   assert.equal(r3.entryErrors.length, 5);
-  assert.ok(r3.entryErrors.some((e) => /sse/.test(e)), "sse rejection present");
+  assert.ok(r3.entryErrors.some((e) => /MCP SSE 端点传输/.test(e)), "sse rejection names the MCP SSE endpoint transport");
+  assert.ok(r3.entryErrors.some((e) => /把 type 改为 "http"/.test(e)), "sse error offers changing type to http");
+  assert.ok(r3.entryErrors.some((e) => /删除 type 只留 url/.test(e)), "sse error offers dropping type and keeping url");
   assert.ok(r3.entryErrors.some((e) => /serverName 非法/.test(e)));
   assert.ok(r3.entryErrors.some((e) => /缺少 command/.test(e)));
   pass("sse and broken entries are rejected per-entry without affecting valid ones");
@@ -139,6 +141,105 @@ try {
   assert.equal((await readMcpJsonFile(missing, "/p")).fileError, undefined);
   assert.deepEqual((await readDshJsonFile(missing, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" })).rows, []);
   pass("missing files yield empty results without errors");
+
+  // 6b. C2：httpUrl、显式 transport、url/httpUrl 冲突、transport 与 type 冲突
+  const pHttpUrl = await write("httpurl.json", JSON.stringify({
+    mcpServers: { gemini: { httpUrl: "https://gemini.example/mcp", headers: { Authorization: "Bearer ${T}" } } }
+  }));
+  const rHttpUrl = await readDshJsonFile(pHttpUrl, { source: "dsh-project-json", cwdPolicy: "project", projectRoot: "/work/proj" });
+  assert.deepEqual(rHttpUrl.entryErrors, []);
+  assert.equal(rHttpUrl.rows[0].row.config.transport, "streamable-http");
+  assert.equal(rHttpUrl.rows[0].row.config.url, "https://gemini.example/mcp");
+  const pTransport = await write("transport.json", JSON.stringify({
+    mcpServers: { native: { transport: "streamable-http", url: "https://n.example/mcp" } }
+  }));
+  const rTransport = await readDshJsonFile(pTransport, { source: "dsh-project-json", cwdPolicy: "project", projectRoot: "/work/proj" });
+  assert.equal(rTransport.rows[0].row.config.transport, "streamable-http");
+  const pSame = await write("sameurl.json", JSON.stringify({
+    mcpServers: { both: { url: "https://same.example/mcp", httpUrl: "https://same.example/mcp" } }
+  }));
+  assert.equal((await readDshJsonFile(pSame, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" })).rows[0].row.config.url, "https://same.example/mcp");
+  const pConflictUrl = await write("conflict-url.json", JSON.stringify({
+    mcpServers: { clash: { url: "https://a.example/mcp", httpUrl: "https://b.example/mcp" } }
+  }));
+  const rConflictUrl = await readDshJsonFile(pConflictUrl, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" });
+  assert.equal(rConflictUrl.rows.length, 0);
+  assert.ok(rConflictUrl.entryErrors.some((e) => /url 与 httpUrl/.test(e)), "url/httpUrl mismatch: " + rConflictUrl.entryErrors.join(";"));
+  assert.ok(!JSON.stringify(rConflictUrl).includes("a.example"), "conflict error must not echo url values");
+  const pConflictType = await write("conflict-type.json", JSON.stringify({
+    mcpServers: { clash: { transport: "stdio", type: "http", command: "node", url: "https://x/mcp" } }
+  }));
+  const rConflictType = await readDshJsonFile(pConflictType, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" });
+  assert.ok(rConflictType.entryErrors.some((e) => /transport .* 与 type .* 冲突/.test(e)), "transport/type mismatch: " + rConflictType.entryErrors.join(";"));
+  const pSseTransport = await write("sse-transport.json", JSON.stringify({
+    mcpServers: { old: { transport: "sse", url: "https://sse.example/sse" } }
+  }));
+  const rSseTransport = await readDshJsonFile(pSseTransport, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" });
+  assert.ok(rSseTransport.entryErrors.some((e) => /MCP SSE 端点传输/.test(e)), "transport:sse uses the C1 message");
+  const pHttpUrlStdio = await write("httpurl-stdio.json", JSON.stringify({
+    mcpServers: { clash: { httpUrl: "https://h.example/mcp", type: "stdio", command: "node" } }
+  }));
+  const rHttpUrlStdio = await readDshJsonFile(pHttpUrlStdio, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" });
+  assert.ok(rHttpUrlStdio.entryErrors.some((e) => /httpUrl/.test(e) && /stdio/.test(e)), "httpUrl vs stdio conflict");
+  pass("httpUrl, transport key, url/httpUrl and transport/type conflicts, transport:sse");
+
+  // 6d. 无 type/transport 时 command 与 url 并存：条目错误，不静默当 stdio
+  const pBothEnds = await write("both-ends.json", JSON.stringify({
+    mcpServers: { mixed: { command: "npx", args: ["-y", "foo"], url: "https://example/mcp" } }
+  }));
+  const rBothEnds = await readDshJsonFile(pBothEnds, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" });
+  assert.equal(rBothEnds.rows.length, 0, "ambiguous command+url must not mount");
+  assert.ok(rBothEnds.entryErrors.some((e) => /同时有 command 与 url/.test(e) && /type 或 transport/.test(e)), "ambiguous command+url: " + rBothEnds.entryErrors.join(";"));
+  assert.ok(!JSON.stringify(rBothEnds).includes("example/mcp"), "ambiguous error must not echo the url");
+  const pBothHttpUrl = await write("both-httpurl.json", JSON.stringify({
+    mcpServers: { mixed: { command: "npx", httpUrl: "https://gemini.example/mcp" } }
+  }));
+  const rBothHttpUrl = await readDshJsonFile(pBothHttpUrl, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" });
+  assert.equal(rBothHttpUrl.rows.length, 0);
+  assert.ok(rBothHttpUrl.entryErrors.some((e) => /同时有 command 与 url/.test(e)), "command+httpUrl: " + rBothHttpUrl.entryErrors.join(";"));
+  const pTyped = await write("typed-stdio.json", JSON.stringify({
+    mcpServers: { ok: { type: "stdio", command: "npx", url: "https://ignored.example/mcp" } }
+  }));
+  const rTyped = await readDshJsonFile(pTyped, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" });
+  assert.equal(rTyped.rows.length, 1, "explicit type keeps the declared transport");
+  assert.equal(rTyped.rows[0].row.config.transport, "stdio");
+  pass("undeclared command+url is an entry error; explicit type still wins");
+
+  // 6c. C4：对方 {version, servers} 格式诊断；与 mcpServers 共存时不告警
+  const pForeign = await write("foreign.json", JSON.stringify({ version: 1, servers: [{ name: "x", transport: "stdio" }] }));
+  const rForeign = await readDshJsonFile(pForeign, { source: "dsh-project-json", cwdPolicy: "project", projectRoot: "/work/proj" });
+  assert.equal(rForeign.rows.length, 0);
+  assert.equal(rForeign.fileError, undefined, "foreign format is an empty DSH layer, not a parse error");
+  assert.match(rForeign.formatHint ?? "", /dsh-mcp-manager/);
+  assert.match(rForeign.formatHint ?? "", /mcpServers/);
+  const pBoth = await write("both.json", JSON.stringify({ mcpServers: { keep: { command: "node" } }, servers: [], version: 1 }));
+  const rBoth = await readDshJsonFile(pBoth, { source: "dsh-project-json", cwdPolicy: "project", projectRoot: "/work/proj" });
+  assert.equal(rBoth.formatHint, undefined, "mcpServers + servers together is our dialect");
+  assert.equal(rBoth.rows[0].rawName, "keep");
+  const pServersOnly = await write("servers-only.json", JSON.stringify({ servers: [] }));
+  assert.match((await readDshJsonFile(pServersOnly, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" })).formatHint ?? "", /servers/);
+  const pTheme = await write("theme.json", JSON.stringify({ theme: "dark" }));
+  assert.equal((await readDshJsonFile(pTheme, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" })).formatHint, undefined, "unrelated JSON stays a silent empty layer");
+  const pWrongFile = await write("dsh-mcp.json", JSON.stringify({ mcpServers: { sneak: { command: "node" } } }));
+  const rWrongFile = await readDshJsonFile(pWrongFile, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" });
+  assert.equal(rWrongFile.rows.length, 0, "mcpServers in dsh-mcp.json must not load");
+  assert.match(rWrongFile.formatHint ?? "", /dsh-mcp\.json/);
+  assert.match(rWrongFile.formatHint ?? "", /mcp\.json/);
+  pass("foreign {version, servers} format is diagnosed; mcpServers coexistence is silent");
+
+  const pTools = await write("tools.json", JSON.stringify({
+    mcpServers: {
+      dsh: { command: "node", tools: { allow: ["read_*"], deny: ["read_secret"] }, includeTools: ["ignored"], excludeTools: ["ignored"] },
+      eco: { command: "node", includeTools: ["list_*"], excludeTools: ["list_hidden"] }
+    }
+  }));
+  const rTools = await readDshJsonFile(pTools, { source: "dsh-project-json", cwdPolicy: "project", projectRoot: "/work/p" });
+  assert.deepEqual(rTools.entryErrors, []);
+  const dsh = rTools.rows.find((row) => row.rawName === "dsh");
+  assert.deepEqual(dsh.row.config.tools, { allow: ["read_*"], deny: ["read_secret"] });
+  const eco = rTools.rows.find((row) => row.rawName === "eco");
+  assert.deepEqual(eco.row.config.tools, { allow: ["list_*"], deny: ["list_hidden"] });
+  pass("JSON tools.allow/deny win over includeTools/excludeTools");
 } finally {
   await rm(dir, { recursive: true, force: true });
 }

@@ -1,26 +1,36 @@
 import assert from "node:assert/strict";
 import {
   MAX_TIMER_DELAY_MS,
+  MCP_TRANSPORT_ALIASES,
   SERVER_NAME_RE,
+  SUPPORTED_MCP_TRANSPORTS,
   byCodeUnit,
+  deniedToolsForFilter,
   denySetFor,
   effectiveServerNames,
   expandEnvRefs,
   inputFromPatchRow,
   isUrlOrEnvRef,
+  jsonTypeOfTransport,
+  matchToolGlob,
+  invalidToolGlobs,
   mcpServerInputSchema,
   mergeSecretPatch,
   namespacedServerName,
+  parseCliTransport,
   patchRowToView,
   projectKeyOf,
+  resolveMcpTransport,
   rowIdForServerName,
   rowNameOf,
   serverNameFromRowId,
   toOfficialConfig,
-  toPatchRow
+  toPatchRow,
+  unsupportedTransportMessage
 } from "../lib/model.js";
 import { jsonServerEntrySchema } from "../lib/json-file.js";
 import { dshHomeDir, dshHomeFor, isValidProfileName, profileMcpJsonFile, userLayerPathsIn } from "../lib/dsh-paths.js";
+import { mcpToolBudgetStats, parseToolBudgetWarn } from "../lib/status.js";
 import { join, resolve } from "node:path";
 
 let passed = 0;
@@ -88,6 +98,7 @@ const envKeys = [...view.envKeys];
 envKeys.sort(byCodeUnit);
 assert.deepEqual(envKeys, ["FOO", "GITHUB_TOKEN"]);
 assert.equal(JSON.stringify(view).includes("super-secret"), false);
+assert.equal(view.tools, undefined);
 pass("patchRowToView redacts secret values");
 
 const httpView = patchRowToView(toPatchRow(http));
@@ -250,6 +261,86 @@ assert.equal(rowNameOf({ id: "panel-mcp-fromid", name: "@deepseek-ai/dsh-mcp-cli
 assert.equal(rowNameOf({ name: "@deepseek-ai/dsh-mcp-client", config: { serverName: "onlyconfig" } }), "onlyconfig", "config.serverName is the fallback");
 assert.equal(rowNameOf({ id: "other-prefix", name: "@deepseek-ai/dsh-mcp-client", config: {} }), undefined, "no name at all");
 pass("rowNameOf prefers the managed row id");
+
+// 18. 传输值域镜像：schema/CLI/JSON 映射从同一常量派生
+assert.deepEqual([...SUPPORTED_MCP_TRANSPORTS], ["stdio", "streamable-http"]);
+assert.equal(MCP_TRANSPORT_ALIASES.http, "streamable-http");
+assert.equal(jsonTypeOfTransport("stdio"), "stdio");
+assert.equal(jsonTypeOfTransport("streamable-http"), "http");
+assert.deepEqual(resolveMcpTransport("http"), { transport: "streamable-http" });
+assert.deepEqual(resolveMcpTransport("stdio"), { transport: "stdio" });
+assert.equal(resolveMcpTransport("sse").error, unsupportedTransportMessage("sse"));
+assert.match(unsupportedTransportMessage("sse"), /MCP SSE 端点传输/);
+assert.match(unsupportedTransportMessage("sse"), /把 type 改为 "http"/);
+assert.match(unsupportedTransportMessage("sse"), /删除 type 只留 url/);
+assert.deepEqual(parseCliTransport("streamable-http"), { transport: "http" });
+assert.deepEqual(parseCliTransport("stdio"), { transport: "stdio" });
+assert.match(parseCliTransport("websocket").error, /stdio\|http/);
+assert.match(parseCliTransport("sse").error, /MCP SSE 端点传输/);
+assert.match(resolveMcpTransport("toString").error, /toString/);
+assert.match(resolveMcpTransport("constructor").error, /constructor/);
+assert.match(parseCliTransport("toString").error, /stdio\|http/);
+expectThrow(
+  "unknown yml transport still names the mirrored set",
+  () => inputFromPatchRow({ id: "panel-mcp-x", name: "@deepseek-ai/dsh-mcp-client", config: { serverName: "x", transport: "websocket" } }),
+  /"stdio" 或 "streamable-http"/
+);
+pass("SUPPORTED_MCP_TRANSPORTS is the single source for aliases, CLI parsing, and errors");
+
+assert.equal(matchToolGlob("delete_*", "delete_file"), true);
+assert.equal(matchToolGlob("delete_*", "read_file"), false);
+assert.equal(matchToolGlob("mcp__gh__*", "mcp__gh__create_issue"), true);
+assert.equal(matchToolGlob("?", "a"), true);
+assert.equal(matchToolGlob("?", "ab"), false);
+assert.equal(matchToolGlob("file.[jt]s", "file.js"), true);
+assert.equal(matchToolGlob("file.[jt]s", "file.py"), false);
+assert.equal(matchToolGlob("[!a]*", "bcd"), true);
+assert.equal(matchToolGlob("[!a]*", "abc"), false);
+assert.equal(matchToolGlob("**", "a/b"), true);
+assert.equal(matchToolGlob("[z-a]", "z"), false, "illegal class is a non-match, not a throw");
+assert.deepEqual(invalidToolGlobs({ deny: ["[z-a]", "ok_*", "[z-a]"] }), ["[z-a]"]);
+assert.deepEqual(invalidToolGlobs({ allow: ["read_*"] }), []);
+const filtered = deniedToolsForFilter("gh", { allow: ["read_*"], deny: ["read_secret"] }, [
+  "mcp__gh__read_file",
+  "mcp__gh__read_secret",
+  "mcp__gh__delete_file",
+  "mcp__other__read_file"
+]);
+filtered.sort(byCodeUnit);
+assert.deepEqual(filtered, ["mcp__gh__delete_file", "mcp__gh__read_secret"]);
+const stripped = toOfficialConfig(mcpServerInputSchema.parse({
+  serverName: "gh",
+  transport: "stdio",
+  command: "node",
+  tools: { deny: ["delete_*"] }
+}));
+assert.equal(stripped.tools, undefined);
+const row = toPatchRow(mcpServerInputSchema.parse({
+  serverName: "gh",
+  transport: "stdio",
+  command: "node",
+  tools: { deny: ["delete_*"] }
+}));
+assert.deepEqual(row.config.tools, { deny: ["delete_*"] });
+assert.deepEqual(inputFromPatchRow(row).tools, { deny: ["delete_*"] });
+assert.deepEqual(patchRowToView(row)?.tools, { deny: ["delete_*"] });
+pass("tool allow/deny globs, deny-over-allow, and official config strips tools");
+
+assert.deepEqual(parseToolBudgetWarn(""), { maxTools: 200, maxBytes: 256 * 1024 });
+assert.deepEqual(parseToolBudgetWarn("10"), { maxTools: 10, maxBytes: 256 * 1024 });
+assert.deepEqual(parseToolBudgetWarn("10,4096"), { maxTools: 10, maxBytes: 4096 });
+assert.deepEqual(parseToolBudgetWarn("nope,-1"), { maxTools: 200, maxBytes: 256 * 1024 });
+const budgetStats = mcpToolBudgetStats({
+  tools: {
+    schemas: () => [
+      { name: "mcp__heavy__a", description: "aa", inputSchema: { type: "object" } },
+      { name: "mcp__other__b", description: "bb" }
+    ]
+  }
+}, "heavy");
+assert.equal(budgetStats.tools, 1);
+assert.ok(budgetStats.bytes > 0, "budget bytes include id/description/schema");
+pass("tool budget env parse and schema byte stats");
 
 console.log("\n" + passed + " passed, 0 failed");
 console.log("ALL MCP MODEL TESTS PASSED");

@@ -76,11 +76,18 @@ try {
     assert.ok(cap.errs.join("\n").includes("配置无效"));
     const cap2 = io();
     assert.equal(await runCli(["add", "-t", "sse", "x", "https://e/"], cap2.io, deps), 1, "sse rejected");
-    assert.ok(cap2.errs.join("\n").includes("sse"));
+    assert.ok(cap2.errs.join("\n").includes("MCP SSE 端点传输"), "sse error names the MCP SSE endpoint transport");
+    assert.ok(cap2.errs.join("\n").includes('把 type 改为 "http"'), "sse error offers the http type fix");
+    const capUnknown = io();
+    assert.equal(await runCli(["add", "-t", "websocket", "x", "https://e/"], capUnknown.io, deps), 1, "unknown transport rejected");
+    assert.ok(capUnknown.errs.join("\n").includes("stdio|http"), "unknown --transport names the accepted set");
+    const capAlias = io();
+    assert.equal(await runCli(["add", "-t", "streamable-http", "aliashttp", "https://example/mcp"], capAlias.io, deps), 0, capAlias.errs.join("\n"));
+    assert.ok((await readFile(projectYml, "utf8")).includes("serverName: aliashttp"), "streamable-http alias writes an http row");
     const cap3 = io();
     assert.equal(await runCli(["add", "y", "node", "--scope", "local"], cap3.io, deps), 1, "local scope guidance");
     assert.ok(cap3.errs.join("\n").includes("local"));
-    pass("cli rejects invalid names, sse transport, and explains local scope");
+    pass("cli rejects invalid names, unknown transports, and explains local scope");
   }
 
   // 5. list：三个来源 + 遮蔽标注
@@ -110,6 +117,30 @@ try {
     const cap2 = io();
     assert.equal(await runCli(["get", "nonexistent"], cap2.io, deps), 1);
     pass("cli get resolves the winning layer without leaking secret values");
+  }
+
+  // 6b. get/list 展示条目级 tools.allow/deny（脱敏模式原文）
+  {
+    const src = join(project, "tools-import.json");
+    await writeFile(src, JSON.stringify({
+      mcpServers: {
+        filtered: {
+          command: "node",
+          args: ["f.js"],
+          tools: { allow: ["read_*"], deny: ["read_secret"] }
+        }
+      }
+    }), "utf8");
+    assert.equal(await runCli(["import", "--from", src], io().io, deps), 0);
+    const capList = io();
+    assert.equal(await runCli(["list"], capList.io, deps), 0);
+    assert.ok(capList.lines.some((line) => line.includes("filtered:") && line.includes("allow=read_*") && line.includes("deny=read_secret")), "list shows tool filters: " + capList.lines.join("\n"));
+    const capGet = io();
+    assert.equal(await runCli(["get", "filtered"], capGet.io, deps), 0);
+    const text = capGet.lines.join("\n");
+    assert.ok(text.includes("Allow:    read_*"), "get prints allow: " + text);
+    assert.ok(text.includes("Deny:     read_secret"), "get prints deny: " + text);
+    pass("cli get/list show per-entry tool filters");
   }
 
   // 7. remove：只动原生 yml；只读层给出指引
@@ -405,6 +436,162 @@ try {
     } finally {
       if (savedHome === undefined) delete process.env.DSH_HOME;
       else process.env.DSH_HOME = savedHome;
+    }
+  }
+
+  // 21. status：空态、层行数、诊断摘要中的跳过原因
+  {
+    const statusDir = await mkdtemp(join(tmpdir(), "dsh-mcp-status-"));
+    const statusHome = join(statusDir, "home");
+    const statusProj = join(statusDir, "proj");
+    await mkdir(join(statusHome, ".dsh"), { recursive: true });
+    await mkdir(statusProj, { recursive: true });
+    const statusDeps = { home: statusHome, resolveProjectRoot: async () => statusProj };
+    try {
+      const capEmpty = io();
+      assert.equal(await runCli(["status"], capEmpty.io, statusDeps), 0);
+      assert.ok(capEmpty.lines.join("\n").includes("尚无运行时诊断"), "empty status: " + capEmpty.lines.join("\n"));
+      assert.equal(await runCli(["add", "fs", "node", "s.js"], io().io, statusDeps), 0);
+      const capRows = io();
+      assert.equal(await runCli(["status"], capRows.io, statusDeps), 0);
+      const listed = capRows.lines.join("\n");
+      assert.ok(listed.includes("fs"), "status lists configured names: " + listed);
+      await mkdir(join(statusProj, ".dsh"), { recursive: true });
+      await writeFile(join(statusProj, ".dsh", ".mcp-diag.json"), JSON.stringify({
+        summary: {
+          at: "2026-01-01T00:00:00.000Z",
+          rows: 1,
+          mounted: 0,
+          skippedByReason: { "env-missing": 1, idle: 1 },
+          unhealthy: [{ name: "fs", reason: "env-missing" }, { name: "dead", reason: "give-up" }],
+          idle: ["alpha"],
+          toolBudget: [{ name: "heavy", tools: 240, bytes: 300000 }]
+        },
+        events: []
+      }), "utf8");
+      const capDiag = io();
+      assert.equal(await runCli(["status"], capDiag.io, statusDeps), 0);
+      const text = capDiag.lines.join("\n");
+      assert.ok(text.includes("env-missing"), "status surfaces skip reason: " + text);
+      assert.ok(text.includes("不健康：fs"), "status names the unhealthy row: " + text);
+      assert.ok(text.includes("不健康：dead (give-up)"), "status names give-up rows: " + text);
+      assert.ok(text.includes("未装载（无会话）：alpha"), "status names idle as not mounted: " + text);
+      assert.ok(!text.includes("不健康：alpha"), "idle is not printed as unhealthy: " + text);
+      assert.ok(text.includes("工具预算：heavy 240 个工具"), "status surfaces tool budget: " + text);
+      await mkdir(join(statusHome, ".dsh"), { recursive: true });
+      await writeFile(join(statusHome, ".dsh", ".mcp-diag.json"), JSON.stringify({
+        summary: {
+          at: "2026-01-01T00:00:00.000Z",
+          rows: 1,
+          mounted: 0,
+          skippedByReason: {},
+          unhealthy: [{ name: "user-dead", reason: "give-up" }]
+        },
+        events: []
+      }), "utf8");
+      const capProject = io();
+      assert.equal(await runCli(["status", "--scope", "project"], capProject.io, statusDeps), 0);
+      const projectText = capProject.lines.join("\n");
+      assert.ok(projectText.includes("不健康：fs"), "project scope still prints project diag: " + projectText);
+      assert.ok(!projectText.includes("user-dead"), "project scope hides global diag: " + projectText);
+      const capUser = io();
+      assert.equal(await runCli(["status", "--scope", "user"], capUser.io, statusDeps), 0);
+      const userText = capUser.lines.join("\n");
+      assert.ok(userText.includes("user-dead"), "user scope prints global diag: " + userText);
+      assert.ok(!userText.includes("不健康：fs"), "user scope hides project diag: " + userText);
+      await mkdir(join(statusHome, ".dsh", "profiles", "web"), { recursive: true });
+      await writeFile(join(statusHome, ".dsh", "profiles", "web", "mcp.json"), JSON.stringify({ mcpServers: { webonly: { command: "node", args: ["w.js"] } } }), "utf8");
+      const capProfile = io();
+      assert.equal(await runCli(["status", "--scope", "profile", "--profile", "web"], capProfile.io, statusDeps), 0);
+      const profileText = capProfile.lines.join("\n");
+      assert.ok(profileText.includes("webonly"), "profile scope lists that profile's rows: " + profileText);
+      assert.ok(!profileText.includes("不健康：fs"), "profile scope hides project diag: " + profileText);
+      assert.ok(profileText.includes("user-dead"), "profile scope still prints global diag: " + profileText);
+      pass("cli status shows empty state, layer rows, and diagnostic skip reasons");
+    } finally {
+      await rm(statusDir, { recursive: true, force: true });
+    }
+  }
+
+  // 22. import：mcpServers 文件/stdin、dry-run 不写盘、同名 skip/overwrite、坏条目、--scope user
+  {
+    const importDir = await mkdtemp(join(tmpdir(), "dsh-mcp-import-"));
+    const importHome = join(importDir, "home");
+    const importProj = join(importDir, "proj");
+    await mkdir(join(importHome, ".dsh"), { recursive: true });
+    await mkdir(importProj, { recursive: true });
+    const importDeps = { home: importHome, resolveProjectRoot: async () => importProj };
+    const srcFile = join(importDir, "mcpServers.json");
+    await writeFile(srcFile, JSON.stringify({
+      mcpServers: {
+        alpha: { command: "node", args: ["a.js"] },
+        beta: { command: "node", args: ["b.js"] },
+        bad: { type: "sse", url: "https://example/" }
+      }
+    }), "utf8");
+    try {
+      const capMiss = io();
+      assert.equal(await runCli(["import"], capMiss.io, importDeps), 1);
+      assert.ok(capMiss.errs.join("\n").includes("--from"), capMiss.errs.join("\n"));
+      const capMissingFile = io();
+      assert.equal(await runCli(["import", "--from", join(importDir, "nope-missing.json")], capMissingFile.io, importDeps), 1);
+      const vscodeFile = join(importDir, "vscode.json");
+      await writeFile(vscodeFile, JSON.stringify({ servers: { vs: { command: "node", args: ["v.js"] } } }), "utf8");
+      const capVs = io();
+      assert.equal(await runCli(["import", "--from", vscodeFile], capVs.io, importDeps), 1);
+      assert.ok(capVs.errs.join("\n").includes("servers"), "vscode dialect: " + capVs.errs.join("\n"));
+      const capDry = io();
+      assert.equal(await runCli(["import", "--from", srcFile, "--dry-run"], capDry.io, importDeps), 1, capDry.errs.join("\n"));
+      assert.ok(capDry.lines.join("\n").includes("将添加"), "dry-run lists adds: " + capDry.lines.join("\n"));
+      assert.ok(capDry.errs.join("\n").includes("bad"), "dry-run reports bad entries: " + capDry.errs.join("\n"));
+      assert.equal(await pathExists(join(importProj, ".dsh", "mcp.yml")), false, "dry-run must not create the target file");
+      const capImp = io();
+      assert.equal(await runCli(["import", "--from", srcFile], capImp.io, importDeps), 1, capImp.errs.join("\n"));
+      assert.ok(capImp.lines.join("\n").includes("alpha"), capImp.lines.join("\n"));
+      assert.ok(await pathExists(join(importProj, ".dsh", "mcp.yml")), "import writes project yml");
+      const capSkip = io();
+      assert.equal(await runCli(["import", "--from", srcFile], capSkip.io, importDeps), 1);
+      assert.ok(capSkip.lines.join("\n").includes("跳过"), "same-name skip: " + capSkip.lines.join("\n"));
+      const srcOw = join(importDir, "overwrite.json");
+      await writeFile(srcOw, JSON.stringify({ mcpServers: { alpha: { command: "node", args: ["a2.js"] } } }), "utf8");
+      const capOw = io();
+      assert.equal(await runCli(["import", "--from", srcOw, "--overwrite"], capOw.io, importDeps), 0, capOw.errs.join("\n"));
+      assert.ok(capOw.lines.join("\n").includes("已覆盖"), capOw.lines.join("\n"));
+      const getAlpha = io();
+      assert.equal(await runCli(["get", "alpha"], getAlpha.io, importDeps), 0);
+      assert.ok(getAlpha.lines.join("\n").includes("a2.js"), "overwrite replaced the command: " + getAlpha.lines.join("\n"));
+      const capStdin = io();
+      assert.equal(await runCli(["import", "--from", "-", "--scope", "user"], capStdin.io, {
+        ...importDeps,
+        readStdin: async () => JSON.stringify({ mcpServers: { fromstdin: { command: "node", args: ["s.js"] } } })
+      }), 0, capStdin.errs.join("\n"));
+      assert.ok(await pathExists(join(importHome, ".dsh", "mcp.yml")), "stdin import writes user yml");
+      const getUser = io();
+      assert.equal(await runCli(["get", "fromstdin"], getUser.io, importDeps), 0);
+      const srcShadow = join(importDir, "shadow.json");
+      await writeFile(srcShadow, JSON.stringify({ mcpServers: { alpha: { command: "node", args: ["other.js"] } } }), "utf8");
+      const capShadow = io();
+      assert.equal(await runCli(["import", "--from", srcShadow, "--scope", "user", "--dry-run"], capShadow.io, importDeps), 0);
+      assert.ok(capShadow.lines.join("\n").includes("不会装载"), "dry-run previews shadow: " + capShadow.lines.join("\n"));
+      const srcRaceA = join(importDir, "race-a.json");
+      const srcRaceB = join(importDir, "race-b.json");
+      await writeFile(srcRaceA, JSON.stringify({ mcpServers: { race: { command: "node", args: ["ra.js"] } } }), "utf8");
+      await writeFile(srcRaceB, JSON.stringify({ mcpServers: { race: { command: "node", args: ["rb.js"] } } }), "utf8");
+      const capRaceA = io();
+      const capRaceB = io();
+      await Promise.all([
+        runCli(["import", "--from", srcRaceA], capRaceA.io, importDeps),
+        runCli(["import", "--from", srcRaceB], capRaceB.io, importDeps)
+      ]);
+      const raceYml = await readFile(projectMcpFile(importProj), "utf8");
+      const hasRa = raceYml.includes("ra.js");
+      const hasRb = raceYml.includes("rb.js");
+      assert.equal(hasRa !== hasRb, true, "concurrent import without overwrite keeps exactly one winner: " + raceYml);
+      const raceOut = capRaceA.lines.join("\n") + "\n" + capRaceB.lines.join("\n");
+      assert.ok(raceOut.includes("已添加") && raceOut.includes("跳过"), "loser skips inside the lock: " + raceOut);
+      pass("cli import reads mcpServers, dry-runs, skips/overwrites, and writes user scope");
+    } finally {
+      await rm(importDir, { recursive: true, force: true });
     }
   }
 } finally {

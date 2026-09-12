@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ProjectMcpRegistry, projectMcpFile, mergeSourcedRows, profileNameFromConfigPath } from "../lib/registry.js";
+import { ProjectMcpRegistry, parseDiagDocument, projectMcpFile, mergeSourcedRows, profileNameFromConfigPath, UNMOUNT_GRACE_MS } from "../lib/registry.js";
+import { bindProjectMcpService, PROJECT_MCP_SERVICE } from "../lib/service.js";
+import { apply } from "../lib/index.js";
 import { MCP_BLOCK_BEGIN, MCP_BLOCK_END, writeManagedRows } from "../lib/mcp-file.js";
 import { byCodeUnit } from "../lib/model.js";
 
@@ -22,7 +24,10 @@ async function pathExists(path) {
   }
 }
 async function readDiag(projectRoot) {
-  return JSON.parse(await readFile(diagFile(projectRoot), "utf8"));
+  return parseDiagDocument(JSON.parse(await readFile(diagFile(projectRoot), "utf8"))).events;
+}
+async function readDiagSummary(projectRoot) {
+  return parseDiagDocument(JSON.parse(await readFile(diagFile(projectRoot), "utf8"))).summary;
 }
 /** 轮询 diag 直到谓词成立：事件驱动用例里对账链可能仍在落盘（不能用固定 sleep）。 */
 async function waitForDiag(projectRoot, predicate, timeoutMs = 5000) {
@@ -32,7 +37,6 @@ async function waitForDiag(projectRoot, predicate, timeoutMs = 5000) {
       if (predicate(await readDiag(projectRoot))) return true;
     } catch {
       // diag 尚不存在或正被半读到截断 JSON：视为「暂不满足」，继续轮询。
-      // （writeDiag 用非原子的 writeFile，轮询方必须自己扛住中间态。）
     }
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 150));
   }
@@ -72,7 +76,14 @@ function fakeCtx() {
     agentsList: agents,
     disposers,
     schemas,
+    provided: {},
     on() {},
+    provide(name, value) {
+      this.provided[name] = value;
+      return () => {
+        delete this.provided[name];
+      };
+    },
     effect(callback) {
       if (typeof callback === "function") disposers.push(callback);
     },
@@ -265,7 +276,7 @@ try {
 
   // 2. 会话可见性：session-a 只见自己项目（从不 deny 自己的服务器）；session-b deny 全部。
   //    deny 集 = 工具名展开（mcp__<server>__*），不是 serverName。
-  ctx.schemas.push({ id: "mcp__" + mounted.serverName + "__echo" });
+  ctx.schemas.push({ name: "mcp__" + mounted.serverName + "__echo" });
   await registry.reconcileNow();
   assert.equal(agentA.denies.length, 0, "session in the owning project is never restricted");
   assert.deepEqual(agentB.denies[agentB.denies.length - 1], ["mcp__" + mounted.serverName + "__echo"]);
@@ -281,6 +292,11 @@ try {
   assert.equal(projAFile.servers[0].scope.kind, "workspace");
   assert.equal(projAFile.servers[0].effectiveServerName, mounted.serverName);
   assert.equal(projAFile.servers[0].fiberPhase, "active");
+  const summaryA = await readDiagSummary(projectA);
+  assert.ok(summaryA !== undefined, "configured project diag includes a summary");
+  assert.ok(summaryA.rows >= 1, "summary counts project rows");
+  assert.ok(summaryA.mounted >= 1, "summary counts mounted servers");
+  assert.equal(await pathExists(diagFile(projectB)), false, "zero-config project still has no diag after summary writes");
   pass("registry snapshot reports project file rows with workspace scope and phase");
 
   // 4. 移除行 → 卸载（fiber dispose）
@@ -408,6 +424,10 @@ try {
     const diagE10 = await readDiag(dir2);
     assert.ok(diagE10.some((row) => row.kind === "scan" && Array.isArray(row.ccEntryErrors) && row.ccEntryErrors.some((note) => note.includes("bad"))), "sse entry error recorded in scan diag");
     assert.ok(diagE10.some((row) => row.kind === "env-missing" && row.rawName === "beta" && row.missingVar === "CC_TEST_MISSING"), "env-missing diag names the variable, not the value");
+    const summaryE10 = await readDiagSummary(dir2);
+    assert.ok(summaryE10 !== undefined, "diag file carries a summary after reconcile");
+    assert.equal(summaryE10.skippedByReason["env-missing"], 1, "summary counts env-missing skips");
+    assert.ok(summaryE10.unhealthy.some((item) => item.name === "beta" && item.reason === "env-missing"), "summary names the env-missing row");
     pass("registry mounts legacy CC-dialect rows and reports per-entry/env failures");
 
     // 11. 快照分区：yml 缺失不出分区；cc-project 分区带行与 entryErrors；用户 yml 分区
@@ -701,7 +721,7 @@ try {
         assert.ok(viewCpu !== undefined && viewCpu.source === "dsh-user-yml", "serverView resolves the global row to its user-layer source");
         // 全局实例仍在（只挂一条），但 proj6 的会话按项目侧压制 deny 掉它的工具。
         assert.ok(await registry2.waitForGlobalState("unity-mcp", (state) => state?.phase === "active", 5000), "the shadowed global row still mounts exactly once");
-        ctx2.schemas.push({ id: "mcp__unity-mcp__ping" }, { id: "mcp__unityMCP__ping" });
+        ctx2.schemas.push({ name: "mcp__unity-mcp__ping" }, { name: "mcp__unityMCP__ping" });
         await registry2.reconcileNow();
         const agentJ = ctx2.agentsList.find((agent) => agent.id === "session-j");
         assert.ok(agentJ.denies.some((deny) => deny.includes("mcp__unity-mcp__ping")), "proj6 denies the suppressed global server's tools: " + JSON.stringify(agentJ.denies));
@@ -881,7 +901,7 @@ try {
         const mountedA = ctxA.mounts.map((config) => config.serverName);
         assert.ok(mountedA.includes("selfx"), "a disabled user placeholder does not claim the global name: " + mountedA.join(","));
         assert.equal(registryA.globalState("selfx"), undefined, "the disabled placeholder mounts nothing globally");
-        ctxA.schemas.push({ id: "mcp__selfx__ping" });
+        ctxA.schemas.push({ name: "mcp__selfx__ping" });
         await registryA.reconcileNow();
         const agentA = ctxA.agentsList[0];
         assert.ok(agentA.denies.every((deny) => !deny.includes("mcp__selfx__ping")), "the project must not deny its own tools: " + JSON.stringify(agentA.denies));
@@ -902,7 +922,7 @@ try {
         assert.equal(registryB.globalState("hostx"), undefined, "the user row is blocked by the host patch name");
         const projectEffective = ctxB.mounts.map((config) => config.serverName).find((name) => name.endsWith("_hostx"));
         assert.ok(projectEffective !== undefined, "the project row is namespaced around the host patch name: " + ctxB.mounts.map((c) => c.serverName).join(","));
-        ctxB.schemas.push({ id: "mcp__hostx__ping" }, { id: `mcp__${projectEffective}__ping` });
+        ctxB.schemas.push({ name: "mcp__hostx__ping" }, { name: `mcp__${projectEffective}__ping` });
         await registryB.reconcileNow();
         const agentB = ctxB.agentsList[0];
         assert.ok(agentB.denies.every((deny) => !deny.includes("mcp__hostx__ping")), "a blocked user row must not make the project deny the host patch tools: " + JSON.stringify(agentB.denies));
@@ -949,7 +969,7 @@ try {
         ctx33.agentsList.push(fakeAgent("session-m4", proj33));
         await registry33.reconcileNow();
         assert.equal(await pathExists(diagFile(proj33)), false, "a zero-config project stays free of .mcp-diag.json");
-        const globalDiag = JSON.parse(await readFile(join(home33, ".mcp-diag.json"), "utf8"));
+        const globalDiag = parseDiagDocument(JSON.parse(await readFile(join(home33, ".mcp-diag.json"), "utf8"))).events;
         assert.ok(globalDiag.some((row) => row.kind === "shadow" && Array.isArray(row.shadowedIdentity)
           && row.shadowedIdentity.some((s) => s.name === "twin-json" && s.winner === "twin-yml")), "global diag records the user-layer identity shadow: " + JSON.stringify(globalDiag.slice(-2)));
         assert.ok(globalDiag.some((row) => row.kind === "shadow" && Array.isArray(row.shadowedByHigherLayer)
@@ -997,20 +1017,20 @@ try {
         await registry34.reconcileNow();
         await registry34.reconcileNow();
         const count = (needle) => warns34.filter((w) => w.includes(needle)).length;
-        assert.equal(count('"bad34": sse transport'), 1, "the user-layer bad entry warns once across reconciles: " + JSON.stringify(warns34));
-        assert.equal(count('"projbad34": sse transport'), 1, "the project bad entry warns once across reconciles");
+        assert.equal(count('"bad34": 不支持 MCP SSE'), 1, "the user-layer bad entry warns once across reconciles: " + JSON.stringify(warns34));
+        assert.equal(count('"projbad34": 不支持 MCP SSE'), 1, "the project bad entry warns once across reconciles");
         assert.equal(count('"taken34" 未装载'), 1, "the name-taken warning is gated too");
         assert.ok(warns34.some((w) => w.includes("宿主全局 patch 行")), "the name-taken warning names host global patch rows, not just profile patches");
         assert.equal((await registry34.serverView(proj34, "taken34")).skipReason, "name-taken", "skipReason still reports the collision every round");
         // 集合变化（坏条目修好）后再坏一次 → 重新告警一次。
         await writeFile(userPaths34.mcpJson, JSON.stringify({ mcpServers: { taken34: { command: "node", args: ["t.js"] } } }), "utf8");
         await registry34.reconcileNow();
-        assert.equal(count('"bad34": sse transport'), 1, "fixing an entry does not warn");
+        assert.equal(count('"bad34": 不支持 MCP SSE'), 1, "fixing an entry does not warn");
         await writeFile(userPaths34.mcpJson, JSON.stringify({
           mcpServers: { taken34: { command: "node", args: ["t.js"] }, bad34: { type: "sse", url: "https://x/mcp" } }
         }), "utf8");
         await registry34.reconcileNow();
-        assert.equal(count('"bad34": sse transport'), 2, "a re-appearing bad entry warns again");
+        assert.equal(count('"bad34": 不支持 MCP SSE'), 2, "a re-appearing bad entry warns again");
         for (const disposer of ctx34.disposers) {
           const cleanup = disposer();
           if (typeof cleanup === "function") cleanup();
@@ -1063,6 +1083,42 @@ try {
       }
     }
 
+    // 36. C4：对方 {version, servers} 项目文件写入诊断；~/.dsh/dsh-mcp.json 同理；
+    // mcpServers 与 servers 并存时不告警。
+    {
+      const homeF = await mkdtemp(join(tmpdir(), "dsh-mcp-foreign-home-"));
+      const projF = await mkdtemp(join(tmpdir(), "dsh-mcp-foreign-proj-"));
+      try {
+        await mkdir(join(projF, ".dsh"), { recursive: true });
+        await writeFile(join(projF, ".dsh", "mcp.json"), JSON.stringify({ version: 1, servers: [{ name: "x" }] }), "utf8");
+        await writeFile(join(homeF, "dsh-mcp.json"), JSON.stringify({ version: 1, servers: [] }), "utf8");
+        await writeFile(join(homeF, "mcp.json"), JSON.stringify({ mcpServers: {}, servers: [] }), "utf8");
+        const ctxF = fakeCtx();
+        const warnsF = [];
+        ctxF.logger.warn = (msg) => { warnsF.push(String(msg)); };
+        const registryF = new ProjectMcpRegistry(ctxF, {
+          globalNames: async () => [],
+          userLayerPaths: { mcpYml: join(homeF, "mcp.yml"), mcpJson: join(homeF, "mcp.json"), profilesDir: join(homeF, "profiles") }
+        });
+        ctxF.agentsList.push(fakeAgent("session-foreign", projF));
+        await registryF.reconcileNow();
+        const diagF = await readDiag(projF);
+        assert.ok(diagF.some((row) => typeof row.foreignFormat === "string" && row.foreignFormat.includes("dsh-mcp-manager")), "project diag names the foreign format: " + JSON.stringify(diagF));
+        const globalDiag = parseDiagDocument(JSON.parse(await readFile(join(homeF, ".mcp-diag.json"), "utf8"))).events;
+        assert.ok(globalDiag.some((row) => row.kind === "foreign-format" && String(row.path).includes("dsh-mcp.json")), "global diag mentions dsh-mcp.json: " + JSON.stringify(globalDiag));
+        assert.ok(warnsF.some((w) => w.includes("dsh-mcp-manager")), "host log names the other plugin");
+        assert.equal(warnsF.filter((w) => w.includes(join(homeF, "mcp.json")) && w.includes("dsh-mcp-manager")).length, 0, "mcpServers + servers together does not warn");
+        for (const disposer of ctxF.disposers) {
+          const cleanup = disposer();
+          if (typeof cleanup === "function") cleanup();
+        }
+        pass("foreign {version, servers} format is diagnosed at project and user layers");
+      } finally {
+        await rmRetry(homeF);
+        await rmRetry(projF);
+      }
+    }
+
     // 场景 24 的 unlink 会留下防抖后的迟到 reconcile 与 chokidar 内部重扫：
     // 先让队列落空再关 watcher，否则 close 与临时目录删除赛跑、句柄不释放。
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 800));
@@ -1086,5 +1142,606 @@ try {
   await rmRetry(dir);
 }
 
+{
+  // M8：启动时没有对方全局文件，创建 `dsh-mcp.json` 必须经用户 watcher kick 对账并诊断。
+  const homeW = await mkdtemp(join(tmpdir(), "dsh-mcp-foreign-watch-"));
+  const projW = await mkdtemp(join(tmpdir(), "dsh-mcp-foreign-watch-proj-"));
+  try {
+    await mkdir(join(projW, ".dsh"), { recursive: true });
+    const ctxW = fakeCtx();
+    const registryW = new ProjectMcpRegistry(ctxW, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(homeW, "mcp.yml"), mcpJson: join(homeW, "mcp.json"), profilesDir: join(homeW, "profiles") }
+    });
+    ctxW.agentsList.push(fakeAgent("session-fw", projW));
+    await registryW.reconcileNow();
+    let countW = registryW.debugReconcileCount;
+    for (let waited = 0; waited < 6000; waited += 300) {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
+      const next = registryW.debugReconcileCount;
+      if (next === countW) break;
+      countW = next;
+    }
+    await writeFile(join(homeW, "dsh-mcp.json"), JSON.stringify({ version: 1, servers: [] }), "utf8");
+    const startedW = Date.now();
+    let kicked = false;
+    while (Date.now() - startedW < 5000) {
+      if (registryW.debugReconcileCount > countW) {
+        try {
+          const events = parseDiagDocument(JSON.parse(await readFile(join(homeW, ".mcp-diag.json"), "utf8"))).events;
+          if (events.some((row) => row.kind === "foreign-format" && String(row.path).includes("dsh-mcp.json"))) {
+            kicked = true;
+            break;
+          }
+        } catch {
+          // 诊断尚未落盘
+        }
+      }
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 150));
+    }
+    assert.ok(kicked, "creating dsh-mcp.json must kick reconcile and diagnose the foreign format");
+    assert.equal(ctxW.mounts.length, 0, "foreign dsh-mcp.json is never mounted");
+    for (const disposer of ctxW.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    pass("registry watches ~/.dsh/dsh-mcp.json and diagnoses it without mounting");
+  } finally {
+    await rmRetry(homeW);
+    await rmRetry(projW);
+  }
+}
+
+{
+  const dirH = await mkdtemp(join(tmpdir(), "dsh-mcp-health-"));
+  const homeH = join(dirH, "home");
+  const projH = join(dirH, "proj");
+  await mkdir(join(homeH, ".dsh"), { recursive: true });
+  await mkdir(projH, { recursive: true });
+  const savedCwd = process.cwd();
+  try {
+    process.chdir(dirH);
+    await writeManagedRows(projectMcpFile(projH), [stdioRow("alive")], { createIfMissing: true });
+    const ctxH = fakeCtx();
+    const registryH = new ProjectMcpRegistry(ctxH, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(homeH, ".dsh", "mcp.yml"), mcpJson: join(homeH, ".dsh", "mcp.json"), profilesDir: join(homeH, ".dsh", "profiles") },
+      healthRemountBackoffMs: 0
+    });
+    ctxH.agentsList.push(fakeAgent("session-h", projH));
+    await registryH.reconcileNow();
+    assert.equal(ctxH.mounts.length, 1, "initial mount");
+    const reads1 = registryH.debugConfigReadCount;
+    await registryH.reconcileNow();
+    assert.equal(registryH.debugConfigReadCount, reads1, "unchanged files skip reread");
+    const effective = ctxH.mounts[0].serverName;
+    const pulseDead = async () => {
+      ctxH.schemas.push({ name: "mcp__" + effective + "__ping" });
+      await registryH.reconcileNow();
+      ctxH.schemas.length = 0;
+      await registryH.reconcileNow();
+      await registryH.reconcileNow();
+    };
+    await pulseDead();
+    assert.equal(ctxH.disposals.length, 1, "dead connection is unmounted once");
+    assert.equal(ctxH.mounts.length, 2, "dead connection is remounted once");
+    const diagH = await readDiag(projH);
+    assert.ok(diagH.some((row) => row.kind === "remount" && row.attempt === 1), "remount diag: " + JSON.stringify(diagH.slice(-4)));
+    const mountsAfterFirst = ctxH.mounts.length;
+    await registryH.reconcileNow();
+    await registryH.reconcileNow();
+    assert.equal(ctxH.mounts.length, mountsAfterFirst, "new fiber without tools does not remount (official reconnect window)");
+
+    ctxH.schemas.push({ name: "mcp__" + effective + "__ping" });
+    await registryH.reconcileNow();
+    const mountsFlicker = ctxH.mounts.length;
+    ctxH.schemas.length = 0;
+    await registryH.reconcileNow();
+    ctxH.schemas.push({ name: "mcp__" + effective + "__ping" });
+    await registryH.reconcileNow();
+    assert.equal(ctxH.mounts.length, mountsFlicker, "brief 0-tool window on the same fiber does not remount");
+    assert.equal(registryH.debugHealth(projH, "alive")?.remountCount, 0, "tools returning reset remountCount");
+
+    await pulseDead();
+    await pulseDead();
+    await pulseDead();
+    assert.equal(ctxH.mounts.length, 5, "four recovered deaths remount four times, no give-up: " + ctxH.mounts.length);
+    ctxH.schemas.push({ name: "mcp__" + effective + "__ping" });
+    await registryH.reconcileNow();
+    assert.equal(registryH.debugHealth(projH, "alive")?.remountCount, 0, "recovery after the fourth remount still resets the counter");
+    assert.equal(registryH.debugHealth(projH, "alive")?.givenUp, false);
+
+    ctxH.schemas.length = 0;
+    await registryH.reconcileNow();
+    await registryH.reconcileNow();
+    await registryH.reconcileNow();
+    await registryH.reconcileNow();
+    await registryH.reconcileNow();
+    const diagGive = await readDiag(projH);
+    assert.ok(diagGive.some((row) => row.kind === "give-up"), "give-up after remount limit without recovery: " + JSON.stringify(diagGive.slice(-6)));
+    const mountsAtGiveUp = ctxH.mounts.length;
+    await registryH.reconcileNow();
+    assert.equal(ctxH.mounts.length, mountsAtGiveUp, "give-up stops further remounts");
+    const summaryGive = await readDiagSummary(projH);
+    assert.ok(summaryGive?.unhealthy.some((item) => item.name === "alive" && item.reason === "give-up"), "give-up is unhealthy in summary: " + JSON.stringify(summaryGive));
+    assert.ok((summaryGive?.skippedByReason["give-up"] ?? 0) >= 1, "summary counts give-up skips");
+    const giveView = (await registryH.snapshot()).flatMap((file) => file.servers ?? []).find((row) => row.serverName === "alive");
+    assert.equal(giveView?.skipReason, "give-up", "snapshot skipReason is give-up while the fiber is still active");
+
+    ctxH.schemas.push({ name: "mcp__" + effective + "__ping" });
+    await registryH.reconcileNow();
+    assert.equal(registryH.debugHealth(projH, "alive")?.givenUp, false, "tools returning after give-up clears givenUp");
+    assert.equal(registryH.debugHealth(projH, "alive")?.remountCount, 0);
+    const summaryRecovered = await readDiagSummary(projH);
+    assert.ok(summaryRecovered?.unhealthy.every((item) => item.reason !== "give-up"), "summary drops give-up after recovery: " + JSON.stringify(summaryRecovered));
+    assert.ok((summaryRecovered?.mounted ?? 0) >= 1, "recovered row counts as mounted");
+    const recoveredView = (await registryH.snapshot()).flatMap((file) => file.servers ?? []).find((row) => row.serverName === "alive");
+    assert.equal(recoveredView?.skipReason, null, "snapshot no longer marks give-up after tools return");
+
+    const snapCount = registryH.debugReconcileCount;
+    const during = registryH.reconcileNow();
+    const snapA = registryH.snapshot();
+    const snapB = registryH.snapshot();
+    await during;
+    const [viewA, viewB] = await Promise.all([snapA, snapB]);
+    const rowA = viewA.flatMap((file) => file.servers ?? []).find((row) => row.serverName === "alive");
+    const rowB = viewB.flatMap((file) => file.servers ?? []).find((row) => row.serverName === "alive");
+    assert.equal(rowA?.fiberPhase, rowB?.fiberPhase, "concurrent snapshots share one reconcile generation");
+    assert.equal(rowA?.skipReason, rowB?.skipReason);
+    await registryH.snapshot();
+    await registryH.snapshot();
+    assert.equal(registryH.debugReconcileCount, snapCount + 1, "snapshot is read-only and does not reconcile");
+    await writeManagedRows(projectMcpFile(projH), [{ ...stdioRow("alive"), config: { ...stdioRow("alive").config, args: ["srv-alive-2.js"] } }]);
+    await registryH.reconcileNow();
+    assert.ok(registryH.debugConfigReadCount > reads1, "fingerprint change rereads files");
+    for (const disposer of ctxH.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    pass("registry remounts dead connections, gives up after the limit, and skips reread when fingerprints match");
+
+    const dirD = await mkdtemp(join(tmpdir(), "dsh-mcp-disabled-"));
+    const projD = join(dirD, "proj");
+    await mkdir(projD, { recursive: true });
+    await writeManagedRows(projectMcpFile(projD), [{ ...stdioRow("off"), disabled: true }], { createIfMissing: true });
+    const ctxD = fakeCtx();
+    const registryD = new ProjectMcpRegistry(ctxD, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(dirD, "home", ".dsh", "mcp.yml"), mcpJson: join(dirD, "home", ".dsh", "mcp.json"), profilesDir: join(dirD, "home", ".dsh", "profiles") },
+      healthRemountBackoffMs: 0
+    });
+    ctxD.agentsList.push(fakeAgent("session-d", projD));
+    await registryD.reconcileNow();
+    assert.equal(ctxD.mounts.length, 0, "disabled rows never mount");
+    await registryD.reconcileNow();
+    assert.equal(ctxD.mounts.length, 0, "health remount does not revive disabled rows");
+    for (const disposer of ctxD.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    await rmRetry(dirD);
+    pass("registry health remount never revives disabled rows");
+
+    const dirZ = await mkdtemp(join(tmpdir(), "dsh-mcp-nevertools-"));
+    const projZ = join(dirZ, "proj");
+    await mkdir(projZ, { recursive: true });
+    await writeManagedRows(projectMcpFile(projZ), [stdioRow("quiet")], { createIfMissing: true });
+    const ctxZ = fakeCtx();
+    const registryZ = new ProjectMcpRegistry(ctxZ, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(dirZ, "home", ".dsh", "mcp.yml"), mcpJson: join(dirZ, "home", ".dsh", "mcp.json"), profilesDir: join(dirZ, "home", ".dsh", "profiles") },
+      healthRemountBackoffMs: 0
+    });
+    ctxZ.agentsList.push(fakeAgent("session-z", projZ));
+    await registryZ.reconcileNow();
+    await registryZ.reconcileNow();
+    await registryZ.reconcileNow();
+    assert.equal(ctxZ.mounts.length, 1, "a server that never had tools is not remounted");
+    assert.equal(ctxZ.disposals.length, 0);
+    for (const disposer of ctxZ.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    await rmRetry(dirZ);
+    pass("registry does not remount servers that never exposed tools");
+
+    const dirT = await mkdtemp(join(tmpdir(), "dsh-mcp-tools-"));
+    const projT = join(dirT, "proj");
+    await mkdir(projT, { recursive: true });
+    const filtered = {
+      ...stdioRow("box"),
+      config: { ...stdioRow("box").config, tools: { allow: ["read_*"], deny: ["read_secret"] } }
+    };
+    await writeManagedRows(projectMcpFile(projT), [filtered], { createIfMissing: true });
+    const ctxT = fakeCtx();
+    const warnsT = [];
+    ctxT.logger.warn = (msg) => { warnsT.push(String(msg)); };
+    const registryT = new ProjectMcpRegistry(ctxT, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(dirT, "home", ".dsh", "mcp.yml"), mcpJson: join(dirT, "home", ".dsh", "mcp.json"), profilesDir: join(dirT, "home", ".dsh", "profiles") }
+    });
+    const agentT = fakeAgent("session-t", projT);
+    let restrictCalls = 0;
+    const innerRestrict = agentT.ctx.tools.restrict;
+    agentT.ctx.tools.restrict = (opts) => {
+      restrictCalls += 1;
+      if (restrictCalls === 1) throw new Error("unknown tool name");
+      return innerRestrict(opts);
+    };
+    ctxT.agentsList.push(agentT);
+    await registryT.reconcileNow();
+    const mountedT = ctxT.mounts[0].serverName;
+    ctxT.schemas.push(
+      { name: `mcp__${mountedT}__read_file` },
+      { name: `mcp__${mountedT}__read_secret` },
+      { name: `mcp__${mountedT}__delete_file` }
+    );
+    await registryT.reconcileNow();
+    assert.ok(warnsT.some((w) => w.includes("暂未应用")), "unknown names are retried: " + warnsT.join("|"));
+    await registryT.reconcileNow();
+    const lastDeny = agentT.denies.at(-1);
+    assert.ok(lastDeny.includes(`mcp__${mountedT}__delete_file`), "allow-list denies unmatched tools: " + lastDeny);
+    assert.ok(lastDeny.includes(`mcp__${mountedT}__read_secret`), "deny wins over allow: " + lastDeny);
+    assert.ok(!lastDeny.includes(`mcp__${mountedT}__read_file`), "allowed tools stay visible: " + lastDeny);
+    assert.ok(!ctxT.mounts[0].tools, "tools filter is stripped before ctx.plugin");
+    const mountsAfterFilter = ctxT.mounts.length;
+    const denyAfter = agentT.denies.at(-1);
+    await writeManagedRows(projectMcpFile(projT), [{
+      ...filtered,
+      config: { ...filtered.config, tools: { allow: ["read_*"], deny: ["read_secret", "read_file"] } }
+    }]);
+    await registryT.reconcileNow();
+    assert.equal(ctxT.mounts.length, mountsAfterFilter, "tools-only edits must not remount");
+    const denyAfterEdit = agentT.denies.at(-1);
+    assert.ok(denyAfterEdit.includes(`mcp__${mountedT}__read_file`), "tools.deny change updates restrict without remount: " + denyAfterEdit);
+    assert.notEqual(denyAfterEdit.join("\n"), denyAfter.join("\n"), "restrict deny set changes after tools.deny edit");
+    for (const disposer of ctxT.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    await rmRetry(dirT);
+    pass("registry expands tools.allow/deny to registered names and retries unknown denies");
+
+    const dirGlob = await mkdtemp(join(tmpdir(), "dsh-mcp-badglob-"));
+    const projGlob = join(dirGlob, "proj");
+    await mkdir(projGlob, { recursive: true });
+    await writeManagedRows(projectMcpFile(projGlob), [{
+      ...stdioRow("box"),
+      config: { ...stdioRow("box").config, tools: { deny: ["[z-a]", "delete_*"] } }
+    }], { createIfMissing: true });
+    const ctxGlob = fakeCtx();
+    const warnsGlob = [];
+    ctxGlob.logger.warn = (msg) => { warnsGlob.push(String(msg)); };
+    const registryGlob = new ProjectMcpRegistry(ctxGlob, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(dirGlob, "home", ".dsh", "mcp.yml"), mcpJson: join(dirGlob, "home", ".dsh", "mcp.json"), profilesDir: join(dirGlob, "home", ".dsh", "profiles") }
+    });
+    ctxGlob.agentsList.push(fakeAgent("session-glob", projGlob));
+    await registryGlob.reconcileNow();
+    assert.equal(ctxGlob.mounts.length, 1, "illegal glob still mounts the server");
+    assert.ok(warnsGlob.some((w) => w.includes("工具过滤 glob 无效") && w.includes("[z-a]")), "illegal glob is warned: " + warnsGlob.join("|"));
+    for (const disposer of ctxGlob.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    await rmRetry(dirGlob);
+    pass("registry warns on illegal tool globs without skipping the row");
+
+    const dirBgt = await mkdtemp(join(tmpdir(), "dsh-mcp-budget-"));
+    const projBgt = join(dirBgt, "proj");
+    await mkdir(projBgt, { recursive: true });
+    await writeManagedRows(projectMcpFile(projBgt), [stdioRow("heavy")], { createIfMissing: true });
+    const ctxBgt = fakeCtx();
+    const warnsBgt = [];
+    ctxBgt.logger.warn = (msg) => { warnsBgt.push(String(msg)); };
+    const registryBgt = new ProjectMcpRegistry(ctxBgt, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(dirBgt, "home", ".dsh", "mcp.yml"), mcpJson: join(dirBgt, "home", ".dsh", "mcp.json"), profilesDir: join(dirBgt, "home", ".dsh", "profiles") },
+      toolBudget: { maxTools: 2, maxBytes: 1024 * 1024 }
+    });
+    ctxBgt.agentsList.push(fakeAgent("session-bgt", projBgt));
+    await registryBgt.reconcileNow();
+    const heavyName = ctxBgt.mounts[0].serverName;
+    ctxBgt.schemas.push(
+      { name: `mcp__${heavyName}__a`, description: "a" },
+      { name: `mcp__${heavyName}__b`, description: "b" },
+      { name: `mcp__${heavyName}__c`, description: "c" }
+    );
+    await registryBgt.reconcileNow();
+    const budgetWarns = warnsBgt.filter((w) => w.includes("超过告警阈值"));
+    assert.equal(budgetWarns.length, 1, "budget warns once: " + budgetWarns.join("|"));
+    await registryBgt.reconcileNow();
+    assert.equal(warnsBgt.filter((w) => w.includes("超过告警阈值")).length, 1, "budget warn is gated");
+    const summaryBgt = await readDiagSummary(projBgt);
+    assert.ok(summaryBgt.toolBudget?.some((item) => item.name === heavyName && item.tools === 3), "summary lists over-budget server: " + JSON.stringify(summaryBgt.toolBudget));
+    assert.equal(ctxBgt.schemas.length, 3, "budget never clips tools");
+    ctxBgt.schemas.length = 1;
+    await registryBgt.reconcileNow();
+    assert.equal(warnsBgt.filter((w) => w.includes("超过告警阈值")).length, 1, "under-budget clears the gate without warning");
+    ctxBgt.schemas.push(
+      { name: `mcp__${heavyName}__b`, description: "b" },
+      { name: `mcp__${heavyName}__c`, description: "c" }
+    );
+    await registryBgt.reconcileNow();
+    assert.equal(warnsBgt.filter((w) => w.includes("超过告警阈值")).length, 2, "same over-budget count warns again after dropping under the threshold");
+    for (const disposer of ctxBgt.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    await rmRetry(dirBgt);
+    pass("registry warns once when a server exceeds the tool budget and never clips");
+  } finally {
+    process.chdir(savedCwd);
+    await rmRetry(dirH);
+  }
+}
+
+{
+  const dirSvc = await mkdtemp(join(tmpdir(), "dsh-mcp-service-"));
+  const homeSvc = join(dirSvc, "home");
+  const projSvc = join(dirSvc, "proj");
+  await mkdir(join(homeSvc, ".dsh"), { recursive: true });
+  await mkdir(projSvc, { recursive: true });
+  await writeManagedRows(projectMcpFile(projSvc), [stdioRow("query")], { createIfMissing: true });
+  const ctxSvc = fakeCtx();
+  const registrySvc = new ProjectMcpRegistry(ctxSvc, {
+    globalNames: async () => [],
+    userLayerPaths: { mcpYml: join(homeSvc, ".dsh", "mcp.yml"), mcpJson: join(homeSvc, ".dsh", "mcp.json"), profilesDir: join(homeSvc, ".dsh", "profiles") }
+  });
+  ctxSvc.agentsList.push(fakeAgent("session-svc", projSvc));
+  const service = bindProjectMcpService(registrySvc);
+  await service.reload();
+  const snapService = await service.snapshot();
+  const snapRegistry = await registrySvc.snapshot();
+  assert.deepEqual(snapService, snapRegistry, "provided snapshot matches registry.snapshot");
+  const viewService = await service.serverView(projSvc, "query");
+  const viewRegistry = await registrySvc.serverView(projSvc, "query");
+  assert.deepEqual(viewService, viewRegistry, "provided serverView matches registry.serverView");
+  assert.equal(viewService?.serverName, "query");
+  assert.equal(service.globalState("query"), registrySvc.globalState("query"));
+  assert.equal(service.globalState("query"), undefined, "project rows are not global state");
+  const before = registrySvc.debugReconcileCount;
+  await service.reload();
+  assert.ok(registrySvc.debugReconcileCount > before, "reload runs reconcileNow");
+  for (const disposer of ctxSvc.disposers) {
+    const cleanup = disposer();
+    if (typeof cleanup === "function") cleanup();
+  }
+
+  const savedHome = process.env.DSH_HOME;
+  const savedProfile = process.env.DSH_MCP_PROFILE;
+  const savedCwdSvc = process.cwd();
+  try {
+    process.env.DSH_HOME = join(dirSvc, "dsh-home");
+    delete process.env.DSH_MCP_PROFILE;
+    await mkdir(process.env.DSH_HOME, { recursive: true });
+    process.chdir(projSvc);
+    const ctxApply = fakeCtx();
+    ctxApply.agentsList.push(fakeAgent("session-apply", projSvc));
+    apply(ctxApply);
+    const provided = ctxApply.provided[PROJECT_MCP_SERVICE];
+    assert.ok(provided, "apply provides projectMcp");
+    assert.equal(typeof provided.snapshot, "function");
+    assert.equal(typeof provided.serverView, "function");
+    assert.equal(typeof provided.globalState, "function");
+    assert.equal(typeof provided.reload, "function");
+    await provided.reload();
+    const applyView = await provided.serverView(projSvc, "query");
+    assert.equal(applyView?.serverName, "query", "apply service.serverView matches the project row");
+    const applySnap = await provided.snapshot();
+    assert.ok(applySnap.some((part) => part.servers?.some((row) => row.serverName === "query")), "apply service.snapshot contains the project row");
+    for (const disposer of ctxApply.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+  } finally {
+    process.chdir(savedCwdSvc);
+    if (savedHome === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = savedHome;
+    if (savedProfile === undefined) delete process.env.DSH_MCP_PROFILE;
+    else process.env.DSH_MCP_PROFILE = savedProfile;
+  }
+  await rmRetry(dirSvc);
+  pass("projectMcp service matches registry queries and apply provides it");
+}
+
+{
+  const dirOn = await mkdtemp(join(tmpdir(), "dsh-mcp-ondemand-"));
+  const homeOn = join(dirOn, "home");
+  const projA = join(dirOn, "projA");
+  const projB = join(dirOn, "projB");
+  await mkdir(join(homeOn, ".dsh"), { recursive: true });
+  await mkdir(projA, { recursive: true });
+  await mkdir(projB, { recursive: true });
+  await writeManagedRows(projectMcpFile(projA), [stdioRow("alpha")], { createIfMissing: true });
+  await writeManagedRows(projectMcpFile(projB), [stdioRow("beta")], { createIfMissing: true });
+  const savedCwdOn = process.cwd();
+  let now = 1_000_000_000;
+  const activeNames = (snap, projectRoot) => {
+    const part = snap.find((file) => file.project === projectRoot && (file.source === "dsh-project" || file.source === undefined));
+    return (part?.servers ?? []).filter((row) => row.fiberPhase === "active" || row.fiberPhase === "loading").map((row) => row.serverName);
+  };
+  try {
+    process.chdir(dirOn);
+    const ctxOn = fakeCtx();
+    const registryOn = new ProjectMcpRegistry(ctxOn, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(homeOn, ".dsh", "mcp.yml"), mcpJson: join(homeOn, ".dsh", "mcp.json"), profilesDir: join(homeOn, ".dsh", "profiles") },
+      now: () => now,
+      unmountGraceMs: UNMOUNT_GRACE_MS
+    });
+    const agentA = fakeAgent("session-on-a", projA);
+    ctxOn.agentsList.push(agentA);
+    await registryOn.reconcileNow();
+    let snap = await registryOn.snapshot();
+    assert.deepEqual(activeNames(snap, projA), ["alpha"], "only the session project mounts: " + JSON.stringify(activeNames(snap, projA)));
+    assert.deepEqual(activeNames(snap, projB), [], "unknown idle project is not mounted");
+    assert.equal(ctxOn.mounts.length, 1, "one mount before B appears");
+
+    ctxOn.agentsList.push(fakeAgent("session-on-b", projB));
+    await registryOn.reconcileNow();
+    snap = await registryOn.snapshot();
+    assert.deepEqual(activeNames(snap, projA), ["alpha"]);
+    assert.deepEqual(activeNames(snap, projB), ["beta"], "B session incrementally mounts B");
+
+    ctxOn.agentsList.splice(0, 1);
+    await registryOn.reconcileNow();
+    snap = await registryOn.snapshot();
+    assert.deepEqual(activeNames(snap, projA), ["alpha"], "A stays mounted during the grace window");
+    assert.deepEqual(activeNames(snap, projB), ["beta"]);
+
+    now += UNMOUNT_GRACE_MS - 1;
+    await registryOn.reconcileNow();
+    snap = await registryOn.snapshot();
+    assert.deepEqual(activeNames(snap, projA), ["alpha"], "A still mounted just before grace elapses");
+
+    now += 2;
+    await registryOn.reconcileNow();
+    snap = await registryOn.snapshot();
+    assert.deepEqual(activeNames(snap, projA), [], "A unmounts after the 5 minute grace");
+    assert.deepEqual(activeNames(snap, projB), ["beta"], "B stays mounted while it has a session");
+    const pendingA = snap.find((file) => file.project === projA)?.servers ?? [];
+    assert.equal(pendingA.length, 1, "unmounted project keeps its catalog entry");
+    assert.equal(pendingA[0].fiberPhase, "pending");
+    assert.equal(pendingA[0].skipReason, "idle", "idle unmount is visible as skipReason");
+    const summaryIdleA = await readDiagSummary(projA);
+    assert.ok(summaryIdleA !== undefined && summaryIdleA.rows >= 1, "idle unmount still counts catalog rows: " + JSON.stringify(summaryIdleA));
+    assert.equal(summaryIdleA.skippedByReason.idle, 1, "summary records idle skip");
+    assert.ok(!(summaryIdleA.unhealthy ?? []).some((item) => item.reason === "idle"), "idle is not listed as unhealthy");
+    assert.ok((summaryIdleA.idle ?? []).includes("alpha"), "idle names go to summary.idle: " + JSON.stringify(summaryIdleA));
+
+    ctxOn.agentsList.unshift(agentA);
+    await registryOn.reconcileNow();
+    snap = await registryOn.snapshot();
+    assert.deepEqual(activeNames(snap, projA), ["alpha"], "returning session remounts A");
+
+    ctxOn.agentsList.length = 0;
+    await registryOn.reconcileNow();
+    now += UNMOUNT_GRACE_MS + 1;
+    await registryOn.reconcileNow();
+    snap = await registryOn.snapshot();
+    assert.deepEqual(activeNames(snap, projA), [], "no session and not cwd: A stays unmounted");
+    assert.deepEqual(activeNames(snap, projB), [], "no session and not cwd: B stays unmounted");
+    process.chdir(projA);
+    await registryOn.reconcileNow();
+    snap = await registryOn.snapshot();
+    assert.deepEqual(activeNames(snap, projA), ["alpha"], "process cwd project stays mounted without a session");
+    assert.deepEqual(activeNames(snap, projB), [], "cwd of A does not mount B");
+
+    for (const disposer of ctxOn.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    pass("registry mounts on demand, keeps servers during the 5 minute grace, and always mounts the process cwd project");
+  } finally {
+    process.chdir(savedCwdOn);
+    await rmRetry(dirOn);
+  }
+}
+
+{
+  const dirT3 = await mkdtemp(join(tmpdir(), "dsh-mcp-h2-idle-"));
+  const homeT3 = join(dirT3, "home");
+  const projT3 = join(dirT3, "proj");
+  await mkdir(join(homeT3, ".dsh"), { recursive: true });
+  await mkdir(projT3, { recursive: true });
+  const missingRow = { ...stdioRow("secret"), config: { ...stdioRow("secret").config, env: { TOKEN: "${H2_MISSING_VAR}" } } };
+  await writeManagedRows(projectMcpFile(projT3), [stdioRow("ok"), missingRow], { createIfMissing: true });
+  const savedCwdT3 = process.cwd();
+  const savedMissing = process.env.H2_MISSING_VAR;
+  delete process.env.H2_MISSING_VAR;
+  let now = 2_000_000_000;
+  try {
+    process.chdir(dirT3);
+    const ctxT3 = fakeCtx();
+    const registryT3 = new ProjectMcpRegistry(ctxT3, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(homeT3, ".dsh", "mcp.yml"), mcpJson: join(homeT3, ".dsh", "mcp.json"), profilesDir: join(homeT3, ".dsh", "profiles") },
+      now: () => now,
+      unmountGraceMs: UNMOUNT_GRACE_MS
+    });
+    ctxT3.agentsList.push(fakeAgent("session-t3", projT3));
+    await registryT3.reconcileNow();
+    const summaryLive = await readDiagSummary(projT3);
+    assert.equal(summaryLive.skippedByReason["env-missing"], 1, "live summary counts env-missing: " + JSON.stringify(summaryLive));
+    assert.ok(summaryLive.rows >= 2, "catalog counts both rows while one is mounted: " + JSON.stringify(summaryLive));
+    ctxT3.agentsList.length = 0;
+    await registryT3.reconcileNow();
+    now += UNMOUNT_GRACE_MS + 1;
+    await registryT3.reconcileNow();
+    const summaryIdle = await readDiagSummary(projT3);
+    assert.ok(summaryIdle.rows >= 2, "idle unmount keeps catalog row count: " + JSON.stringify(summaryIdle));
+    assert.equal(summaryIdle.skippedByReason["env-missing"], 1, "env-missing survives idle prune");
+    assert.equal(summaryIdle.skippedByReason.idle, 1, "mounted row becomes idle");
+    assert.ok(!(summaryIdle.unhealthy ?? []).some((item) => item.reason === "idle"), "idle is not unhealthy: " + JSON.stringify(summaryIdle));
+    assert.ok((summaryIdle.idle ?? []).includes("ok"), "idle names are listed separately: " + JSON.stringify(summaryIdle));
+    const snapT3 = (await registryT3.snapshot()).find((file) => file.project === projT3);
+    const byName = Object.fromEntries((snapT3?.servers ?? []).map((row) => [row.serverName, row.skipReason]));
+    assert.equal(byName.ok, "idle");
+    assert.equal(byName.secret, "env-missing");
+    for (const disposer of ctxT3.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    pass("idle unmount keeps catalog rows and preserves env-missing skips");
+  } finally {
+    process.chdir(savedCwdT3);
+    if (savedMissing === undefined) delete process.env.H2_MISSING_VAR;
+    else process.env.H2_MISSING_VAR = savedMissing;
+    await rmRetry(dirT3);
+  }
+}
+
+{
+  const dirM1 = await mkdtemp(join(tmpdir(), "dsh-mcp-fp-profile-"));
+  const homeM1 = join(dirM1, "home");
+  const projM1 = join(dirM1, "proj");
+  const profilesM1 = join(homeM1, ".dsh", "profiles");
+  await mkdir(join(profilesM1, "web"), { recursive: true });
+  await mkdir(join(profilesM1, "job"), { recursive: true });
+  await mkdir(projM1, { recursive: true });
+  await writeManagedRows(projectMcpFile(projM1), [stdioRow("keep")], { createIfMissing: true });
+  await writeFile(join(profilesM1, "web", "mcp.json"), JSON.stringify({ mcpServers: { webonly: { command: "node", args: ["w.js"] } } }), "utf8");
+  await writeFile(join(profilesM1, "job", "mcp.json"), JSON.stringify({ mcpServers: { jobonly: { command: "node", args: ["j.js"] } } }), "utf8");
+  const savedCwdM1 = process.cwd();
+  let profile = "web";
+  let hostNames = [];
+  try {
+    process.chdir(dirM1);
+    const ctxM1 = fakeCtx();
+    const registryM1 = new ProjectMcpRegistry(ctxM1, {
+      globalNames: async () => hostNames,
+      activeProfile: async () => profile,
+      userLayerPaths: { mcpYml: join(homeM1, ".dsh", "mcp.yml"), mcpJson: join(homeM1, ".dsh", "mcp.json"), profilesDir: profilesM1 }
+    });
+    ctxM1.agentsList.push(fakeAgent("session-m1", projM1));
+    await registryM1.reconcileNow();
+    assert.ok(registryM1.globalState("webonly")?.phase === "active", "web profile row mounts");
+    const readsAfterWeb = registryM1.debugConfigReadCount;
+    await registryM1.reconcileNow();
+    assert.equal(registryM1.debugConfigReadCount, readsAfterWeb, "unchanged profile+host still skip reread");
+    profile = "job";
+    await registryM1.reconcileNow();
+    assert.ok(registryM1.debugConfigReadCount > readsAfterWeb, "switching profile rereads despite unchanged files");
+    assert.ok(registryM1.globalState("jobonly")?.phase === "active", "job profile row mounts after switch");
+    assert.equal(registryM1.globalState("webonly"), undefined, "previous profile row unmounts");
+    const readsAfterJob = registryM1.debugConfigReadCount;
+    hostNames = ["host-patch-x"];
+    await registryM1.reconcileNow();
+    assert.ok(registryM1.debugConfigReadCount > readsAfterJob, "host globalNames change rereads despite unchanged files");
+    for (const disposer of ctxM1.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    pass("fingerprint includes active profile and host global names so env/host changes reread");
+  } finally {
+    process.chdir(savedCwdM1);
+    await rmRetry(dirM1);
+  }
+}
+
 console.log("\n" + passed + " passed, 0 failed");
 console.log("ALL PROJECT REGISTRY TESTS PASSED");
+// chokidar close() is fire-and-forget in registry dispose; on Windows a
+// pending FSWatcher can keep the event loop alive after the suite finishes.
+process.exit(0);

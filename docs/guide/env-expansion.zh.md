@@ -15,5 +15,6 @@
 非 URL）时以 `env-invalid` 跳过，不把坏值递给装载后端。快照/行视图里
 `fiberPhase` 保持装载生命周期枚举（未挂上的行是 `pending`），跳过原因走独立
 的 `skipReason` 字段（`env-missing` / `env-invalid` / `config-invalid` /
-`plugin-throw`）。插件任何写路径都不落盘展开后的值；
+`plugin-throw`；其它如 `name-taken` / `idle` / `give-up` 见
+[配置来源与分层](layers.zh.md)）。插件任何写路径都不落盘展开后的值；
 CLI 写入时 `${VAR}` 原样保留——配置可以进 git，凭据留在环境里。

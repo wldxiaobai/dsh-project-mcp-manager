@@ -40,6 +40,25 @@ Uses the same managed-block format as the profile `cordis.patch.yml` (a YAML
 (url/headers). Add `disabled: true` to a line to deactivate it. Content outside
 the markers is preserved byte-for-byte.
 
+Per-entry tool visibility (stripped before `ctx.plugin`; deny wins):
+
+```yaml
+        tools:
+          allow: ["read_*"]
+          deny: ["read_secret", "mcp__gitlab__delete_*"]
+```
+
+Patterns are globs (`*`, `**`, `?`, `[…]`) and match either the bare tool name
+or a full `mcp__<effectiveName>__<tool>` id. A full-id pattern is compared
+against the **effective** name the loader actually registered (`mcp__<effective>__…`),
+not the `serverName` written in the file. Project rows that were renamed
+(`p<hash>_…`) therefore do **not** match `mcp__<originalName>__foo`; use the
+bare tool name, or look up the effective name in `dsh-mcp get` / a snapshot.
+Illegal character classes (for example `[z-a]`) warn once per entry and never
+match, instead of failing silently. JSON also accepts Gemini's
+`includeTools` → `allow` and `excludeTools` → `deny`; if both the DSH `tools`
+object and those keys are present, `tools.allow` / `tools.deny` win.
+
 **Divergences from the native cordis dialect**: the `!!js` tag (a js-yaml
 expression evaluated by the profile loader, e.g. the official README's
 `env: { TOKEN: !!js process.env.GITHUB_TOKEN }`) is **not supported** in
@@ -69,8 +88,15 @@ Follows the ecosystem (Cursor / Claude Code's `mcpServers` shape):
 ```
 
 - `command`/`args`/`env`/`cwd` are stdio; `url`/`headers` are streamable-http;
-  an optional `type` (`stdio`|`http`|`streamable-http`; `sse` is rejected per
-  entry), the DSH passthrough keys
+  an optional `type` (`stdio`|`http`|`streamable-http`). An entry that gives
+  both `command` and `url`/`httpUrl` without `type`/`transport` fails per
+  entry instead of silently loading as stdio — spell the transport. `type: "sse"` is the
+  **MCP SSE endpoint transport** (protocol version 2024-11-05) and is rejected
+  per entry with an actionable diagnostic: the mount backend
+  (`dsh-mcp-client`) only speaks `stdio` and streamable-http — if the server
+  already speaks Streamable HTTP, change `type` to `"http"`; or drop `type`
+  and keep `url` (this plugin infers streamable-http). There is no implicit
+  fallback. The DSH passthrough keys
   `toolCallTimeoutMs`/`failOnStartupError`/`reconnect`, `enabled: false`
   (silently skipped, claims no name) and `disabled: true` (claims its name but
   is not mounted).
@@ -83,3 +109,24 @@ Follows the ecosystem (Cursor / Claude Code's `mcpServers` shape):
   never writes these files.
 - `${VAR}` has the same semantics as every other source (expanded at mount
   time, see [`${VAR}` expansion](env-expansion.md)).
+
+### `httpUrl`, `transport`, and `url` inference
+
+- Gemini CLI writes `httpUrl` for Streamable HTTP. This plugin accepts it as
+  an explicit streamable-http URL. If both `url` and `httpUrl` are present
+  with **different** values, the entry errors (the message does not echo the
+  URLs). Identical values are tolerated.
+- Native YAML uses `transport: stdio | streamable-http`. The JSON dialect
+  accepts the same `transport` key. When both `transport` and `type` are set
+  and they map to different official transports, the entry errors;
+  `transport` is preferred when they agree (native dialect wins).
+- **`url` without `type`/`transport` is Streamable HTTP here**, which is the
+  **opposite** of Gemini CLI (`url` = MCP SSE endpoint transport, `httpUrl` =
+  Streamable HTTP). To copy a Gemini `mcpServers` block into `.dsh/mcp.json`:
+  keep `httpUrl` as-is (loaded as streamable-http); convert Gemini `url`
+  (SSE) by either pointing the server at a Streamable HTTP endpoint and
+  renaming the field to `httpUrl` / `type: "http"`, or leaving it as
+  `type: "sse"` and reading the actionable diagnostic.
+- This plugin does **not** treat a bare `url` as MCP SSE. That inference is
+  documented so a file that works in Gemini is not silently given the
+  opposite meaning.

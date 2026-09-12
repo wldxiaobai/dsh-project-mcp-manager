@@ -2,10 +2,12 @@
 /**
  * dsh-mcp —— Claude Code 风格的 MCP 命令行管理入口。
  *
- * 子命令：add / list / get / remove，均支持 `--scope project|user`（默认 project，
- * 与 CC 一致）。写操作只落在本插件的原生受管文件（project: `<root>/.dsh/mcp.yml`，
- * user: `~/.dsh/mcp.yml`）；`.mcp.json` 是遗留只读层，list/get
+ * 子命令：add / list / get / remove / status / import，均支持 `--scope project|user`
+ * （默认 project，与 CC 一致）。写操作只落在本插件的原生受管文件（project:
+ * `<root>/.dsh/mcp.yml`，user: `~/.dsh/mcp.yml`）；`.mcp.json` 是遗留只读层，list/get
  * 会展示它，remove 遇到只读层的名字时给出指引而不是改文件。
+ * status 只读各层文件与 `.mcp-diag.json` 摘要；import 只接受 `{"mcpServers":{...}}`。
+ * 二者都不连接运行中的宿主。
  *
  * 不连接运行中的 dsh 宿主：纯静态读写配置文件，宿主经 watcher 热重载自动收敛。
  * 零新依赖（argv 手写解析）。`runCli(argv, io, deps)` 导出供测试注入。
@@ -14,13 +16,13 @@
  */
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { mkdir, readdir } from "node:fs/promises";
+import { mkdir, readdir, readFile } from "node:fs/promises";
 import { extractManagedRows, readPatchFile, updateManagedRows, type PatchRow } from "./mcp-file.js";
-import { byCodeUnit, mcpServerInputSchema, patchRowToView, rowNameOf, toPatchRow, type McpServerInput } from "./model.js";
-import { CC_PROJECT_FILE, IGNORE_MCP_JSON_ENV, JSON_MCP_FILE, mcpJsonLayerEnabled, readDshJsonFile, readMcpJsonFile, type JsonReadResult, type McpRowSource, type SourcedRow } from "./json-file.js";
-import { MCP_YML_FILE, dshHomeFor, profileMcpJsonFile, userLayerPathsIn } from "./dsh-paths.js";
+import { byCodeUnit, inputFromPatchRow, mcpServerInputSchema, parseCliTransport, patchRowToView, rowNameOf, toPatchRow, type McpServerInput } from "./model.js";
+import { CC_PROJECT_FILE, FOREIGN_MCP_FORMAT_HINT, IGNORE_MCP_JSON_ENV, JSON_MCP_FILE, mcpJsonLayerEnabled, parseJsonServersValue, readDshJsonFile, readMcpJsonFile, type JsonReadResult, type McpRowSource, type SourcedRow } from "./json-file.js";
+import { MCP_YML_FILE, DIAG_FILE, dshHomeFor, profileMcpJsonFile, userLayerPathsIn } from "./dsh-paths.js";
 import { readJsonServers, toJsonEntry, updateJsonServers } from "./json-write.js";
-import { mergeSourcedRows, projectDshJsonFile, projectMcpFile, projectMcpJsonFile, type IdentityShadow } from "./registry.js";
+import { mergeSourcedRows, parseDiagDocument, projectDshJsonFile, projectMcpFile, projectMcpJsonFile, type DiagDocument, type DiagSummary, type IdentityShadow } from "./registry.js";
 import { findProjectRoot } from "./project-root.js";
 
 export interface CliIo {
@@ -33,6 +35,8 @@ export interface CliDeps {
   home?: string;
   /** 项目根解析（默认向上找 .git，测试注入）。 */
   resolveProjectRoot?: (cwd: string) => Promise<string>;
+  /** `import --from -` 的 stdin（测试注入；缺省读 `process.stdin`）。 */
+  readStdin?: () => Promise<string>;
 }
 
 /** 用户层根目录：`deps.home` 注入优先，否则 `$DSH_HOME`，再否则 `~/.dsh`。 */
@@ -53,12 +57,16 @@ interface ParsedArgs {
   headers: Record<string, string>;
   cwd?: string;
   help: boolean;
+  /** import 输入：文件路径或 `-`（stdin）。 */
+  from?: string;
+  dryRun: boolean;
+  overwrite: boolean;
 }
 
 /** 短名 → 长名；其余以 - 开头的 token 一律按位置参数（服务器命令行）处理。 */
 const FLAG_ALIASES: Record<string, string> = { "-s": "--scope", "-t": "--transport", "-e": "--env", "-H": "--header", "-c": "--cwd", "-f": "--format", "-p": "--profile", "-h": "--help" };
 /** 需要取下一个 token 作值的选项名（长名形式）。 */
-const VALUE_OPTIONS = new Set(["--scope", "--transport", "--env", "--header", "--cwd", "--format", "--profile"]);
+const VALUE_OPTIONS = new Set(["--scope", "--transport", "--env", "--header", "--cwd", "--format", "--profile", "--from"]);
 /** CLI 写入格式的默认值开关：`yml`（默认）或 `json`；`--format` 优先。 */
 export const CLI_FORMAT_ENV = "DSH_MCP_CLI_FORMAT";
 
@@ -70,6 +78,8 @@ const HELP = `dsh-mcp —— 项目/用户/profile 级 MCP 服务器管理（原
   dsh-mcp list [--scope project|user]
   dsh-mcp get <name>
   dsh-mcp remove <name> [--scope project|user|profile] [--format yml|json]
+  dsh-mcp status [--scope project|user|profile] [--profile <name>]
+  dsh-mcp import --from <file|-> [--scope project|user|profile] [--format yml|json] [--dry-run] [--overwrite] [--profile <name>]
 
 写入位置：
   project（缺省）  <项目根>/.dsh/mcp.yml（--format json → <项目根>/.dsh/mcp.json）
@@ -85,8 +95,12 @@ const HELP = `dsh-mcp —— 项目/用户/profile 级 MCP 服务器管理（原
 其他：
   -c 缺省：project 为 "."（相对项目根）；user/profile 为空（继承宿主 cwd）。
   值里的 \${VAR} 原样写入，装载时由插件从宿主环境展开（支持串内插值，凭据不落盘）。
-  sse 传输不受支持（后端只支持 stdio 与 streamable-http）。
-  list/get 展示全部来源层（含遗留只读层），不显示任何密钥值。`
+  sse 为 MCP SSE 端点传输，不受支持（后端只支持 stdio 与 streamable-http；把 type 改为 http，或删除 type 只留 url）。
+  list/get 展示全部来源层（含遗留只读层），不显示任何密钥值。
+  status 读取各层文件与诊断摘要（不连接运行中的宿主）。
+  status --scope project|user|profile 同时过滤层列表与诊断文件（project 打项目诊断，user/profile 打全局诊断）。
+  --scope profile 只列 profile 层；再配 --profile <name> 则只打该名。--scope user 仍列全部用户层（含所有 profile 文件）。
+  import 只接受 {"mcpServers":{...}}（不接受 VS Code servers / 单条对象 / 数组）；同名默认跳过，--overwrite 才覆盖；--dry-run 预演影子冲突且不写盘。`
 
 function fail(io: CliIo, message: string): number {
   io.err(`错误：${message}`);
@@ -134,17 +148,16 @@ function applyOption(parsed: ParsedArgs, name: string, value: string): string | 
       if (value === "") return "--profile 需要 profile 名";
       parsed.profile = value;
       return undefined;
-    case "--transport":
-      if (value === "stdio" || value === "http") {
-        parsed.transport = value;
-        return undefined;
-      }
-      if (value === "sse") return "不支持 sse 传输：装载后端（dsh-mcp-client）只有 stdio 与 streamable-http";
-      if (value === "streamable-http") {
-        parsed.transport = "http";
-        return undefined;
-      }
-      return `--transport 只支持 stdio|http（别名 streamable-http），收到：${value}`;
+    case "--from":
+      if (value === "") return "--from 需要文件路径或 -（stdin）";
+      parsed.from = value;
+      return undefined;
+    case "--transport": {
+      const parsedTransport = parseCliTransport(value);
+      if ("error" in parsedTransport) return parsedTransport.error;
+      parsed.transport = parsedTransport.transport;
+      return undefined;
+    }
     case "--env":
       return applyKvOption(parsed.env, value, "=", "env", false);
     case "--header":
@@ -155,12 +168,28 @@ function applyOption(parsed: ParsedArgs, name: string, value: string): string | 
   }
 }
 
+function applyBareFlag(parsed: ParsedArgs, name: string): boolean {
+  if (name === "--help") {
+    parsed.help = true;
+    return true;
+  }
+  if (name === "--dry-run") {
+    parsed.dryRun = true;
+    return true;
+  }
+  if (name === "--overwrite") {
+    parsed.overwrite = true;
+    return true;
+  }
+  return false;
+}
+
 /**
  * 手搓 argv 解析（零依赖）：`--` 之后全按位置参数；未知「选项」视为服务器命令行
  * token 透传（刻意策略：宁可透传也不误伤 spawn 参数）。
  */
 export function parseArgs(argv: string[]): ParsedArgs | { error: string } {
-  const parsed: ParsedArgs = { positional: [], transport: "stdio", env: {}, headers: {}, help: false };
+  const parsed: ParsedArgs = { positional: [], transport: "stdio", env: {}, headers: {}, help: false, dryRun: false, overwrite: false };
   let cursor = 0;
   let noMoreFlags = false;
   while (cursor < argv.length) {
@@ -174,16 +203,14 @@ export function parseArgs(argv: string[]): ParsedArgs | { error: string } {
       noMoreFlags = true;
       continue;
     }
-    if (name === "--help") {
-      parsed.help = true;
-      continue;
-    }
+    if (applyBareFlag(parsed, name)) continue;
     if (!VALUE_OPTIONS.has(name)) {
       parsed.positional.push(token);
       continue;
     }
     const value = argv[cursor++];
-    const error = value === undefined ? `缺少 ${token} 的值` : applyOption(parsed, name, value);
+    if (value === undefined) return { error: `缺少 ${token} 的值` };
+    const error = applyOption(parsed, name, value);
     if (error !== undefined) return { error };
   }
   return parsed;
@@ -244,10 +271,13 @@ async function readNativeLayer(path: string, source: McpRowSource): Promise<Laye
 }
 
 /** JSON 层（DSH 方言与遗留只读层同用）的错误注记：文件级优先，坏条目次之，两者皆无则 undefined。 */
-function layerNote(result: { fileError?: string; entryErrors: string[] }): string | undefined {
+function layerNote(result: { fileError?: string; entryErrors: string[]; formatHint?: string }): string | undefined {
   if (result.fileError !== undefined) return `读取失败：${result.fileError}`;
-  if (result.entryErrors.length > 0) return `坏条目：${result.entryErrors.join("；")}`;
-  return undefined;
+  const parts = [
+    ...(result.entryErrors.length > 0 ? [`坏条目：${result.entryErrors.join("；")}`] : []),
+    ...(result.formatHint === undefined ? [] : [result.formatHint])
+  ];
+  return parts.length === 0 ? undefined : parts.join("；");
 }
 
 /** 读一个 DSH 自有 JSON 层（缺文件=空层）。 */
@@ -301,14 +331,23 @@ async function collectLayers(deps: CliDeps): Promise<LayerRows[]> {
   return layers;
 }
 
+function toolFilterHint(view: ReturnType<typeof patchRowToView>): string {
+  if (view?.tools === undefined) return "";
+  const parts: string[] = [];
+  if (view.tools.allow !== undefined) parts.push(`allow=${view.tools.allow.join(",")}`);
+  if (view.tools.deny !== undefined) parts.push(`deny=${view.tools.deny.join(",")}`);
+  return parts.length === 0 ? "" : `; tools ${parts.join(" ")}`;
+}
+
 function describeTarget(row: PatchRow): string {
   const view = patchRowToView(row);
   if (view === undefined) return "(无效行)";
   const config = row.config ?? {};
-  if (typeof config.url === "string") return `${config.url} (streamable-http)`;
+  const tools = toolFilterHint(view);
+  if (typeof config.url === "string") return `${config.url} (streamable-http)${tools}`;
   const args = Array.isArray(config.args) ? config.args.map(String).join(" ") : "";
   const command = typeof config.command === "string" ? config.command : "?";
-  return (args === "" ? command : `${command} ${args}`) + " (stdio)";
+  return (args === "" ? command : `${command} ${args}`) + " (stdio)" + tools;
 }
 
 function isProjectSource(source: McpRowSource): boolean {
@@ -569,6 +608,8 @@ function printServerDetails(hit: { name: string; row: PatchRow; layer: LayerRows
   if (env !== undefined) io.out(env);
   const headers = kvLine("Headers:  ", view?.headerKeys);
   if (headers !== undefined) io.out(headers);
+  if (view?.tools?.allow !== undefined) io.out(`Allow:    ${view.tools.allow.join(", ")}`);
+  if (view?.tools?.deny !== undefined) io.out(`Deny:     ${view.tools.deny.join(", ")}`);
   if (hit.row.disabled === true) io.out("注意：     该行被标记 disabled，不会装载。");
 }
 
@@ -675,13 +716,359 @@ async function findReadOnlyLayerHit(name: string, deps: CliDeps): Promise<LayerR
   return layers.find((layer) => layer.source === "cc-project" && layer.rows.some((r) => r.name === name));
 }
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function sourceOfWriteTarget(target: WriteTarget): McpRowSource {
+  if (target.scope === "profile") return "dsh-profile-user";
+  if (target.scope === "user") return target.format === "json" ? "dsh-user" : "dsh-user-yml";
+  return target.format === "json" ? "dsh-project-json" : "dsh-project";
+}
+
+function jsonEntryFromRow(row: PatchRow): Record<string, unknown> {
+  const entry = toJsonEntry(inputFromPatchRow(row));
+  if (row.disabled === true) entry.disabled = true;
+  return entry;
+}
+
+function parseImportDocument(raw: unknown): { mcpServers: unknown } | { error: string } {
+  if (Array.isArray(raw)) return { error: "import 只接受 {\"mcpServers\": {...}}，不接受数组" };
+  if (!isPlainRecord(raw)) return { error: "import 顶层必须是 JSON 对象" };
+  if (!("mcpServers" in raw)) {
+    const servers = raw.servers;
+    if (isPlainRecord(servers) && !Array.isArray(servers)) {
+      return { error: "import 不接受 VS Code 的 servers 方言；请改成 {\"mcpServers\": {...}}" };
+    }
+    if (Array.isArray(servers) || ("version" in raw && servers !== undefined)) return { error: FOREIGN_MCP_FORMAT_HINT };
+    return { error: "import 需要顶层 mcpServers 对象（不接受单条条目或数组）" };
+  }
+  return { mcpServers: raw.mcpServers };
+}
+
+async function readStdinAll(deps: CliDeps): Promise<string> {
+  if (deps.readStdin !== undefined) return deps.readStdin();
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+async function readImportText(from: string, deps: CliDeps): Promise<string | { error: string }> {
+  if (from === "-") {
+    try {
+      const text = await readStdinAll(deps);
+      if (text.trim() === "") return { error: "stdin 为空" };
+      return text;
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+  const path = resolve(from);
+  try {
+    return await readFile(path, "utf8");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    return { error: typeof code === "string" && code !== "" ? `无法读取 ${path}（${code}）` : `无法读取 ${path}` };
+  }
+}
+
+function formatNameList(names: string[]): string {
+  const sorted = [...names];
+  sorted.sort(byCodeUnit);
+  return sorted.join("、");
+}
+
+function mergeLayerRows(existing: { name: string; row: PatchRow }[], incoming: { name: string; row: PatchRow }[], overwrite: boolean): { name: string; row: PatchRow }[] {
+  const byName = new Map(existing.map((item) => [item.name, item]));
+  for (const item of incoming) {
+    if (overwrite || !byName.has(item.name)) byName.set(item.name, item);
+  }
+  return [...byName.values()];
+}
+
+interface ImportPlan {
+  written: { name: string; row: PatchRow }[];
+  added: string[];
+  skipped: string[];
+  overwritten: string[];
+}
+
+/** 按锁内（或 dry-run 快照）已有名字决定 skip / overwrite / add。 */
+function planImport(incoming: { name: string; row: PatchRow }[], existing: Set<string>, overwrite: boolean): ImportPlan {
+  const written: { name: string; row: PatchRow }[] = [];
+  const added: string[] = [];
+  const skipped: string[] = [];
+  const overwritten: string[] = [];
+  for (const item of incoming) {
+    if (existing.has(item.name)) {
+      if (overwrite) {
+        overwritten.push(item.name);
+        written.push(item);
+      } else skipped.push(item.name);
+    } else {
+      added.push(item.name);
+      written.push(item);
+    }
+  }
+  return { written, added, skipped, overwritten };
+}
+
+function printImportReport(target: WriteTarget, plan: ImportPlan, dryRun: boolean, io: CliIo): void {
+  io.out(`${dryRun ? "预演导入" : "导入"} → ${target.path}${dryRun ? "（不写入）" : ""}`);
+  if (plan.added.length > 0) io.out(`  ${dryRun ? "将添加" : "已添加"}：${formatNameList(plan.added)}`);
+  if (plan.overwritten.length > 0) io.out(`  ${dryRun ? "将覆盖" : "已覆盖"}：${formatNameList(plan.overwritten)}`);
+  if (plan.skipped.length > 0) io.out(`  跳过（已存在，加 --overwrite 覆盖）：${formatNameList(plan.skipped)}`);
+  if (plan.added.length === 0 && plan.skipped.length === 0 && plan.overwritten.length === 0) io.out("  没有可写入的行");
+}
+
+async function writeImportedRows(target: WriteTarget, incoming: { name: string; row: PatchRow }[], overwrite: boolean): Promise<ImportPlan> {
+  let plan: ImportPlan = { written: [], added: [], skipped: [], overwritten: [] };
+  if (incoming.length === 0) return plan;
+  if (target.format === "json") {
+    await mkdir(dirname(target.path), { recursive: true });
+    await updateJsonServers(target.path, (servers) => {
+      plan = planImport(incoming, new Set(Object.keys(servers)), overwrite);
+      for (const item of plan.written) servers[item.name] = jsonEntryFromRow(item.row);
+    });
+    return plan;
+  }
+  await updateManagedRows(target.path, (rows) => {
+    const existing = new Set(rows.map((row) => rowNameOf(row)).filter((name): name is string => name !== undefined));
+    plan = planImport(incoming, existing, overwrite);
+    const next = [...rows];
+    for (const item of plan.written) {
+      const index = next.findIndex((row) => rowNameOf(row) === item.name);
+      if (index >= 0) next[index] = item.row;
+      else next.push(item.row);
+    }
+    return next;
+  }, { createIfMissing: true });
+  return plan;
+}
+
+/** 把导入行套进目标层（文件尚不在 collectLayers 结果里时按优先序插入）。 */
+function layersWithImportedTarget(
+  layers: LayerRows[],
+  target: WriteTarget,
+  incoming: { name: string; row: PatchRow }[],
+  overwrite: boolean
+): LayerRows[] {
+  const next = layers.map((layer) => ({ ...layer, rows: [...layer.rows] }));
+  const idx = next.findIndex((layer) => isSameLayerFile(layer.path, target.path));
+  if (idx >= 0) {
+    next[idx] = { ...next[idx], rows: mergeLayerRows(next[idx].rows, incoming, overwrite) };
+    return next;
+  }
+  const layer = makeLayer(sourceOfWriteTarget(target), target.path, incoming);
+  const userYml = next.findIndex((item) => item.source === "dsh-user-yml");
+  next.splice(userYml === -1 ? next.length : userYml, 0, layer);
+  return next;
+}
+
+function importShadowMessage(name: string, layer: LayerRows, layers: LayerRows[], view: ShadowView): string {
+  const loss = view.identityLosses.get(name);
+  if (loss !== undefined) return `注意：${name} 不会装载——${identityShadowNote(loss)}；确属不同服务器请改名或调整命令与参数。`;
+  if (view.shadowedUser.has(name)) return `注意：${name} 不会装载——已被项目自身配置遮蔽。`;
+  const winner = layers.find((other) => !isSameLayerFile(other.path, layer.path) && other.rows.some((item) => item.name === name));
+  const where = winner === undefined ? "更高优先层" : sourceLabel(winner);
+  return `注意：${name} 不会装载——已被 ${where} 的同名定义遮蔽。`;
+}
+
+function printImportShadowPreview(incoming: { name: string; row: PatchRow }[], layers: LayerRows[], io: CliIo): void {
+  const view = shadowViewOf(layers);
+  const names = new Set(incoming.map((item) => item.name));
+  for (const layer of layers) {
+    for (const { name, row } of layer.rows) {
+      if (!names.has(name) || row.disabled === true) continue;
+      if (view.effective.has(row)) continue;
+      io.out(importShadowMessage(name, layer, layers, view));
+    }
+  }
+}
+
+function parseImportJsonText(text: string): { value: unknown } | { error: string } {
+  try {
+    return { value: JSON.parse(text) };
+  } catch {
+    return { error: "JSON 解析失败" };
+  }
+}
+
+async function importDryRun(
+  parsed: ParsedArgs,
+  target: WriteTarget,
+  incoming: { name: string; row: PatchRow }[],
+  entryErrors: string[],
+  io: CliIo,
+  deps: CliDeps
+): Promise<number> {
+  const existing = await existingNames(target);
+  if (!Array.isArray(existing)) return fail(io, existing.error);
+  const plan = planImport(incoming, new Set(existing), parsed.overwrite);
+  printImportReport(target, plan, true, io);
+  const previewLayers = layersWithImportedTarget(await collectLayers(deps), target, plan.written, parsed.overwrite);
+  printImportShadowPreview(plan.written, previewLayers, io);
+  return entryErrors.length > 0 ? 1 : 0;
+}
+
+async function importWrite(
+  parsed: ParsedArgs,
+  target: WriteTarget,
+  incoming: { name: string; row: PatchRow }[],
+  entryErrors: string[],
+  io: CliIo,
+  deps: CliDeps
+): Promise<number> {
+  let plan: ImportPlan;
+  try {
+    plan = await writeImportedRows(target, incoming, parsed.overwrite);
+  } catch (error) {
+    return fail(io, error instanceof Error ? error.message : String(error));
+  }
+  printImportReport(target, plan, false, io);
+  printImportShadowPreview(plan.written, await collectLayers(deps), io);
+  if (plan.written.length > 0) io.out("运行中的 dsh 会话会经文件监听自动收敛（宿主未运行时下次启动生效）。");
+  return entryErrors.length > 0 ? 1 : 0;
+}
+
+async function cmdImport(parsed: ParsedArgs, rest: string[], io: CliIo, deps: CliDeps): Promise<number> {
+  if (rest.length > 0) return fail(io, "import 不接受位置参数（用法：dsh-mcp import --from <file|-> …）");
+  if (parsed.from === undefined) return fail(io, "用法：dsh-mcp import --from <file|-> [--scope project|user|profile] [--format yml|json] [--dry-run] [--overwrite]");
+  const target = await resolveWriteTarget(parsed, deps);
+  if ("error" in target) return fail(io, target.error);
+  const text = await readImportText(parsed.from, deps);
+  if (typeof text !== "string") return fail(io, text.error);
+  const parsedJson = parseImportJsonText(text);
+  if ("error" in parsedJson) return fail(io, parsedJson.error);
+  const document = parseImportDocument(parsedJson.value);
+  if ("error" in document) return fail(io, document.error);
+  const source = sourceOfWriteTarget(target);
+  const { rows, entryErrors } = parseJsonServersValue(document.mcpServers, {
+    source,
+    cwdPolicy: "project",
+    projectRoot: target.scope === "project" ? "." : ""
+  });
+  for (const note of entryErrors) io.err(`错误：${note}`);
+  if (rows.length === 0 && entryErrors.length === 0) return fail(io, "没有可导入的服务器");
+  if (rows.length === 0) return 1;
+  const incoming = rows.map((item) => ({ name: item.rawName, row: item.row }));
+  if (parsed.dryRun) return importDryRun(parsed, target, incoming, entryErrors, io, deps);
+  return importWrite(parsed, target, incoming, entryErrors, io, deps);
+}
+
+function formatSkippedByReason(skipped: Record<string, number>): string {
+  const parts = Object.entries(skipped).map(([reason, count]) => `${reason}:${count}`);
+  parts.sort(byCodeUnit);
+  return parts.join("，");
+}
+
+async function readJsonFile(path: string): Promise<{ missing: true } | { parseError: true } | { value: unknown }> {
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch {
+    return { missing: true };
+  }
+  try {
+    return { value: JSON.parse(raw) };
+  } catch {
+    return { parseError: true };
+  }
+}
+
+function printDiagSummary(summary: DiagSummary, io: CliIo): void {
+  const skipped = formatSkippedByReason(summary.skippedByReason);
+  const projects = summary.projects === undefined ? "" : `，项目 ${summary.projects}`;
+  const skipPart = skipped === "" ? "" : `，跳过 ${skipped}`;
+  io.out(`  行 ${summary.rows}，已装载 ${summary.mounted}${projects}${skipPart}`);
+  for (const item of summary.unhealthy) io.out(`  不健康：${item.name} (${item.reason})`);
+  for (const name of summary.idle ?? []) io.out(`  未装载（无会话）：${name}`);
+  if (summary.toolBudget === undefined) return;
+  for (const item of summary.toolBudget) {
+    io.out(`  工具预算：${item.name} ${item.tools} 个工具 / ${item.bytes} 字节`);
+  }
+}
+
+function printDiagForeignEvents(events: DiagDocument["events"], io: CliIo): void {
+  for (const event of events) {
+    if (event.kind === "foreign-format" && typeof event.message === "string") {
+      io.out(`  ${event.message}`);
+      return;
+    }
+    if (typeof event.foreignFormat === "string") {
+      io.out(`  ${event.foreignFormat}`);
+      return;
+    }
+  }
+}
+
+async function printDiagStatus(path: string, io: CliIo): Promise<boolean> {
+  const loaded = await readJsonFile(path);
+  if ("missing" in loaded) return false;
+  if ("parseError" in loaded) {
+    io.out(`诊断 ${path}：无法解析`);
+    return true;
+  }
+  const doc: DiagDocument = parseDiagDocument(loaded.value);
+  io.out(`诊断 ${path}`);
+  if (doc.summary !== undefined) printDiagSummary(doc.summary, io);
+  printDiagForeignEvents(doc.events, io);
+  return true;
+}
+
+function formatLayerStatusLine(layer: LayerRows): string {
+  const names = layer.rows.map((row) => row.name);
+  const namesPart = names.length === 0 ? "" : `  [${names.join(", ")}]`;
+  const notePart = layer.note === undefined ? "" : `  ${layer.note}`;
+  return `${sourceLabel(layer)}  ${layer.rows.length} 行${namesPart}${notePart}`;
+}
+
+function layersForStatusScope(layers: LayerRows[], scope: string | undefined, profile: string | undefined): LayerRows[] {
+  if (scope === undefined) return layers;
+  if (scope === "project") return layers.filter((layer) => isProjectSource(layer.source));
+  if (scope === "profile") {
+    const profileLayers = layers.filter((layer) => layer.source === "dsh-profile-user");
+    if (profile === undefined || profile === "") return profileLayers;
+    const needle = `/profiles/${profile}/`.replaceAll("\\", "/");
+    return profileLayers.filter((layer) => {
+      const path = layer.path.replaceAll("\\", "/");
+      return path.includes(needle) || layer.label === `profile (${profile})`;
+    });
+  }
+  return layers.filter((layer) => !isProjectSource(layer.source));
+}
+
+async function cmdStatus(parsed: ParsedArgs, io: CliIo, deps: CliDeps): Promise<number> {
+  const allLayers = await collectLayers(deps);
+  const layers = layersForStatusScope(allLayers, parsed.scope, parsed.profile);
+  let listed = 0;
+  for (const layer of layers) {
+    io.out(formatLayerStatusLine(layer));
+    listed += layer.rows.length;
+    if (layer.note !== undefined) listed += 1;
+  }
+  const projectRoot = await resolveProjectRootFor(deps);
+  const printedProject = parsed.scope === "user" || parsed.scope === "profile"
+    ? false
+    : await printDiagStatus(join(projectRoot, ".dsh", DIAG_FILE), io);
+  const printedGlobal = parsed.scope === "project"
+    ? false
+    : await printDiagStatus(join(dshHomeOf(deps), DIAG_FILE), io);
+  if (listed === 0 && !printedProject && !printedGlobal) {
+    io.out("未配置 MCP 服务器；尚无运行时诊断（宿主未运行或零配置）。");
+  }
+  return 0;
+}
+
 export async function runCli(argv: string[], io: CliIo, deps: CliDeps = {}): Promise<number> {
   const parsed = parseArgs(argv);
   if ("error" in parsed) return fail(io, parsed.error);
   const [command, ...rest] = parsed.positional;
   if (parsed.help || command === undefined || command === "help") {
     io.out(HELP);
-    return command === undefined && !parsed.help ? fail(io, "缺少子命令（add|list|get|remove）") : 0;
+    return command === undefined && !parsed.help ? fail(io, "缺少子命令（add|list|get|remove|status|import）") : 0;
   }
   switch (command) {
     case "add":
@@ -692,8 +1079,12 @@ export async function runCli(argv: string[], io: CliIo, deps: CliDeps = {}): Pro
       return cmdGet(rest, io, deps);
     case "remove":
       return cmdRemove(parsed, rest, io, deps);
+    case "status":
+      return cmdStatus(parsed, io, deps);
+    case "import":
+      return cmdImport(parsed, rest, io, deps);
     default:
-      return fail(io, `未知子命令：${command}（支持 add|list|get|remove，dsh-mcp --help 查看用法）`);
+      return fail(io, `未知子命令：${command}（支持 add|list|get|remove|status|import，dsh-mcp --help 查看用法）`);
   }
 }
 

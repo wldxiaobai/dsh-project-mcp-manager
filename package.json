@@ -1,6 +1,6 @@
 {
   "name": "dsh-project-mcp-manager",
-  "version": "0.4.3",
+  "version": "0.6.0",
   "packageManager": "pnpm@12.3.4",
   "description": "dsh-project-mcp-manager: per-project and global MCP server loading for DSH. Reads <projectRoot>/.dsh/mcp.yml or .dsh/mcp.json (plus the read-only Claude Code project file .mcp.json), mounts project rows per project and user-layer rows (~/.dsh/mcp.yml, ~/.dsh/mcp.json, ~/.dsh/profiles/<name>/mcp.json) globally as @deepseek-ai/dsh-mcp-client instances with ${VAR} env expansion at mount time, hot-reloads on file change, scopes tool visibility per session, and ships a dsh-mcp CLI that writes either native yml or DSH JSON.",
   "type": "module",
@@ -19,6 +19,14 @@
   },
   "license": "MIT",
   "author": "wldxiaobai <944418001@qq.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wldxiaobai/dsh-project-mcp-manager.git"
+  },
+  "bugs": {
+    "url": "https://github.com/wldxiaobai/dsh-project-mcp-manager/issues"
+  },
+  "homepage": "https://github.com/wldxiaobai/dsh-project-mcp-manager#readme",
   "keywords": [
     "dsh",
     "deepseek-harness",

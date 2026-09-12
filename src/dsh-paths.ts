@@ -11,7 +11,7 @@
  */
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { JSON_MCP_FILE } from "./json-file.js";
+import { JSON_MCP_FILE, FOREIGN_MCP_JSON_FILE } from "./json-file.js";
 
 /** dsh 家目录重定位环境变量。 */
 export const DSH_HOME_ENV = "DSH_HOME";
@@ -62,6 +62,11 @@ export function userLayerPathsIn(dshHome: string): UserLayerPaths {
 /** profile 层配置文件路径（`<dshHome>/profiles/<name>/mcp.json`）。 */
 export function profileMcpJsonFile(profilesDir: string, profile: string): string {
   return join(profilesDir, profile, JSON_MCP_FILE);
+}
+
+/** 对方插件全局存储路径（`$DSH_HOME/dsh-mcp.json`）；本插件不读取内容，只在存在时诊断。 */
+export function foreignUserMcpJsonFile(dshHome: string): string {
+  return join(dshHome, FOREIGN_MCP_JSON_FILE);
 }
 
 /**

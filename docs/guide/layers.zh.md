@@ -30,6 +30,15 @@
   仍然只有一条。
 - 与 profile patch 行里的全局 mcp-client 服务器同名时，用户层行**跳过**并在快照里记
   `skipReason: "name-taken"`（不改名，避免 `serverName` 预留冲突）。
+- **按需挂载**（v0.6.0）：扫描与生效名仍按全量已知项目计算；项目层只给有活跃会话
+  或进程 cwd 的项目发起装载。最后一次会话离开且该项目不是 cwd 后，宽限 5 分钟再
+  卸载服务器，条目与文件监听保留，行记 `skipReason: "idle"` 并进入
+  `summary.idle`（已有更具体的 `env-missing` 等不覆盖）。idle **不算**
+  `unhealthy`。用户层仍常驻。
+
+某生效名注册的工具数或描述/schema 字节超过 `DSH_MCP_TOOL_BUDGET_WARN`（缺省 200 /
+256KiB）时每次越过阈值告警一次，并写入诊断摘要 `summary.toolBudget`；回落到
+阈值以下会清门控，同样的超量会再告警。**永不裁剪**。
 
 **影子优先序**——按上表 1→6 先到先得合并，后到行与已收录行命中**三把键中的任何
 一把**即被遮蔽：精确 `serverName`；*归一化名称*（转小写去掉非字母数字后相同
@@ -59,10 +68,16 @@
 - **没有 local 作用域**。CC 的 `claude mcp add` 默认写进 `~/.claude.json` 的
   `projects.<cwd>.mcpServers`（local 层），本插件不读取该层；请用
   `dsh-mcp add --scope user` 或项目文件。
-- `type: "sse"` 条目按条目报错跳过——装载后端（`dsh-mcp-client`）只支持
-  `stdio` 与 `streamable-http`。CC 的 `type: "http"` 与显式
+- `type: "sse"` 条目是 **MCP SSE 端点传输**，按条目报错跳过并给出可执行诊断——
+  装载后端（`dsh-mcp-client`）只支持 `stdio` 与 `streamable-http`。服务端已
+  支持 Streamable HTTP 时把 `type` 改为 `"http"`；或删除 `type` 只留 `url`
+  （本插件按 streamable-http 推断）。没有隐式回退。CC 的 `type: "http"` 与显式
   `type: "streamable-http"` 都映射为 `streamable-http`；缺省 `type` 时，
-  只带 `url` 不带 `command` 的条目按 http 处理，其余视为 stdio。
+  只带 `url`/`httpUrl` 不带 `command` 的条目按 http 处理，其余视为 stdio。
+  `httpUrl` 是 Gemini 的 Streamable HTTP 字段，按显式 streamable-http 接受。
+  原生 `transport` 键同样接受（与 `type` 一致时 `transport` 优先；冲突报错）。
+  **裸 `url` 在本插件按 Streamable HTTP 解释**，与 Gemini CLI（`url` = MCP SSE）
+  相反；见 [配置格式](format.zh.md#httpurltransport-与-url-推断)。
 - 坏文件/坏条目不影响其他服务器，且**按源隔离**：`.mcp.json` 坏了不会卸掉
   同项目的 yml 行（反之亦然）；条目错误写入 `.dsh/.mcp-diag.json` 与宿主
   日志（诊断从不带文件内容）。
@@ -75,3 +90,17 @@
   条目里显式写的 `cwd` 现在**生效**（旧实现一律强制为项目根，仅缺省或空串时
   才落到项目根）；DSH 透传键 `toolCallTimeoutMs`/`failOnStartupError`/`reconnect`
   在遗留文件里也**生效**（旧实现忽略）。两者都只在条目显式给出时改变行为。
+
+## 与 `@wingsky-1/dsh-mcp-manager` 共存
+
+两个插件都会读 `<projectRoot>/.dsh/mcp.json`，但方言不同。本插件认
+`mcpServers`；对方存 `{ version, servers: [] }`。对方格式在本插件是合法空层
+（缺 `mcpServers`），所以装载器现在会写 `foreignFormat` 诊断而不是静默无行。
+全局 `~/.dsh/dsh-mcp.json` 同样检查，用户层 watcher 也监听该路径，创建时立刻
+诊断。若该文件已经是本插件的 `mcpServers` 方言，诊断会建议把对象搬到
+`mcp.json`——仍不会从对方文件名装载。
+
+若两个插件同时在一个宿主里跑，同名服务器可能被启动两次。建议同一项目只启用
+一个，或让本插件走 `.dsh/mcp.yml`、对方走 `.dsh/mcp.json`。`globalNames()`
+只看见官方 loader patch 行，看不见对方运行时注册的工具，因此改名避让不会覆盖
+对方实例。详见 [与同类插件共存](../README.zh.md#与同类插件共存)。

@@ -8,6 +8,9 @@
  * 装载模型：
  *   - 每个 (项目, serverName) 在宿主 ctx 上装载一个 @deepseek-ai/dsh-mcp-client
  *     实例（ctx.plugin），注册进全局工具层——同一项目内多会话共享同一连接；
+ *     扫描与生效名按全量已知项目计算，但项目层只给「有活跃会话 ∪ 进程 cwd」
+ *     的项目发起装载；会话离开且非 cwd 后宽限 5 分钟再卸载，条目与 watcher 保留；
+ *     用户层仍宿主级常驻一条；
  *   - 生效名：原始 serverName 在整个目录（全局行 + 全部项目行）中唯一时保持
  *     原名；否则按 model.effectiveServerNames 规则改名（确定性、与装载顺序
  *     无关），避免 dsh-mcp-client 按进程根的 serverName 预留冲突；
@@ -27,22 +30,24 @@
  *   4. ~/.dsh/profiles/<p>/mcp.json —— profile 用户层（dsh-profile-user）
  *   5. ~/.dsh/mcp.yml             —— 用户层原生（dsh-user-yml）
  *   6. ~/.dsh/mcp.json            —— 通用用户层（dsh-user）
- * 用户层行进入每个项目的合并集，即每个项目各挂一条用户服务器连接（与项目行
- * 同模型）；被同名项目行遮蔽的项目不再见到用户层副本。${VAR} 占位在 mount
- * 时经 model.expandEnvRefs 用宿主进程环境运行时展开，缺失即跳过该条目。
+ * 用户层行由全局 MountContainer 宿主级只挂一条（与项目数无关、不参与按项目
+ * deny）；被同名项目行遮蔽时只对该项目会话 deny 全局工具，不卸载全局实例。
+ * ${VAR} 占位在 mount 时经 model.expandEnvRefs 用宿主进程环境运行时展开，
+ * 缺失即跳过该条目。
  */
 import chokidar from "chokidar";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import * as mcpClient from "@deepseek-ai/dsh-mcp-client";
-import { extractManagedRows, readPatchFile, type PatchRow } from "./mcp-file.js";
+import { extractManagedRows, readPatchFile, withPatchLock, type PatchRow } from "./mcp-file.js";
 import {
   DIAG_FILE,
   DSH_DIR,
   MCP_YML_FILE,
   PROFILE_ENV,
   dshHomeDir,
+  foreignUserMcpJsonFile,
   isValidProfileName,
   profileMcpJsonFile,
   userLayerPathsIn,
@@ -61,19 +66,23 @@ import {
 import { findProjectRoot } from "./project-root.js";
 import {
   byCodeUnit,
+  deniedToolsForFilter,
   denySetFor,
   effectiveServerNames,
   expandEnvRefs,
   inputFromPatchRow,
+  invalidToolGlobs,
   mcpServerInputSchema,
   configFromPatchRow,
   patchRowToView,
   projectKeyOf,
   rowNameOf,
   toOfficialConfig,
-  type McpScopeInfo
+  toolFilterFromConfig,
+  type McpScopeInfo,
+  type McpServerView
 } from "./model.js";
-import { mcpToolCount } from "./status.js";
+import { mcpToolBudgetStats, mcpToolCount, parseToolBudgetWarn, schemaToolId } from "./status.js";
 
 const delay = (ms: number) => new Promise<void>((resolvePromise) => setTimeout(resolvePromise, ms));
 
@@ -151,13 +160,23 @@ export interface ProjectServerState {
   error?: string;
 }
 
+export type FiberPhaseView = "loading" | "active" | "failed" | "unloading" | "pending" | null;
+
+/** snapshot / serverView 的行级脱敏 view（不承诺稳定）。 */
+export interface McpServerRuntimeView extends McpServerView {
+  source?: McpRowSource;
+  fiberPhase: FiberPhaseView;
+  skipReason: string | null;
+  toolCount: number;
+}
+
 /** 一个项目的文件级状态（snapshot() 用）。 */
 export interface ProjectFileState {
   project: string;
   path: string;
   ok: boolean;
   error: string | null;
-  servers: any[];
+  servers: McpServerRuntimeView[];
   /** 分区作用域：workspace=项目层文件，global=用户层文件。缺省 workspace。 */
   kind?: "workspace" | "global";
   /** 该分区的配置来源方言。 */
@@ -172,6 +191,18 @@ export interface ProjectMcpRegistryOptions {
   /** 用户层路径注入点（测试用）；缺省 `<dshHome>/mcp.yml`、`<dshHome>/mcp.json`、`<dshHome>/profiles`
    *  （dshHome = `$DSH_HOME` 或 `<home>/.dsh`，见 dsh-paths.dshHomeDir）。 */
   userLayerPaths?: Partial<UserLayerPaths>;
+  /** 时钟（测试注入）；缺省 `Date.now`。 */
+  now?: () => number;
+  /** 健康重挂退避毫秒；缺省 `HEALTH_REMOUNT_BACKOFF_MS`。 */
+  healthRemountBackoffMs?: number;
+  /** 健康重挂次数上限；缺省 `HEALTH_REMOUNT_LIMIT`。 */
+  healthRemountLimit?: number;
+  /** 配置文件指纹（测试注入）；缺省 `fs.stat`。返回 `null` 视为缺失。 */
+  statFile?: (path: string) => Promise<{ mtimeMs: number; size: number } | null>;
+  /** 工具预算告警阈值（测试注入）；缺省读 `DSH_MCP_TOOL_BUDGET_WARN`。 */
+  toolBudget?: { maxTools: number; maxBytes: number };
+  /** 无会话后卸载宽限（毫秒）；缺省 `UNMOUNT_GRACE_MS`（5 分钟）。测试注入。 */
+  unmountGraceMs?: number;
 }
 
 interface ProjectEntry {
@@ -204,14 +235,40 @@ export interface DesiredProjectRow {
   source?: McpRowSource;
 }
 
+/** 装载行的健康巡检记录（按 containerKey+rawName 存活，跨 fiber 世代）。 */
+interface MountHealth {
+  everHadTools: boolean;
+  remountCount: number;
+  nextRemountAt: number;
+  givenUp: boolean;
+}
+
+/** 单次 scanProject 缓存的分文件目录，供 snapshot / serverView 内存拼装。 */
+interface ProjectScanFiles {
+  projectRoot: string;
+  skipYmlPartition: boolean;
+  ymlPath: string;
+  ymlRows: PatchRow[];
+  ymlError: string | null;
+  ymlOk: boolean;
+  ymlMissing: boolean;
+  skipJsonPartition: boolean;
+  jsonPath: string;
+  json: JsonReadResult;
+  ccEnabled: boolean;
+  ccPath: string;
+  cc: JsonReadResult;
+}
+
 export interface ProjectChangePlan {
   toUnmount: string[];
   toMount: DesiredProjectRow[];
 }
 
-/** 行配置的规范化序列化（键排序），用于判断行是否实质变化。 */
+/** 行配置的规范化序列化（键排序），用于判断行是否实质变化。`tools` 只影响 restrict，不拆连接。 */
 function canonicalConfig(config: Record<string, unknown> | undefined): string {
-  return JSON.stringify(config ?? null, (key, value) => {
+  const body = config === undefined ? null : Object.fromEntries(Object.entries(config).filter(([key]) => key !== "tools"));
+  return JSON.stringify(body, (key, value) => {
     if (value !== null && typeof value === "object" && !Array.isArray(value)) {
       const keys = Object.keys(value);
       keys.sort(byCodeUnit);
@@ -226,6 +283,13 @@ function canonicalConfig(config: Record<string, unknown> | undefined): string {
 
 /** 行的原始 serverName（受管行 id 或 config.serverName）；实现在 model.ts，CLI 与装载同口径。 */
 export { rowNameOf } from "./model.js";
+
+/** 拷贝 Map 值：巡检会在迭代中 unmount/mount，不能直接遍历 live iterator。 */
+function snapshotValues<V>(map: Map<unknown, V>): V[] {
+  const out: V[] = [];
+  for (const value of map.values()) out.push(value);
+  return out;
+}
 
 /**
  * 计算一个项目应当执行的装载变更（纯函数）：
@@ -310,6 +374,12 @@ function isProjectLayerSource(source: McpRowSource | undefined): boolean {
 
 /** 全局（用户层）装载的作用域键：参与 skipReasons 与日志归因。 */
 export const GLOBAL_SCOPE_KEY = "\u0000global";
+/** 连续重挂次数上限：工具恢复后清零；达到后写 `give-up` 诊断并停止。 */
+export const HEALTH_REMOUNT_LIMIT = 3;
+/** 0 工具去抖与两次重挂之间的缺省退避（毫秒）。测试可经 options 注入 0。 */
+export const HEALTH_REMOUNT_BACKOFF_MS = 5_000;
+/** 项目无活跃会话且不是进程 cwd 之后，再卸载其服务器的缺省宽限。 */
+export const UNMOUNT_GRACE_MS = 5 * 60 * 1000;
 
 /** 服务身份键：stdio 看「可执行文件 + 参数」，http 看 url。command/url 缺失或为空的行
  * 不注册身份键（disabled 占名行常无 config，只占名字不冒充服务）。Windows 下路径大小写
@@ -428,6 +498,7 @@ function buildScanDiag(input: {
     || ownRows.length > 0
     || projectJson.fileError !== undefined
     || projectJson.entryErrors.length > 0
+    || projectJson.formatHint !== undefined
     || cc.fileError !== undefined
     || cc.entryErrors.length > 0
     || shadowedOwnCc.length > 0
@@ -444,8 +515,13 @@ function buildScanDiag(input: {
   if (suppressed.size > 0) payload.shadowedByProject = [...suppressed];
   if (identityShadows.length > 0) payload.shadowedIdentity = identityShadows;
   if (projectJson.entryErrors.length > 0) payload.dshJsonEntryErrors = projectJson.entryErrors;
+  if (projectJson.formatHint !== undefined) payload.foreignFormat = projectJson.formatHint;
   if (cc.entryErrors.length > 0) payload.ccEntryErrors = cc.entryErrors;
   return payload;
+}
+
+function jsonIssueNotes(result: JsonReadResult): string[] {
+  return [...result.entryErrors, ...(result.formatHint === undefined ? [] : [result.formatHint])];
 }
 
 /** 单行三键先到先得：命中已有影子键则归因剔除，否则注册进影子表（disabled 占名行也注册）。 */
@@ -472,15 +548,20 @@ function mergeOneRow(item: SourcedRow, byName: Map<string, SourcedRow>, byNorm: 
 }
 
 /** fiberPhase 展示推导：未装载时 disabled 占名→null、否则 pending；已装载且本分区拥有该实例才给生命周期枚举。 */
-function fiberPhaseFor(state: ProjectServerState | undefined, row: PatchRow, owned: boolean): unknown {
+function fiberPhaseFor(state: ProjectServerState | undefined, row: PatchRow, owned: boolean): FiberPhaseView {
   if (state === undefined) return row.disabled === true ? null : "pending";
   return owned ? phaseToFiberPhase(state.phase) : null;
 }
 
-/** 跳过原因只在「无装载实例且该行不是 disabled 占名行」时有值。 */
+/**
+ * 跳过原因：无装载实例且非 disabled 占名行时照常返回；`give-up` 在实例仍
+ * 挂着（已停止自愈）时也要暴露，否则 status / 快照会把它显示成健康装载。
+ */
 function skipReasonFor(skipReasons: Map<string, string>, key: string, rawName: string, state: ProjectServerState | undefined, row: PatchRow): string | undefined {
+  const marked = skipReasons.get(key + "\u0000" + rawName);
+  if (marked === "give-up") return marked;
   if (state !== undefined || row.disabled === true) return undefined;
-  return skipReasons.get(key + "\u0000" + rawName);
+  return marked;
 }
 
 /**
@@ -515,6 +596,93 @@ export function mergeSourcedRows(candidates: SourcedRow[][]): {
     shadowedUser: buckets.shadowedUser,
     shadowedGlobal: buckets.shadowedGlobal,
     shadowedIdentity: buckets.shadowedIdentity
+  };
+}
+
+export interface DiagUnhealthy {
+  name: string;
+  reason: string;
+}
+
+/** 对账结束后写入诊断文件的摘要段（`.mcp-diag.json` 的 `summary`）。 */
+export interface DiagSummary {
+  at: string;
+  projects?: number;
+  rows: number;
+  mounted: number;
+  skippedByReason: Record<string, number>;
+  unhealthy: DiagUnhealthy[];
+  /** 宽限卸载的行（不是故障；`status` 打成「未装载（无会话）」）。 */
+  idle?: string[];
+  toolBudget?: { name: string; tools: number; bytes: number }[];
+}
+
+export interface DiagDocument {
+  summary?: DiagSummary;
+  events: Record<string, unknown>[];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseSkippedByReason(raw: unknown): Record<string, number> {
+  const skippedByReason: Record<string, number> = {};
+  if (!isRecord(raw)) return skippedByReason;
+  for (const [key, value] of Object.entries(raw)) {
+    if (typeof value === "number") skippedByReason[key] = value;
+  }
+  return skippedByReason;
+}
+
+function parseUnhealthyList(raw: unknown): DiagUnhealthy[] {
+  if (!Array.isArray(raw)) return [];
+  const unhealthy: DiagUnhealthy[] = [];
+  for (const item of raw) {
+    if (isRecord(item) && typeof item.name === "string" && typeof item.reason === "string") {
+      unhealthy.push({ name: item.name, reason: item.reason });
+    }
+  }
+  return unhealthy;
+}
+
+function parseIdleNames(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const idle: string[] = [];
+  for (const item of raw) {
+    if (typeof item === "string") idle.push(item);
+  }
+  return idle;
+}
+
+function parseToolBudgetHits(raw: unknown): { name: string; tools: number; bytes: number }[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  return raw.filter((item): item is { name: string; tools: number; bytes: number } =>
+    isRecord(item) && typeof item.name === "string" && typeof item.tools === "number" && typeof item.bytes === "number");
+}
+
+/** 兼容旧版纯数组诊断文件：数组 → `{ events }`；对象取 `summary` + `events`。 */
+export function parseDiagDocument(raw: unknown): DiagDocument {
+  if (Array.isArray(raw)) return { events: raw.filter(isRecord) };
+  if (!isRecord(raw)) return { events: [] };
+  const events = Array.isArray(raw.events) ? raw.events.filter(isRecord) : [];
+  const summary = parseDiagSummary(raw.summary);
+  return summary === undefined ? { events } : { summary, events };
+}
+
+function parseDiagSummary(raw: unknown): DiagSummary | undefined {
+  if (!isRecord(raw) || typeof raw.at !== "string" || typeof raw.rows !== "number" || typeof raw.mounted !== "number") return undefined;
+  const idle = parseIdleNames(raw.idle);
+  const toolBudget = parseToolBudgetHits(raw.toolBudget);
+  return {
+    at: raw.at,
+    ...(typeof raw.projects === "number" ? { projects: raw.projects } : {}),
+    rows: raw.rows,
+    mounted: raw.mounted,
+    skippedByReason: parseSkippedByReason(raw.skippedByReason),
+    unhealthy: parseUnhealthyList(raw.unhealthy),
+    ...(idle.length > 0 ? { idle } : {}),
+    ...(toolBudget === undefined ? {} : { toolBudget })
   };
 }
 
@@ -579,8 +747,32 @@ export class ProjectMcpRegistry {
    */
   private readonly warnGates = new Map<string, string>();
   private timer: ReturnType<typeof setTimeout> | undefined;
+  /** 无会话宽限期到期后补一次对账（注入 `now` 时由测试自行 reconcileNow）。 */
+  private graceTimer: ReturnType<typeof setTimeout> | undefined;
   private chain: Promise<void> = Promise.resolve();
   private disposed = false;
+  /** 配置文件读取次数（scan / 用户层；测试用指纹跳过断言）。 */
+  private configReadCount = 0;
+  /** 上一轮对账入口的配置文件指纹；全同则跳过重读。 */
+  private lastFingerprintSig = "";
+  /** watcher 文件事件代数：agent/巡检触发的对账可跳过重读，文件事件必须重读。 */
+  private configEpoch = 0;
+  private lastFingerprintEpoch = -1;
+  /** 上一轮 scanProject 的期望行（指纹未变时复用；摘要 rows 也按这份目录计）。 */
+  private lastScanDesired = new Map<string, { projectRoot: string; rows: DesiredProjectRow[] }>();
+  /**
+   * 上一轮扫描的分文件目录（snapshot / serverView 的内存拼装；含被遮蔽行与
+   * entryErrors）。与 lastScanDesired 同生命周期，随 prunePerProjectState 剪。
+   */
+  private readonly lastScanFiles = new Map<string, ProjectScanFiles>();
+  /** 上一轮用户层合并后的全局期望行（摘要按目录计，不按当前装载 Map）。 */
+  private lastGlobalDesired: DesiredProjectRow[] = [];
+  /** 装载行的健康巡检内存（unmount 会删掉 ProjectServerState，不能只挂在 state 上）。 */
+  private readonly healthByMount = new Map<string, MountHealth>();
+  /** 作用域键 → 超预算的生效名（写入 diag summary；每轮重算）。 */
+  private readonly toolBudgetHits = new Map<string, { name: string; tools: number; bytes: number }[]>();
+  /** 项目离开活跃挂载集的时刻（宽限内仍保持装载）。 */
+  private readonly idleSince = new Map<string, number>();
 
   constructor(ctx: any, providers: ProjectMcpRegistryOptions) {
     this.ctx = ctx;
@@ -596,6 +788,9 @@ export class ProjectMcpRegistry {
     ctx.on("agent/disposed", ({ agent }: any) => {
       if (agent === undefined) return;
       this.releaseAgent(agent);
+      this.enqueue(async () => {
+        await this.reconcileAll();
+      });
     });
     // 会话生命周期开始（含恢复/重挂的会话）也补扫一次，覆盖启动时序缺口。
     ctx.on("agent/session-start", ({ agent }: any) => {
@@ -614,39 +809,46 @@ export class ProjectMcpRegistry {
       await this.reconcileAll();
     });
 
-    ctx.effect(() => () => {
-      this.disposed = true;
-      if (this.timer !== undefined) clearTimeout(this.timer);
-      if (this.watcher !== undefined) void this.watcher.close().catch(() => {});
-      if (this.userWatcher !== undefined) void this.userWatcher.close().catch(() => {});
-      for (const disposer of this.restrictions.values()) {
-        try {
-          disposer();
-        } catch {
-          // agent 已销毁时 disposer 可能已失效
-        }
+    ctx.effect(() => () => this.disposeRuntime(), "dsh-project-mcp-manager: project mcp registry");
+  }
+
+  private disposeRuntime(): void {
+    this.disposed = true;
+    if (this.timer !== undefined) clearTimeout(this.timer);
+    if (this.graceTimer !== undefined) clearTimeout(this.graceTimer);
+    if (this.watcher !== undefined) void this.watcher.close().catch(() => {});
+    if (this.userWatcher !== undefined) void this.userWatcher.close().catch(() => {});
+    this.disposeRestrictions();
+    this.disposeMountedFibers();
+    this.suppressedGlobals.clear();
+  }
+
+  private disposeRestrictions(): void {
+    for (const disposer of this.restrictions.values()) {
+      try {
+        disposer();
+      } catch {
+        // agent 已销毁时 disposer 可能已失效
       }
-      this.restrictions.clear();
-      for (const entry of this.projects.values()) {
-        for (const state of entry.servers.values()) {
-          try {
-            state.fiber?.dispose();
-          } catch {
-            // fiber 随插件 ctx 一并销毁
-          }
-        }
+    }
+    this.restrictions.clear();
+  }
+
+  private disposeServerFibers(servers: Map<string, ProjectServerState>): void {
+    for (const state of servers.values()) {
+      try {
+        state.fiber?.dispose();
+      } catch {
+        // fiber 随插件 ctx 一并销毁
       }
-      this.projects.clear();
-      for (const state of this.globalServers.values()) {
-        try {
-          state.fiber?.dispose();
-        } catch {
-          // fiber 随插件 ctx 一并销毁
-        }
-      }
-      this.globalServers.clear();
-      this.suppressedGlobals.clear();
-    }, "dsh-project-mcp-manager: project mcp registry");
+    }
+  }
+
+  private disposeMountedFibers(): void {
+    for (const entry of this.projects.values()) this.disposeServerFibers(entry.servers);
+    this.projects.clear();
+    this.disposeServerFibers(this.globalServers);
+    this.globalServers.clear();
   }
 
   // ── 串行化与调度 ─────────────────────────────────────────────────────
@@ -665,6 +867,8 @@ export class ProjectMcpRegistry {
         await this.reconcileAll();
       }).catch(() => {});
     }, 150);
+    // 不挡住进程退出：短进程在 150ms 内结束时，已 kick 的对账会被丢掉（有意）。
+    this.timer.unref();
   }
 
   /**
@@ -724,7 +928,7 @@ export class ProjectMcpRegistry {
     this.watcher = undefined;
     if (old !== undefined) await old.close().catch(() => {});
     this.watchedFiles = keys;
-    if (keys.length === 0) return;
+    if (keys.length === 0 || this.disposed) return;
     // chokidar 不会监听尚不存在的嵌套文件：改为监听项目根（depth 2 覆盖
     // .dsh/mcp.yml），事件回调里按精确路径过滤。
     const watcher = chokidar.watch(roots, {
@@ -742,7 +946,10 @@ export class ProjectMcpRegistry {
     const jsonFiles = new Set(roots.map((root) => normalizePathKey(projectDshJsonFile(root))));
     const kick = (path: string) => {
       const key = normalizePathKey(path);
-      if (ymlFiles.has(key) || jsonFiles.has(key) || (ccFiles.has(key) && mcpJsonLayerEnabled())) this.kick();
+      if (ymlFiles.has(key) || jsonFiles.has(key) || (ccFiles.has(key) && mcpJsonLayerEnabled())) {
+        this.configEpoch += 1;
+        this.kick();
+      }
     };
     watcher.on("add", kick);
     watcher.on("change", kick);
@@ -763,32 +970,28 @@ export class ProjectMcpRegistry {
   }
 
   /** 原生受管块文件通用读取（项目 yml 与用户层 yml 共用）。 */
-  private async readNativeRows(path: string, source: McpRowSource, hasYmlMounts: boolean): Promise<{ rows: SourcedRow[]; ok: boolean; error: string | null }> {
+  private async readNativeRows(path: string, source: McpRowSource, hasYmlMounts: boolean): Promise<{ rows: SourcedRow[]; ok: boolean; error: string | null; missing: boolean }> {
     let rows: SourcedRow[] = [];
     let ok = true;
     let error: string | null = null;
+    let missing = false;
     try {
+      this.noteConfigRead();
       const raw = await readPatchFile(path);
       for (const row of extractManagedRows(raw)) {
         const rawName = rowNameOf(row);
-        // disabled 行不跳过：带着占位旗进合并——显式禁用应同时遮蔽下层同名，
-        // 否则「关掉 yml 行」会意外改去装载 .mcp.json 副本。
         if (rawName !== undefined) rows.push({ rawName, row, source, disabled: row.disabled === true });
       }
     } catch (catchError) {
       const message = catchError instanceof Error ? catchError.message : String(catchError);
-      // 「配置文件不存在」(ENOENT) 只有在该项目确实有活着的 yml 来源装载时才算异常——
-      // 意味着文件在装载之后被删/移走。零配置项目缺文件是常态：不能用
-      // projects.has(key) 当判据，空项目条目也会让它恒真（误报根因）。
-      // hasYmlMounts 同样不能拿 servers.size 充数——用户层行也占装载实例，
-      // 纯用户层挂载的项目缺 yml 依旧常态（与 snapshot 的 ymlLive 同一判据）。
-      if (hasYmlMounts || !message.includes("ENOENT")) {
+      if (message.includes("ENOENT") && !hasYmlMounts) missing = true;
+      else {
         ok = false;
         error = message;
       }
       rows = [];
     }
-    return { rows, ok, error };
+    return { rows, ok, error, missing };
   }
 
   /**
@@ -819,11 +1022,12 @@ export class ProjectMcpRegistry {
     const paths = this.resolveUserLayerPaths();
     this.activeProfileName = await this.resolveActiveProfileName();
     const yml = await this.readNativeRows(paths.mcpYml, "dsh-user-yml", false);
+    this.noteConfigRead();
     const json = await readDshJsonFile(paths.mcpJson, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" });
     const profileJson = this.activeProfileName === undefined ? null : profileMcpJsonFile(paths.profilesDir, this.activeProfileName);
     const profile: JsonReadResult = profileJson === null
       ? { rows: [], entryErrors: [] }
-      : await readDshJsonFile(profileJson, { source: "dsh-profile-user", cwdPolicy: "host", projectRoot: "" });
+      : (this.noteConfigRead(), await readDshJsonFile(profileJson, { source: "dsh-profile-user", cwdPolicy: "host", projectRoot: "" }));
     this.userLayer = {
       mcpYml: paths.mcpYml,
       mcpJson: paths.mcpJson,
@@ -837,8 +1041,23 @@ export class ProjectMcpRegistry {
     };
     // 告警按「文件 + 问题集合」门控：同一个坏条目不随每次文件事件重刷。
     this.warnFileIssues(paths.mcpYml, `用户层 MCP（${paths.mcpYml}）`, yml.error ?? undefined, []);
-    this.warnFileIssues(paths.mcpJson, `用户层 MCP（${paths.mcpJson}）`, json.fileError, json.entryErrors);
-    if (profileJson !== null) this.warnFileIssues(profileJson, `用户层 MCP（${profileJson}）`, profile.fileError, profile.entryErrors);
+    this.warnFileIssues(paths.mcpJson, `用户层 MCP（${paths.mcpJson}）`, json.fileError, jsonIssueNotes(json));
+    if (profileJson !== null) this.warnFileIssues(profileJson, `用户层 MCP（${profileJson}）`, profile.fileError, jsonIssueNotes(profile));
+    this.warnInvalidToolGlobs(paths.mcpYml, `用户层 MCP（${paths.mcpYml}）`, yml.rows);
+    this.warnInvalidToolGlobs(paths.mcpJson, `用户层 MCP（${paths.mcpJson}）`, json.rows);
+    if (profileJson !== null) this.warnInvalidToolGlobs(profileJson, `用户层 MCP（${profileJson}）`, profile.rows);
+    if (json.formatHint !== undefined) {
+      await this.writeGlobalDiag({ kind: "foreign-format", path: paths.mcpJson, message: json.formatHint });
+    }
+    const foreignPath = foreignUserMcpJsonFile(dirname(paths.mcpJson));
+    if (!isSameFilePath(foreignPath, paths.mcpJson)) {
+      this.noteConfigRead();
+      const foreign = await readDshJsonFile(foreignPath, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" });
+      this.warnFileIssues(foreignPath, `用户层 MCP（${foreignPath}）`, foreign.fileError, jsonIssueNotes(foreign));
+      if (foreign.formatHint !== undefined) {
+        await this.writeGlobalDiag({ kind: "foreign-format", path: foreignPath, message: foreign.formatHint });
+      }
+    }
   }
 
   /**
@@ -852,6 +1071,19 @@ export class ProjectMcpRegistry {
     });
   }
 
+  /** 非法 glob 仍装载该行，但告警一次：matchToolGlob 会把编译失败当成永不命中。 */
+  private warnInvalidToolGlobs(gateKey: string, label: string, rows: ReadonlyArray<{ rawName: string; row: PatchRow }>): void {
+    const notes: string[] = [];
+    for (const item of rows) {
+      for (const pattern of invalidToolGlobs(toolFilterFromConfig(configFromPatchRow(item.row)))) {
+        notes.push(`"${item.rawName}": 工具过滤 glob 无效（${pattern}），该模式不会命中任何工具`);
+      }
+    }
+    this.warnGated("globs\u0000" + gateKey, notes.join("\u0001"), () => {
+      for (const note of notes) this.ctx.logger.warn(`${label}：${note}`);
+    });
+  }
+
   /**
    * 监听用户层具体文件（与项目层的精确路径过滤同构；不监视家目录递归：
    * 探针实测 chokidar v5 盯「父目录已存在的缺失文件」能在创建时补发 add，而盯
@@ -859,7 +1091,13 @@ export class ProjectMcpRegistry {
    */
   private async syncUserWatcher(): Promise<void> {
     const paths = this.resolveUserLayerPaths();
-    const targets = [paths.mcpYml, paths.mcpJson, ...(this.userLayer.profileJson === null ? [] : [this.userLayer.profileJson])];
+    const foreignPath = foreignUserMcpJsonFile(dirname(paths.mcpJson));
+    const targets = [
+      paths.mcpYml,
+      paths.mcpJson,
+      ...(this.userLayer.profileJson === null ? [] : [this.userLayer.profileJson]),
+      ...(isSameFilePath(foreignPath, paths.mcpJson) ? [] : [foreignPath])
+    ];
     // 排序只用于跨轮次相等性比较，须与 locale 无关保持稳定：统一走 byCodeUnit
     // （UTF-16 码元序，与 Array#sort 默认逐字节等价，不经 locale collator），
     // 比较器显式化是静态分析要求，也是本仓的排序口径声明。
@@ -878,7 +1116,10 @@ export class ProjectMcpRegistry {
     });
     const watched = new Set(keys);
     const onEvent = (path: string) => {
-      if (watched.has(normalizePathKey(path))) this.kick();
+      if (watched.has(normalizePathKey(path))) {
+        this.configEpoch += 1;
+        this.kick();
+      }
     };
     watcher.on("add", onEvent);
     watcher.on("change", onEvent);
@@ -887,6 +1128,149 @@ export class ProjectMcpRegistry {
       // 保持监听；错误不炸宿主
     });
     this.userWatcher = watcher;
+  }
+
+  private noteConfigRead(): void {
+    this.configReadCount += 1;
+  }
+
+  private nowMs(): number {
+    return this.providers.now?.() ?? Date.now();
+  }
+
+  private remountBackoffMs(): number {
+    return this.providers.healthRemountBackoffMs ?? HEALTH_REMOUNT_BACKOFF_MS;
+  }
+
+  private remountLimit(): number {
+    return this.providers.healthRemountLimit ?? HEALTH_REMOUNT_LIMIT;
+  }
+
+  private unmountGraceMs(): number {
+    return this.providers.unmountGraceMs ?? UNMOUNT_GRACE_MS;
+  }
+
+  /** 有活跃会话的项目 ∪ 进程 cwd 所在项目：只对这些项目发起装载。 */
+  private async liveMountKeys(): Promise<Set<string>> {
+    const keys = new Set<string>();
+    for (const agent of this.liveAgents()) {
+      const project = this.agentProjects.get(agent.id) ?? await this.resolveProject(agent);
+      if (project !== undefined) {
+        this.agentProjects.set(agent.id, project);
+        keys.add(project);
+      }
+    }
+    try {
+      keys.add(projectKeyOf(await findProjectRoot(process.cwd())));
+    } catch {
+      // 启动目录不可解析：不强制挂载
+    }
+    return keys;
+  }
+
+  /**
+   * 刚离开活跃集且当前仍有装载的项目记下 idle 起点；已在宽限中的保持原时间戳。
+   */
+  private touchIdleSince(live: Set<string>): void {
+    const now = this.nowMs();
+    for (const [key, entry] of this.projects) {
+      if (live.has(key)) {
+        this.idleSince.delete(key);
+        continue;
+      }
+      if (entry.servers.size > 0 && !this.idleSince.has(key)) this.idleSince.set(key, now);
+    }
+  }
+
+  private shouldKeepMounts(key: string, live: Set<string>): boolean {
+    if (live.has(key)) return true;
+    const since = this.idleSince.get(key);
+    if (since === undefined) return false;
+    return this.nowMs() - since < this.unmountGraceMs();
+  }
+
+  private scheduleGraceUnmount(): void {
+    if (this.graceTimer !== undefined) {
+      clearTimeout(this.graceTimer);
+      this.graceTimer = undefined;
+    }
+    if (this.providers.now !== undefined) return;
+    const grace = this.unmountGraceMs();
+    if (grace <= 0) return;
+    const now = Date.now();
+    let delayMs: number | undefined;
+    for (const since of this.idleSince.values()) {
+      const remaining = since + grace - now;
+      if (remaining <= 0) continue;
+      if (delayMs === undefined || remaining < delayMs) delayMs = remaining;
+    }
+    if (delayMs === undefined) return;
+    this.graceTimer = setTimeout(() => {
+      this.graceTimer = undefined;
+      this.enqueue(async () => {
+        await this.reconcileAll();
+      }).catch(() => {});
+    }, delayMs);
+    // 宽限 timer 同样不挡住退出（与 kick 的 150ms 防抖同口径）。
+    this.graceTimer.unref();
+  }
+
+  private async statConfigFile(path: string): Promise<{ mtimeMs: number; size: number } | "missing"> {
+    try {
+      if (this.providers.statFile !== undefined) {
+        const injected = await this.providers.statFile(path);
+        if (injected === null) return "missing";
+        return injected;
+      }
+      const info = await stat(path);
+      return { mtimeMs: info.mtimeMs, size: info.size };
+    } catch {
+      return "missing";
+    }
+  }
+
+  /** 已知项目的 3 个配置路径 + 用户层 3 路径（及对方全局文件）的 mtimeMs+size 指纹。 */
+  private async configFingerprintSignature(roots: string[], hostGlobalNames: string[]): Promise<string> {
+    const paths = new Set<string>();
+    for (const root of roots) {
+      paths.add(normalizePathKey(projectMcpFile(root)));
+      paths.add(normalizePathKey(projectDshJsonFile(root)));
+      paths.add(normalizePathKey(projectMcpJsonFile(root)));
+    }
+    const user = this.resolveUserLayerPaths();
+    paths.add(normalizePathKey(user.mcpYml));
+    paths.add(normalizePathKey(user.mcpJson));
+    // 每次现取 profile 名：缓存的 activeProfileName 在跳过重读时不会刷新，
+    // 运行中改 DSH_MCP_PROFILE / 宿主 profile 必须让指纹失配从而重读 profile 层。
+    const profileName = await this.resolveActiveProfileName();
+    if (profileName !== undefined) paths.add(normalizePathKey(profileMcpJsonFile(user.profilesDir, profileName)));
+    paths.add(normalizePathKey(foreignUserMcpJsonFile(dirname(user.mcpJson))));
+    const files = [...paths];
+    files.sort(byCodeUnit);
+    const host = [...hostGlobalNames];
+    host.sort(byCodeUnit);
+    const parts: string[] = [
+      `cc=${mcpJsonLayerEnabled() ? "1" : "0"}`,
+      `profile=${profileName ?? ""}`,
+      `host=${host.join(",")}`
+    ];
+    for (const file of files) {
+      const fp = await this.statConfigFile(file);
+      parts.push(fp === "missing" ? `${file}:missing` : `${file}:${Math.round(fp.mtimeMs)}:${fp.size}`);
+    }
+    return parts.join("\n");
+  }
+
+  private async shouldSkipConfigReread(roots: string[], hostGlobalNames: string[]): Promise<{ skip: boolean; signature: string }> {
+    const signature = await this.configFingerprintSignature(roots, hostGlobalNames);
+    if (this.lastFingerprintSig === "") return { skip: false, signature };
+    if (this.configEpoch !== this.lastFingerprintEpoch) return { skip: false, signature };
+    for (const entry of this.projects.values()) {
+      const hasYmlMounts = [...entry.servers.values()].some((state) => state.source === "dsh-project" || state.source === undefined);
+      if (!hasYmlMounts) continue;
+      if (await this.statConfigFile(projectMcpFile(entry.projectRoot)) === "missing") return { skip: false, signature };
+    }
+    return { skip: signature === this.lastFingerprintSig, signature };
   }
 
   // ── 核心 reconcile ───────────────────────────────────────────────────
@@ -898,41 +1282,57 @@ export class ProjectMcpRegistry {
   async reconcileAll(): Promise<void> {
     if (this.disposed) return;
     this.reconcileCount++;
-    // 先读用户层：profile 名解析结果决定用户 watcher 要盯哪几个精确文件。
-    await this.readUserLayer();
+    const roots = await this.knownProjects();
+    const hostGlobalNames = await this.providers.globalNames().catch(() => []);
+    const { skip: skipReread, signature } = await this.shouldSkipConfigReread(roots, hostGlobalNames);
+    if (!skipReread) {
+      await this.readUserLayer();
+    }
     await this.syncWatcher();
     await this.syncUserWatcher();
 
-    const roots = await this.knownProjects();
-    // 全局层（用户层）合并先算：三层之间按同一套三键规则去重；行保持原名。
-    // 必须先于项目循环——项目侧压制只允许 deny「本轮真会全局装载的名字」，
-    // 否则 disabled 占名行/被宿主 patch 拒掉的名字会让项目 deny 到自己的工具。
     const globalMerged = mergeSourcedRows([this.userLayer.profileRows, this.userLayer.ymlRows, this.userLayer.jsonRows]);
-    const hostGlobalNames = await this.providers.globalNames().catch(() => []);
+    this.lastGlobalDesired = globalMerged.rows;
     const hostTaken = new Set(hostGlobalNames);
     const globalMountable = new Set(globalMerged.rows.map((row) => row.rawName).filter((rawName) => !hostTaken.has(rawName)));
 
     const desiredByProject = new Map<string, { projectRoot: string; rows: DesiredProjectRow[] }>();
-    for (const projectRoot of roots) {
-      desiredByProject.set(projectKeyOf(projectRoot), await this.scanProject(projectRoot, globalMountable));
+    if (skipReread) {
+      for (const projectRoot of roots) {
+        const key = projectKeyOf(projectRoot);
+        const cached = this.lastScanDesired.get(key);
+        if (cached !== undefined) desiredByProject.set(key, cached);
+        else desiredByProject.set(key, await this.scanProject(projectRoot, globalMountable));
+      }
+    } else {
+      for (const projectRoot of roots) {
+        desiredByProject.set(projectKeyOf(projectRoot), await this.scanProject(projectRoot, globalMountable));
+      }
+      this.lastScanDesired = new Map(desiredByProject);
+      this.lastFingerprintSig = signature;
+      this.lastFingerprintEpoch = this.configEpoch;
     }
-    // 用户层内部冲突按全局归因：告警一次并写全局诊断，不污染任何项目。
     await this.reportGlobalShadows(globalMerged.shadowedGlobal, globalMerged.shadowedIdentity);
 
     const catalogProjects = [...desiredByProject.values()].map((entry) => ({
       projectRoot: entry.projectRoot,
       names: entry.rows.map((row) => row.rawName)
     }));
-    // 全局占用：宿主 patch 行 + 本次要挂的用户层行；同名项目行据此改名 p<hash>_。
     const globalNames = [...hostGlobalNames, ...globalMerged.rows.map((row) => row.rawName)];
     this.effective = effectiveServerNames(catalogProjects, globalNames);
 
+    const live = await this.liveMountKeys();
+    this.touchIdleSince(live);
     for (const [key, entry] of desiredByProject) {
-      await this.reconcileProject(key, entry);
+      await this.reconcileProject(key, entry, this.shouldKeepMounts(key, live));
     }
     await this.reconcileGlobals(globalMerged.rows, hostGlobalNames);
     this.prunePerProjectState(new Set(desiredByProject.keys()));
+    await this.remountUnhealthy();
     await this.sweepRestrictions();
+    this.inspectToolBudgets();
+    await this.writeSummaries();
+    this.scheduleGraceUnmount();
   }
 
   /**
@@ -952,13 +1352,13 @@ export class ProjectMcpRegistry {
     const ymlPath = projectMcpFile(projectRoot);
     const jsonPath = projectDshJsonFile(projectRoot);
     const yml = isSameFilePath(ymlPath, userPaths.mcpYml)
-      ? { rows: [], ok: true, error: null }
+      ? { rows: [], ok: true, error: null, missing: false }
       : await this.readNativeRows(ymlPath, "dsh-project", hasYmlMounts);
     const projectJson: JsonReadResult = isSameFilePath(jsonPath, userPaths.mcpJson)
       ? { rows: [], entryErrors: [] }
-      : await readDshJsonFile(jsonPath, { source: "dsh-project-json", cwdPolicy: "project", projectRoot });
+      : (this.noteConfigRead(), await readDshJsonFile(jsonPath, { source: "dsh-project-json", cwdPolicy: "project", projectRoot }));
     const cc: JsonReadResult = mcpJsonLayerEnabled()
-      ? await readMcpJsonFile(projectMcpJsonFile(projectRoot), projectRoot)
+      ? (this.noteConfigRead(), await readMcpJsonFile(projectMcpJsonFile(projectRoot), projectRoot))
       : { rows: [], entryErrors: [] };
     // 影子优先级：.dsh/mcp.yml > .dsh/mcp.json > .mcp.json > profile json > 用户 yml > 用户 json。
     const merged = mergeSourcedRows([yml.rows, projectJson.rows, cc.rows, this.userLayer.profileRows, this.userLayer.ymlRows, this.userLayer.jsonRows]);
@@ -978,8 +1378,26 @@ export class ProjectMcpRegistry {
     // 项目不写任何记录——用户层行落到每个项目不算该项目的事件。
     const diag = buildScanDiag({ yml, projectJson, cc, ownRows, shadowedOwnCc: merged.shadowedOwnCc, suppressed, identityShadows, shadowChanged });
     if (diag !== null) await this.writeDiag(projectRoot, diag);
-    this.warnFileIssues(key + "\u0000json", `项目 MCP（.dsh/${JSON_MCP_FILE}，${projectRoot}）`, projectJson.fileError, projectJson.entryErrors);
-    this.warnFileIssues(key + "\u0000cc", `项目 MCP（${CC_PROJECT_FILE}，${projectRoot}）`, cc.fileError, cc.entryErrors);
+    this.warnFileIssues(key + "\u0000json", `项目 MCP（.dsh/${JSON_MCP_FILE}，${projectRoot}）`, projectJson.fileError, jsonIssueNotes(projectJson));
+    this.warnFileIssues(key + "\u0000cc", `项目 MCP（${CC_PROJECT_FILE}，${projectRoot}）`, cc.fileError, jsonIssueNotes(cc));
+    this.warnInvalidToolGlobs(key + "\u0000yml", `项目 MCP（.dsh/${MCP_YML_FILE}，${projectRoot}）`, yml.rows);
+    this.warnInvalidToolGlobs(key + "\u0000json", `项目 MCP（.dsh/${JSON_MCP_FILE}，${projectRoot}）`, projectJson.rows);
+    this.warnInvalidToolGlobs(key + "\u0000cc", `项目 MCP（${CC_PROJECT_FILE}，${projectRoot}）`, cc.rows);
+    this.lastScanFiles.set(key, {
+      projectRoot,
+      skipYmlPartition: isSameFilePath(ymlPath, userPaths.mcpYml),
+      ymlPath,
+      ymlRows: yml.rows.map((item) => item.row),
+      ymlError: yml.error,
+      ymlOk: yml.ok,
+      ymlMissing: yml.missing,
+      skipJsonPartition: isSameFilePath(jsonPath, userPaths.mcpJson),
+      jsonPath,
+      json: projectJson,
+      ccEnabled: mcpJsonLayerEnabled(),
+      ccPath: projectMcpJsonFile(projectRoot),
+      cc
+    });
     // 源级隔离：某个源坏了只清空该源的 rows（读取器已保证），其余源照常进
     // desired。绝不能整项目一票否决——那会把坏文件的代价转嫁给好文件的行。
     // 项目容器只装项目层行；用户层行由全局容器装载（见 reconcileGlobals）。
@@ -1040,9 +1458,48 @@ export class ProjectMcpRegistry {
     for (const key of this.identityShadowSigs.keys()) {
       if (!knownKeys.has(key)) this.identityShadowSigs.delete(key);
     }
+    for (const key of this.idleSince.keys()) {
+      if (!knownKeys.has(key)) this.idleSince.delete(key);
+    }
+    for (const key of this.lastScanDesired.keys()) {
+      if (!knownKeys.has(key)) this.lastScanDesired.delete(key);
+    }
+    for (const key of this.lastScanFiles.keys()) {
+      if (!knownKeys.has(key)) this.lastScanFiles.delete(key);
+    }
+    this.pruneWarnGates(knownKeys);
   }
 
-  private async reconcileProject(key: string, entry: { projectRoot: string; rows: DesiredProjectRow[] }) {
+  private isStaleProjectFileGate(gate: string, knownKeys: Set<string>): boolean {
+    if (!gate.startsWith("entries\u0000") && !gate.startsWith("globs\u0000")) return false;
+    const rest = gate.slice(gate.indexOf("\u0000") + 1);
+    const sep = rest.lastIndexOf("\u0000");
+    if (sep <= 0) return false;
+    const suffix = rest.slice(sep + 1);
+    if (suffix !== "yml" && suffix !== "json" && suffix !== "cc") return false;
+    return !knownKeys.has(rest.slice(0, sep));
+  }
+
+  /**
+   * 告警门控按已知项目剪：`entries\0` / `globs\0` 里带项目键的前缀、以及已不在
+   * 装载集里的 `budget\0<effectiveName>`。用户层路径门控与 profile 名门控保留。
+   */
+  private pruneWarnGates(knownKeys: Set<string>): void {
+    const liveBudget = new Set<string>();
+    for (const entry of this.projects.values()) {
+      for (const state of entry.servers.values()) liveBudget.add(state.effectiveName);
+    }
+    for (const state of this.globalServers.values()) liveBudget.add(state.effectiveName);
+    for (const gate of this.warnGates.keys()) {
+      if (gate.startsWith("budget\u0000")) {
+        if (!liveBudget.has(gate.slice("budget\u0000".length))) this.warnGates.delete(gate);
+        continue;
+      }
+      if (this.isStaleProjectFileGate(gate, knownKeys)) this.warnGates.delete(gate);
+    }
+  }
+
+  private async reconcileProject(key: string, entry: { projectRoot: string; rows: DesiredProjectRow[] }, keepMounts: boolean) {
     let project = this.projects.get(key);
     if (project === undefined) {
       // 只为「确实有行要装载」的项目建条目：否则会话/进程访问过的每个目录都会
@@ -1052,7 +1509,16 @@ export class ProjectMcpRegistry {
       project = { projectRoot: entry.projectRoot, servers: new Map() };
       this.projects.set(key, project);
     }
-    await this.reconcileContainer(this.projectContainer(key, project), entry.rows);
+    const catalog = entry.rows;
+    const desired = keepMounts ? catalog : [];
+    await this.reconcileContainer(this.projectContainer(key, project), desired, new Set(), catalog);
+    if (!keepMounts) {
+      for (const item of catalog) {
+        if (project.servers.has(item.rawName)) continue;
+        const markKey = key + "\u0000" + item.rawName;
+        if (!this.skipReasons.has(markKey)) this.skipReasons.set(markKey, "idle");
+      }
+    }
   }
 
   /** 全局（用户层）对账：与项目数量无关，宿主级只挂一条连接。 */
@@ -1079,7 +1545,11 @@ export class ProjectMcpRegistry {
         this.ctx.logger.warn(`全局用户层 MCP "${rawName}" 未装载：同名服务器已由宿主全局 patch 行（bundle 层或 profile patch 层）占用；请改名或从用户层移除`);
       }
     });
-    await this.reconcileContainer({
+    await this.reconcileContainer(this.globalMountContainer(), desired, blocked, rows);
+  }
+
+  private globalMountContainer(): MountContainer {
+    return {
       scope: "global",
       key: GLOBAL_SCOPE_KEY,
       projectRoot: "",
@@ -1088,7 +1558,7 @@ export class ProjectMcpRegistry {
       effectiveNameOf: (rawName) => rawName,
       diag: (event) => this.writeGlobalDiag(event),
       label: "全局用户层 MCP"
-    }, desired, blocked);
+    };
   }
 
   private projectContainer(key: string, project: ProjectEntry): MountContainer {
@@ -1105,7 +1575,7 @@ export class ProjectMcpRegistry {
   }
 
   /** 装载容器的通用对账（项目层与全局层共用）：算变更计划 → 卸载 → 装载。 */
-  private async reconcileContainer(container: MountContainer, desired: DesiredProjectRow[], blocked: Set<string> = new Set()): Promise<void> {
+  private async reconcileContainer(container: MountContainer, desired: DesiredProjectRow[], blocked: Set<string> = new Set(), catalog: DesiredProjectRow[] = desired): Promise<void> {
     const current = [...container.servers.values()].map((state) => ({ rawName: state.rawName, effectiveName: state.effectiveName, row: state.row }));
     // 全局行保持原名：生效名映射就地合成，避免污染项目生效名表。
     const effectiveMap = container.scope === "global"
@@ -1113,17 +1583,25 @@ export class ProjectMcpRegistry {
       : this.effective;
     const plan = planProjectChanges(current, desired, effectiveMap, container.key);
     // 清理死键：从未挂上（被跳过）的行若从文件里删掉，既不在 toMount 也不在
-    // toUnmount，其 skipReasons 标记没人再触碰——按当前 desired 集合剪掉。
+    // toUnmount，其 skipReasons 标记没人再触碰——按配置目录剪掉，不能按本轮
+    // 装载集（idle 卸载 desired=[] 时否则会把 env-missing 一并抹掉）。
     // blocked（撞名被拒）的行保留其标记，供快照展示 skipReason。
-    const desiredNames = new Set([...desired.map((item) => item.rawName), ...blocked]);
+    const catalogNames = new Set([...catalog.map((item) => item.rawName), ...blocked]);
     const markPrefix = container.key + "\u0000";
     for (const markKey of this.skipReasons.keys()) {
-      if (markKey.startsWith(markPrefix) && !desiredNames.has(markKey.slice(markPrefix.length))) this.skipReasons.delete(markKey);
+      if (markKey.startsWith(markPrefix) && !catalogNames.has(markKey.slice(markPrefix.length))) this.skipReasons.delete(markKey);
     }
     // 先卸载（同名重装载必须先释放 serverName 预留），再装载。
     for (const rawName of plan.toUnmount) {
       await this.unmountServer(container, rawName);
       this.skipReasons.delete(container.key + "\u0000" + rawName);
+    }
+    // 仍挂着的行就地换成本轮 desired（含只改 tools.allow/deny），再 kickSweep 即可，不必拆连接。
+    for (const item of desired) {
+      const state = container.servers.get(item.rawName);
+      if (state === undefined) continue;
+      state.row = item.row;
+      state.source = item.source;
     }
     for (const item of plan.toMount) {
       const skip = await this.mountServer(container, item);
@@ -1135,6 +1613,7 @@ export class ProjectMcpRegistry {
 
   // ── 装载诊断（项目：<root>/.dsh/.mcp-diag.json；全局：<dshHome>/.mcp-diag.json）──
   // 调用方只在有异常或有配置行时写入：无配置的干净项目不创建该文件。
+  // 文件形态：`{ summary?, events: [...] }`（旧版纯数组读入后当作 events）。
 
   private async writeDiag(projectRoot: string, event: Record<string, unknown>): Promise<void> {
     await this.writeDiagAt(join(projectRoot, DSH_DIR, DIAG_FILE), event);
@@ -1146,28 +1625,120 @@ export class ProjectMcpRegistry {
     await this.writeDiagAt(join(dirname(mcpYml), DIAG_FILE), event);
   }
 
-  private async writeDiagAt(path: string, event: Record<string, unknown>): Promise<void> {
-    const tmp = path + `.tmp-${process.pid}`;
+  private async writeDiagAt(path: string, event?: Record<string, unknown>, summary?: DiagSummary): Promise<void> {
     try {
-      let lines: Record<string, unknown>[] = [];
-      try {
-        const parsed = JSON.parse(await readFile(path, "utf8"));
-        if (Array.isArray(parsed)) lines = parsed;
-      } catch {
-        lines = [];
-      }
-      lines.push({ ts: new Date().toISOString(), ...event });
-      if (lines.length > 30) lines = lines.slice(-30);
-      // 目录可能已被用户删掉（而仍有活装载）：补建目录，避免诊断静默丢失。
-      await mkdir(dirname(path), { recursive: true });
-      // 原子落盘（临时文件 + rename）：裸 writeFile 会让并发读取方看到半截
-      // JSON（快照/测试轮询都算），与 mcp-file 的写路径同一标准。
-      await writeFile(tmp, JSON.stringify(lines, null, 2), "utf8");
-      await rename(tmp, path);
-    } catch {
-      // 诊断失败不影响主流程；清掉半截临时文件
-      await rm(tmp, { force: true }).catch(() => {});
+      await withPatchLock(path, async () => {
+        const tmp = path + `.tmp-${process.pid}`;
+        try {
+          let doc: DiagDocument = { events: [] };
+          try {
+            doc = parseDiagDocument(JSON.parse(await readFile(path, "utf8")));
+          } catch {
+            doc = { events: [] };
+          }
+          if (event !== undefined) {
+            doc.events.push({ ts: new Date().toISOString(), ...event });
+            if (doc.events.length > 30) doc.events = doc.events.slice(-30);
+          }
+          if (summary !== undefined) doc.summary = summary;
+          const payload = doc.summary === undefined ? { events: doc.events } : { summary: doc.summary, events: doc.events };
+          await mkdir(dirname(path), { recursive: true });
+          await writeFile(tmp, JSON.stringify(payload, null, 2), "utf8");
+          await rename(tmp, path);
+        } catch {
+          await rm(tmp, { force: true }).catch(() => {});
+          throw new Error("写入诊断文件失败");
+        }
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.ctx.logger.warn(`写入诊断 ${path} 失败：${message}（本轮 summary 可能未落盘）`);
     }
+  }
+
+  private collectSkipMarks(
+    key: string,
+    skippedByReason: Record<string, number>,
+    idle: string[],
+    addUnhealthy: (name: string, reason: string) => void
+  ): void {
+    const prefix = key + "\u0000";
+    for (const [mark, reason] of this.skipReasons) {
+      if (!mark.startsWith(prefix)) continue;
+      const name = mark.slice(prefix.length);
+      if (reason !== "idle") {
+        addUnhealthy(name, reason);
+        continue;
+      }
+      if (idle.includes(name)) continue;
+      idle.push(name);
+      skippedByReason.idle = (skippedByReason.idle ?? 0) + 1;
+    }
+  }
+
+  private summarizeScope(key: string, servers: Map<string, ProjectServerState>, catalog: DesiredProjectRow[], at: string, projects?: number): DiagSummary {
+    const skippedByReason: Record<string, number> = {};
+    const unhealthy: DiagUnhealthy[] = [];
+    const idle: string[] = [];
+    const seenUnhealthy = new Set<string>();
+    const addUnhealthy = (name: string, reason: string) => {
+      if (seenUnhealthy.has(name)) return;
+      seenUnhealthy.add(name);
+      unhealthy.push({ name, reason });
+      skippedByReason[reason] = (skippedByReason[reason] ?? 0) + 1;
+    };
+    let mounted = 0;
+    for (const state of servers.values()) {
+      const health = this.healthByMount.get(this.healthKey(key, state.rawName));
+      if (health?.givenUp === true) {
+        addUnhealthy(state.rawName, "give-up");
+        continue;
+      }
+      if (state.phase === "active" || state.phase === "mounting") mounted += 1;
+      if (state.phase === "failed") addUnhealthy(state.rawName, state.error ?? "failed");
+    }
+    this.collectSkipMarks(key, skippedByReason, idle, addUnhealthy);
+    return {
+      at,
+      ...(projects === undefined ? {} : { projects }),
+      rows: catalog.length,
+      mounted,
+      skippedByReason,
+      unhealthy,
+      ...(idle.length > 0 ? { idle } : {}),
+      ...(this.toolBudgetHits.get(key)?.length ? { toolBudget: this.toolBudgetHits.get(key) } : {})
+    };
+  }
+
+  private async writeSummaries(): Promise<void> {
+    const at = new Date().toISOString();
+    for (const [key, entry] of this.projects) {
+      const catalog = this.lastScanDesired.get(key)?.rows ?? [];
+      const summary = this.summarizeScope(key, entry.servers, catalog, at);
+      const path = join(entry.projectRoot, DSH_DIR, DIAG_FILE);
+      if (summary.rows === 0 && summary.unhealthy.length === 0 && (summary.idle?.length ?? 0) === 0) {
+        try {
+          await readFile(path);
+        } catch {
+          continue;
+        }
+      }
+      await this.writeDiagAt(path, undefined, summary);
+    }
+    const globalSummary = this.summarizeScope(GLOBAL_SCOPE_KEY, this.globalServers, this.lastGlobalDesired, at, this.projects.size);
+    const userHasContent = this.userLayer.ymlRows.length + this.userLayer.jsonRows.length + this.userLayer.profileRows.length > 0
+      || this.userLayer.ymlError !== null
+      || this.userLayer.jsonError !== null
+      || this.userLayer.profileError !== null;
+    const globalPath = join(dirname(this.resolveUserLayerPaths().mcpYml), DIAG_FILE);
+    if (globalSummary.rows === 0 && globalSummary.unhealthy.length === 0 && (globalSummary.idle?.length ?? 0) === 0 && !userHasContent) {
+      try {
+        await readFile(globalPath);
+      } catch {
+        return;
+      }
+    }
+    await this.writeDiagAt(globalPath, undefined, globalSummary);
   }
 
   /** 装载一个期望行；返回跳过原因（有则不建装载实例），undefined = 已发起装载。 */
@@ -1275,7 +1846,16 @@ export class ProjectMcpRegistry {
     );
   }
 
-  private async unmountServer(container: MountContainer, rawName: string) {
+  private async unmountServer(container: MountContainer, rawName: string, health: "forget" | "generation" = "forget") {
+    const mark = this.healthKey(container.key, rawName);
+    if (health === "forget") this.healthByMount.delete(mark);
+    else {
+      const record = this.healthByMount.get(mark);
+      if (record !== undefined) {
+        record.everHadTools = false;
+        record.nextRemountAt = 0;
+      }
+    }
     const state = container.servers.get(rawName);
     if (state === undefined) return;
     container.servers.delete(rawName);
@@ -1285,6 +1865,127 @@ export class ProjectMcpRegistry {
     } catch {
       // fiber 已随上下文销毁
     }
+  }
+
+  private healthKey(containerKey: string, rawName: string): string {
+    return containerKey + "\u0000" + rawName;
+  }
+
+  private healthOf(containerKey: string, rawName: string): MountHealth {
+    const key = this.healthKey(containerKey, rawName);
+    const existing = this.healthByMount.get(key);
+    if (existing !== undefined) return existing;
+    const created: MountHealth = { everHadTools: false, remountCount: 0, nextRemountAt: 0, givenUp: false };
+    this.healthByMount.set(key, created);
+    return created;
+  }
+
+  /**
+   * 连接死亡自愈：当前 fiber 世代曾经有过工具、当前 0 工具持续超过退避窗口、未 disabled
+   * → unmount 再 mount（新世代清 everHadTools，不抢官方内部重连）。
+   * 单次 `mcpToolCount === 0` 边沿不拆连接（同世代 list_changed 清空再填回）。
+   * 工具重新出现时清 remountCount / givenUp：give-up 表示连续失败，不是寿命配额。
+   * 已重挂过、新世代仍长时间 0 工具则累加失败世代（仍不拆官方首连窗口），满上限 give-up。
+   */
+  private async remountUnhealthy(): Promise<void> {
+    for (const [key, entry] of this.projects) {
+      await this.remountUnhealthyIn(this.projectContainer(key, entry));
+    }
+    await this.remountUnhealthyIn(this.globalMountContainer());
+    for (const mark of this.healthByMount.keys()) {
+      const sep = mark.lastIndexOf("\u0000");
+      const scopeKey = mark.slice(0, sep);
+      const rawName = mark.slice(sep + 1);
+      const servers = scopeKey === GLOBAL_SCOPE_KEY ? this.globalServers : this.projects.get(scopeKey)?.servers;
+      if (!servers?.has(rawName)) this.healthByMount.delete(mark);
+    }
+  }
+
+  private recoverMountHealth(health: MountHealth, markKey: string): void {
+    health.everHadTools = true;
+    health.remountCount = 0;
+    health.givenUp = false;
+    health.nextRemountAt = 0;
+    if (this.skipReasons.get(markKey) === "give-up") this.skipReasons.delete(markKey);
+  }
+
+  private async remountDeadFiber(container: MountContainer, state: ProjectServerState, health: MountHealth): Promise<void> {
+    if (health.remountCount >= this.remountLimit()) {
+      await this.markGiveUp(container, state, health);
+      return;
+    }
+    health.remountCount += 1;
+    health.nextRemountAt = 0;
+    await container.diag({ kind: "remount", rawName: state.rawName, effectiveName: state.effectiveName, attempt: health.remountCount });
+    this.ctx.logger.warn(`${container.label} "${state.effectiveName}" 连接巡检：工具数为 0，第 ${health.remountCount} 次重挂`);
+    const item: DesiredProjectRow = { rawName: state.rawName, row: state.row, source: state.source };
+    await this.unmountServer(container, state.rawName, "generation");
+    await this.mountServer(container, item);
+  }
+
+  private async noteZeroToolsGeneration(container: MountContainer, state: ProjectServerState, health: MountHealth, now: number): Promise<void> {
+    if (health.remountCount <= 0) return;
+    health.remountCount += 1;
+    health.nextRemountAt = now + this.remountBackoffMs();
+    if (health.remountCount >= this.remountLimit()) await this.markGiveUp(container, state, health);
+  }
+
+  private async remountUnhealthyIn(container: MountContainer): Promise<void> {
+    for (const state of snapshotValues(container.servers)) {
+      if (this.disposed || !container.isCurrent(state) || state.row.disabled === true) continue;
+      const health = this.healthOf(container.key, state.rawName);
+      if (mcpToolCount(this.ctx, state.effectiveName) > 0) {
+        this.recoverMountHealth(health, container.key + "\u0000" + state.rawName);
+        continue;
+      }
+      await this.maybeRemountZeroTools(container, state, health);
+    }
+  }
+
+  private async maybeRemountZeroTools(container: MountContainer, state: ProjectServerState, health: MountHealth): Promise<void> {
+    if (state.phase !== "active" || health.givenUp) return;
+    const now = this.nowMs();
+    if (health.nextRemountAt === 0) {
+      health.nextRemountAt = now + this.remountBackoffMs();
+      return;
+    }
+    if (now < health.nextRemountAt) return;
+    if (health.everHadTools) {
+      await this.remountDeadFiber(container, state, health);
+      return;
+    }
+    await this.noteZeroToolsGeneration(container, state, health, now);
+  }
+
+  private async markGiveUp(container: MountContainer, state: ProjectServerState, health: MountHealth): Promise<void> {
+    health.givenUp = true;
+    this.skipReasons.set(container.key + "\u0000" + state.rawName, "give-up");
+    await container.diag({ kind: "give-up", rawName: state.rawName, effectiveName: state.effectiveName, remountCount: health.remountCount });
+    this.ctx.logger.warn(`${container.label} "${state.effectiveName}" 连续重挂 ${health.remountCount} 次后仍无工具，停止自愈`);
+  }
+
+  private inspectToolBudgets(): void {
+    this.toolBudgetHits.clear();
+    const budget = this.providers.toolBudget ?? parseToolBudgetWarn();
+    const visit = (scopeKey: string, label: string, servers: Map<string, ProjectServerState>) => {
+      const hits: { name: string; tools: number; bytes: number }[] = [];
+      for (const state of servers.values()) {
+        if (state.phase !== "active") continue;
+        const stats = mcpToolBudgetStats(this.ctx, state.effectiveName);
+        const over = stats.tools > budget.maxTools || stats.bytes > budget.maxBytes;
+        if (!over) {
+          this.warnGated("budget\u0000" + state.effectiveName, "", () => {});
+          continue;
+        }
+        hits.push({ name: state.effectiveName, tools: stats.tools, bytes: stats.bytes });
+        this.warnGated("budget\u0000" + state.effectiveName, `${stats.tools}\u0000${stats.bytes}`, () => {
+          this.ctx.logger.warn(`${label} "${state.effectiveName}" 注册了 ${stats.tools} 个工具 / ${stats.bytes} 字节，超过告警阈值 ${budget.maxTools} / ${budget.maxBytes}（只告警不裁剪）`);
+        });
+      }
+      if (hits.length > 0) this.toolBudgetHits.set(scopeKey, hits);
+    };
+    for (const [key, entry] of this.projects) visit(key, `项目 MCP（${entry.projectRoot}）`, entry.servers);
+    visit(GLOBAL_SCOPE_KEY, "全局用户层 MCP", this.globalServers);
   }
 
   // ── 会话可见性（deny 重扫）────────────────────────────────────────────
@@ -1313,8 +2014,33 @@ export class ProjectMcpRegistry {
           if (this.globalServers.has(rawName)) hidden.push(rawName);
         }
       }
-      this.applyRestriction(agent, expandToToolNames(hidden, toolIds));
+      const deny = expandToToolNames(hidden, toolIds);
+      deny.push(...this.toolFilterDeniesForSession(project, toolIds));
+      this.applyRestriction(agent, deny);
     }
+  }
+
+  /** 本会话可见的服务器上，条目 tools.allow/deny 展开成已注册工具名。 */
+  private appendFilterDenies(
+    deny: string[],
+    servers: Map<string, ProjectServerState>,
+    toolIds: string[],
+    skip?: (state: ProjectServerState) => boolean
+  ): void {
+    for (const state of servers.values()) {
+      if (state.phase !== "active") continue;
+      if (skip?.(state) === true) continue;
+      deny.push(...deniedToolsForFilter(state.effectiveName, toolFilterFromConfig(state.row.config), toolIds));
+    }
+  }
+
+  private toolFilterDeniesForSession(sessionProject: string | undefined, toolIds: string[]): string[] {
+    const deny: string[] = [];
+    const entry = sessionProject === undefined ? undefined : this.projects.get(sessionProject);
+    if (entry !== undefined) this.appendFilterDenies(deny, entry.servers, toolIds);
+    const suppressed = sessionProject === undefined ? undefined : this.suppressedGlobals.get(sessionProject);
+    this.appendFilterDenies(deny, this.globalServers, toolIds, (state) => suppressed?.has(state.rawName) === true);
+    return deny;
   }
 
   /** 各装载容器里已 active 的生效名，按项目根分组（deny 计算的输入）。 */
@@ -1333,7 +2059,7 @@ export class ProjectMcpRegistry {
   /** 宿主工具层当前注册的全部工具 id；取不到时按空集（本轮不新增限制，下次 sweep 补）。 */
   private registeredToolIds(): string[] {
     try {
-      return (this.ctx.tools?.schemas?.() ?? []).map((schema: any) => String(schema?.id ?? schema?.name ?? ""));
+      return (this.ctx.tools?.schemas?.() ?? []).map((schema: any) => schemaToolId(schema)).filter((id: string) => id !== "");
     } catch {
       return [];
     }
@@ -1420,6 +2146,16 @@ export class ProjectMcpRegistry {
     return this.reconcileCount;
   }
 
+  /** 配置文件读取次数（测试用：指纹未变时不应再增长）。 */
+  get debugConfigReadCount(): number {
+    return this.configReadCount;
+  }
+
+  /** 健康巡检记录（测试用：断言恢复后 remountCount / givenUp 清零）。 */
+  debugHealth(projectRoot: string, rawName: string): { everHadTools: boolean; remountCount: number; nextRemountAt: number; givenUp: boolean } | undefined {
+    return this.healthByMount.get(this.healthKey(projectKeyOf(projectRoot), rawName));
+  }
+
   /** 等待某项目某行的装载状态满足 predicate（写入后 reconciliation 用）。 */
   async waitForState(projectRoot: string, rawName: string, predicate: (state: ProjectServerState | undefined) => boolean, timeoutMs = 3000): Promise<boolean> {
     const key = projectKeyOf(projectRoot);
@@ -1447,30 +2183,22 @@ export class ProjectMcpRegistry {
     return false;
   }
 
-  /** 行级 view 的逐层影子优先查找：项目 yml > 项目 .dsh/mcp.json > .mcp.json > profile json > 用户 yml > 用户 json > 装载残留态。 */
-  private async locateRow(projectRoot: string, rawName: string, state?: ProjectServerState): Promise<{ row?: PatchRow; source?: McpRowSource; path?: string }> {
+  /** 行级 view 的逐层影子优先查找：项目 yml > 项目 .dsh/mcp.json > .mcp.json > profile json > 用户 yml > 用户 json > 装载残留态。只读内存目录。 */
+  private locateRowFromMemory(projectRoot: string, rawName: string, state?: ProjectServerState): { row?: PatchRow; source?: McpRowSource; path?: string } {
+    const key = projectKeyOf(projectRoot);
+    const files = this.lastScanFiles.get(key);
     const userPaths = this.resolveUserLayerPaths();
-    const ymlPath = projectMcpFile(projectRoot);
-    if (!isSameFilePath(ymlPath, userPaths.mcpYml)) {
-      try {
-        const raw = await readPatchFile(ymlPath);
-        const ymlRow = extractManagedRows(raw).find((candidate) => rowNameOf(candidate) === rawName);
-        if (ymlRow !== undefined) return { row: ymlRow, source: "dsh-project", path: ymlPath };
-      } catch {
-        // 落到后续层
-      }
+    if (files !== undefined && !files.skipYmlPartition) {
+      const ymlRow = files.ymlRows.find((candidate) => rowNameOf(candidate) === rawName);
+      if (ymlRow !== undefined) return { row: ymlRow, source: "dsh-project", path: files.ymlPath };
     }
-    const jsonPath = projectDshJsonFile(projectRoot);
-    if (!isSameFilePath(jsonPath, userPaths.mcpJson)) {
-      const projectJson = await readDshJsonFile(jsonPath, { source: "dsh-project-json", cwdPolicy: "project", projectRoot });
-      const projectJsonRow = projectJson.rows.find((candidate) => candidate.rawName === rawName);
-      if (projectJsonRow !== undefined) return { row: projectJsonRow.row, source: "dsh-project-json", path: jsonPath };
+    if (files !== undefined && !files.skipJsonPartition) {
+      const projectJsonRow = files.json.rows.find((candidate) => candidate.rawName === rawName);
+      if (projectJsonRow !== undefined) return { row: projectJsonRow.row, source: "dsh-project-json", path: files.jsonPath };
     }
-    if (mcpJsonLayerEnabled()) {
-      const ccPath = projectMcpJsonFile(projectRoot);
-      const cc = await readMcpJsonFile(ccPath, projectRoot);
-      const found = cc.rows.find((candidate) => candidate.rawName === rawName);
-      if (found !== undefined) return { row: found.row, source: "cc-project", path: ccPath };
+    if (files?.ccEnabled === true) {
+      const found = files.cc.rows.find((candidate) => candidate.rawName === rawName);
+      if (found !== undefined) return { row: found.row, source: "cc-project", path: files.ccPath };
     }
     const profileRow = this.userLayer.profileRows.find((candidate) => candidate.rawName === rawName);
     if (profileRow !== undefined) return { row: profileRow.row, source: "dsh-profile-user", path: this.userLayer.profileJson ?? undefined };
@@ -1482,14 +2210,16 @@ export class ProjectMcpRegistry {
     return {};
   }
 
-  /** 行级 view；未装载时 phase 按行状态推导。行查找按影子优先序逐层进行。 */
-  async serverView(projectRoot: string, rawName: string): Promise<any | undefined> {
+  /** 行级 view；未装载时 phase 按行状态推导。行查找按影子优先序走内存目录。 */
+  async serverView(projectRoot: string, rawName: string): Promise<McpServerRuntimeView | undefined> {
+    return this.enqueue(async () => this.serverViewFromMemory(projectRoot, rawName));
+  }
+
+  private serverViewFromMemory(projectRoot: string, rawName: string): McpServerRuntimeView | undefined {
     const key = projectKeyOf(projectRoot);
     const state = this.projects.get(key)?.servers.get(rawName) ?? this.globalServers.get(rawName);
-    const located = await this.locateRow(projectRoot, rawName, state);
+    const located = this.locateRowFromMemory(projectRoot, rawName, state);
     if (located.row === undefined) return undefined;
-    // 用户层行报全局作用域 + 层文件路径（与快照的 pushGlobal 同口径）：报
-    // workspace/项目根会让消费方以为这是项目行、误导「改哪个文件」。
     const isUserLayerRow = located.source !== undefined && !isProjectLayerSource(located.source);
     const scope: McpScopeInfo = isUserLayerRow
       ? { kind: "global", path: located.path ?? "", label: "user" }
@@ -1500,11 +2230,7 @@ export class ProjectMcpRegistry {
     const effectiveName = isUserLayerRow
       ? globalState?.effectiveName ?? rawName
       : this.effective.get(key + "\u0000" + rawName);
-    // owned：装载实例确实来自这条行所在的那个源（与分区视图 partitionServers 的
-    // state?.source === source 同一口径）。异来源实例挂在同一个 rawName 上时，
-    // 本行是被遮蔽方——phase 走 null，toolCount 不借用别源的装载数据。
     const owned = state?.source === located.source;
-    // 跳过原因按「行所在层」的作用域查（被跳过的全局行没有 state，不能靠 state.scope 判）。
     const scopeKey = isUserLayerRow ? GLOBAL_SCOPE_KEY : key;
     return {
       ...view,
@@ -1516,119 +2242,123 @@ export class ProjectMcpRegistry {
     };
   }
 
-  /** 全量快照：每个已知项目一个 yml 分区 + 一个 .mcp.json 分区（有内容才出），外加用户层分区。 */
+  /** 内存快照：进 enqueue 与对账互斥，不读盘、不触发对账。要收敛请走 `reload()` / `reconcileNow()`。 */
   async snapshot(): Promise<ProjectFileState[]> {
-    await this.enqueue(async () => {
-      await this.reconcileAll();
+    return this.enqueue(async () => this.buildSnapshotFromMemory());
+  }
+
+  private pushYmlSnapshot(
+    out: ProjectFileState[],
+    key: string,
+    entry: ProjectEntry,
+    files: ProjectScanFiles | undefined,
+    userPaths: UserLayerPaths
+  ): void {
+    const ymlPath = files?.ymlPath ?? projectMcpFile(entry.projectRoot);
+    const skipYmlPartition = files?.skipYmlPartition === true || isSameFilePath(ymlPath, userPaths.mcpYml);
+    const ymlLive = [...entry.servers.values()].some((state) => state.source === "dsh-project" || state.source === undefined);
+    const skipMissingYml = files?.ymlMissing === true && !ymlLive;
+    if (skipYmlPartition || skipMissingYml) return;
+    const ymlOk = files?.ymlOk ?? true;
+    out.push({
+      project: entry.projectRoot,
+      path: ymlPath,
+      ok: ymlOk,
+      error: files?.ymlError ?? null,
+      source: "dsh-project",
+      servers: ymlOk ? this.partitionServers(entry, key, files?.ymlRows ?? [], "dsh-project") : []
     });
+  }
+
+  private pushJsonLayerSnapshot(
+    out: ProjectFileState[],
+    key: string,
+    entry: ProjectEntry,
+    source: "dsh-project-json" | "cc-project",
+    path: string,
+    result: JsonReadResult,
+    skip: boolean
+  ): void {
+    if (skip) return;
+    const live = [...entry.servers.values()].some((state) => state.source === source);
+    if (result.rows.length === 0 && result.fileError === undefined && result.entryErrors.length === 0 && !live) return;
+    const file: ProjectFileState = {
+      project: entry.projectRoot,
+      path,
+      ok: result.fileError === undefined,
+      error: result.fileError ?? null,
+      source,
+      servers: this.partitionServers(entry, key, result.rows.map((r) => r.row), source)
+    };
+    if (result.entryErrors.length > 0) (file as any).entryErrors = result.entryErrors;
+    out.push(file);
+  }
+
+  private pushGlobalSnapshot(out: ProjectFileState[], path: string, source: McpRowSource, rows: SourcedRow[], error: string | null): void {
+    if (path === "" || (rows.length === 0 && error === null)) return;
+    out.push({
+      project: dirname(path),
+      path,
+      kind: "global",
+      source,
+      ok: error === null,
+      error,
+      servers: rows
+        .map((r) => {
+          const view = patchRowToView(r.row, { kind: "global", path, label: "user" });
+          if (view === undefined) return undefined;
+          const state = this.globalServers.get(r.rawName);
+          const owned = state?.source === source;
+          return {
+            ...view,
+            source,
+            effectiveServerName: state?.effectiveName ?? r.rawName,
+            fiberPhase: fiberPhaseFor(state, r.row, owned),
+            skipReason: skipReasonFor(this.skipReasons, GLOBAL_SCOPE_KEY, r.rawName, state, r.row) ?? null,
+            toolCount: owned && state?.phase === "active" ? mcpToolCount(this.ctx, state.effectiveName) : 0
+          };
+        })
+        .filter((v): v is NonNullable<typeof v> => v !== undefined)
+    });
+  }
+
+  private buildSnapshotFromMemory(): ProjectFileState[] {
     const out: ProjectFileState[] = [];
     const userPaths = this.resolveUserLayerPaths();
     for (const [key, entry] of this.projects) {
-      const path = projectMcpFile(entry.projectRoot);
-      const file: ProjectFileState = { project: entry.projectRoot, path, ok: true, error: null, source: "dsh-project", servers: [] };
-      let rows: PatchRow[] = [];
-      let usable = true;
-      let skipYmlPartition = false;
-      if (isSameFilePath(path, userPaths.mcpYml)) {
-        // 家目录即项目根：该文件就是用户层文件，不作为项目分区展示。
-        skipYmlPartition = true;
-      } else {
-        try {
-          rows = extractManagedRows(await readPatchFile(path));
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          // yml 缺失且没有 yml 来源的装载：文件本就不存在，不出 yml 分区——
-          // 用户层行也能让项目有装载实例，servers.size>0 不再等价「装载后文件被删」。
-          const ymlLive = [...entry.servers.values()].some((state) => state.source === "dsh-project" || state.source === undefined);
-          if (message.includes("ENOENT") && !ymlLive) {
-            skipYmlPartition = true;
-          } else {
-            usable = false;
-            file.ok = false;
-            file.error = message;
-          }
-        }
-      }
-      if (!skipYmlPartition) {
-        if (usable) file.servers = this.partitionServers(entry, key, rows, "dsh-project");
-        out.push(file);
-      }
-      // ── 项目 .dsh/mcp.json 分区（DSH 自有 JSON 方言；家目录即项目根时跳过）──
-      {
-        const jsonPath = projectDshJsonFile(entry.projectRoot);
-        if (!isSameFilePath(jsonPath, userPaths.mcpJson)) {
-          const pj = await readDshJsonFile(jsonPath, { source: "dsh-project-json", cwdPolicy: "project", projectRoot: entry.projectRoot });
-          const pjLive = [...entry.servers.values()].some((state) => state.source === "dsh-project-json");
-          if (pj.rows.length > 0 || pj.fileError !== undefined || pj.entryErrors.length > 0 || pjLive) {
-            const pjFile: ProjectFileState = {
-              project: entry.projectRoot,
-              path: jsonPath,
-              ok: pj.fileError === undefined,
-              error: pj.fileError ?? null,
-              source: "dsh-project-json",
-              servers: this.partitionServers(entry, key, pj.rows.map((r) => r.row), "dsh-project-json")
-            };
-            if (pj.entryErrors.length > 0) (pjFile as any).entryErrors = pj.entryErrors;
-            out.push(pjFile);
-          }
-        }
-      }
-      // ── 项目 .mcp.json 分区（被开关关闭时整分区不出，含残留装载的情形）──
-      if (mcpJsonLayerEnabled()) {
-        const ccPath = projectMcpJsonFile(entry.projectRoot);
-        const cc = await readMcpJsonFile(ccPath, entry.projectRoot);
-        const ccLive = [...entry.servers.values()].some((state) => state.source === "cc-project");
-        if (cc.rows.length > 0 || cc.fileError !== undefined || cc.entryErrors.length > 0 || ccLive) {
-          const ccFile: ProjectFileState = {
-            project: entry.projectRoot,
-            path: ccPath,
-            ok: cc.fileError === undefined,
-            error: cc.fileError ?? null,
-            source: "cc-project",
-            servers: this.partitionServers(entry, key, cc.rows.map((r) => r.row), "cc-project")
-          };
-          if (cc.entryErrors.length > 0) (ccFile as any).entryErrors = cc.entryErrors;
-          out.push(ccFile);
-        }
+      const files = this.lastScanFiles.get(key);
+      this.pushYmlSnapshot(out, key, entry, files, userPaths);
+      const jsonPath = files?.jsonPath ?? projectDshJsonFile(entry.projectRoot);
+      this.pushJsonLayerSnapshot(
+        out,
+        key,
+        entry,
+        "dsh-project-json",
+        jsonPath,
+        files?.json ?? { rows: [], entryErrors: [] },
+        files?.skipJsonPartition === true || isSameFilePath(jsonPath, userPaths.mcpJson)
+      );
+      if (files?.ccEnabled !== false && mcpJsonLayerEnabled()) {
+        this.pushJsonLayerSnapshot(
+          out,
+          key,
+          entry,
+          "cc-project",
+          files?.ccPath ?? projectMcpJsonFile(entry.projectRoot),
+          files?.cc ?? { rows: [], entryErrors: [] },
+          false
+        );
       }
     }
-    // ── 用户层分区（全局装载：fiberPhase/toolCount 取自 globalServers 中同源实例）──
-    const pushGlobal = (path: string, source: McpRowSource, rows: SourcedRow[], error: string | null): void => {
-      if (path === "" || (rows.length === 0 && error === null)) return;
-      out.push({
-        project: dirname(path),
-        path,
-        kind: "global",
-        source,
-        ok: error === null,
-        error,
-        servers: rows
-          .map((r) => {
-            const view = patchRowToView(r.row, { kind: "global", path, label: "user" });
-            if (view === undefined) return undefined;
-            const state = this.globalServers.get(r.rawName);
-            const owned = state?.source === source;
-            return {
-              ...view,
-              source,
-              effectiveServerName: state?.effectiveName ?? r.rawName,
-              fiberPhase: fiberPhaseFor(state, r.row, owned),
-              skipReason: skipReasonFor(this.skipReasons, GLOBAL_SCOPE_KEY, r.rawName, state, r.row) ?? null,
-              toolCount: owned && state?.phase === "active" ? mcpToolCount(this.ctx, state.effectiveName) : 0
-            };
-          })
-          .filter((v): v is NonNullable<typeof v> => v !== undefined)
-      });
-    };
-    pushGlobal(this.userLayer.profileJson ?? "", "dsh-profile-user", this.userLayer.profileRows, this.userLayer.profileError);
-    pushGlobal(this.userLayer.mcpYml, "dsh-user-yml", this.userLayer.ymlRows, this.userLayer.ymlError);
-    pushGlobal(this.userLayer.mcpJson, "dsh-user", this.userLayer.jsonRows, this.userLayer.jsonError);
+    this.pushGlobalSnapshot(out, this.userLayer.profileJson ?? "", "dsh-profile-user", this.userLayer.profileRows, this.userLayer.profileError);
+    this.pushGlobalSnapshot(out, this.userLayer.mcpYml, "dsh-user-yml", this.userLayer.ymlRows, this.userLayer.ymlError);
+    this.pushGlobalSnapshot(out, this.userLayer.mcpJson, "dsh-user", this.userLayer.jsonRows, this.userLayer.jsonError);
     return out;
   }
 
   /** 一个来源分区的服务器 view 列表；state 只认同来源装载实例（异来源=被遮蔽）。 */
-  private partitionServers(entry: ProjectEntry, key: string, rows: PatchRow[], source: McpRowSource): any[] {
-    const out: any[] = [];
+  private partitionServers(entry: ProjectEntry, key: string, rows: PatchRow[], source: McpRowSource): McpServerRuntimeView[] {
+    const out: McpServerRuntimeView[] = [];
     for (const row of rows) {
       const rawName = rowNameOf(row);
       if (rawName === undefined) continue;
@@ -1642,7 +2372,7 @@ export class ProjectMcpRegistry {
         source,
         ...(effectiveName === undefined ? {} : { effectiveServerName: effectiveName }),
         fiberPhase: fiberPhaseFor(state, row, owned),
-        skipReason: skipReasonFor(this.skipReasons, key, rawName, state, row) ?? null, // env-missing / env-invalid / config-invalid / plugin-throw；fiberPhase 保持生命周期枚举
+        skipReason: skipReasonFor(this.skipReasons, key, rawName, state, row) ?? null, // env-missing / env-invalid / config-invalid / plugin-throw / idle / give-up
         toolCount: owned && state?.phase === "active" ? mcpToolCount(this.ctx, state.effectiveName) : 0
       });
     }
