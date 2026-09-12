@@ -38,7 +38,8 @@ Design and release records (Chinese): [dsh 0.1.5-rc.2 adaptation](docs/design/ad
 [v0.4.0 release notes](docs/releases/v0.4.0.md) ·
 [v0.3.1 release notes](docs/releases/v0.3.1.md).
 
-Code review records (Chinese): [TypeScript changes since v0.3.1](docs/code-review/ts-review-since-v0.3.1.zh.md).
+Code review records (Chinese): [TypeScript changes since v0.3.1](docs/code-review/ts-review-since-v0.3.1.zh.md) ·
+[v0.4.3 to v0.6.0](docs/code-review/ts-review-v0.4.3-to-v0.6.0.zh.md).
 
 ## Installation (mount into a profile)
 
