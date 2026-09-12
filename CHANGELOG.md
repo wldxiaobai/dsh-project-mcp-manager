@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   native `transport` key. Conflicting `url`/`httpUrl` or `transport`/`type`
   pairs fail per entry. Bare `url` remains Streamable HTTP here (the opposite
   of Gemini CLI) and is documented as such.
+- Detect `@wingsky-1/dsh-mcp-manager`'s `{version, servers}` storage at
+  `.dsh/mcp.json` and `~/.dsh/dsh-mcp.json`, write a diagnostic instead of
+  treating it as a silent empty layer, and document coexistence.
 
 - `package.json` discovery fields: `repository`, `bugs`, and `homepage` point at
   https://github.com/wldxiaobai/dsh-project-mcp-manager so npm and GitHub can

@@ -43,6 +43,7 @@ import {
   MCP_YML_FILE,
   PROFILE_ENV,
   dshHomeDir,
+  foreignUserMcpJsonFile,
   isValidProfileName,
   profileMcpJsonFile,
   userLayerPathsIn,
@@ -428,6 +429,7 @@ function buildScanDiag(input: {
     || ownRows.length > 0
     || projectJson.fileError !== undefined
     || projectJson.entryErrors.length > 0
+    || projectJson.formatHint !== undefined
     || cc.fileError !== undefined
     || cc.entryErrors.length > 0
     || shadowedOwnCc.length > 0
@@ -444,8 +446,13 @@ function buildScanDiag(input: {
   if (suppressed.size > 0) payload.shadowedByProject = [...suppressed];
   if (identityShadows.length > 0) payload.shadowedIdentity = identityShadows;
   if (projectJson.entryErrors.length > 0) payload.dshJsonEntryErrors = projectJson.entryErrors;
+  if (projectJson.formatHint !== undefined) payload.foreignFormat = projectJson.formatHint;
   if (cc.entryErrors.length > 0) payload.ccEntryErrors = cc.entryErrors;
   return payload;
+}
+
+function jsonIssueNotes(result: JsonReadResult): string[] {
+  return [...result.entryErrors, ...(result.formatHint === undefined ? [] : [result.formatHint])];
 }
 
 /** 单行三键先到先得：命中已有影子键则归因剔除，否则注册进影子表（disabled 占名行也注册）。 */
@@ -837,8 +844,19 @@ export class ProjectMcpRegistry {
     };
     // 告警按「文件 + 问题集合」门控：同一个坏条目不随每次文件事件重刷。
     this.warnFileIssues(paths.mcpYml, `用户层 MCP（${paths.mcpYml}）`, yml.error ?? undefined, []);
-    this.warnFileIssues(paths.mcpJson, `用户层 MCP（${paths.mcpJson}）`, json.fileError, json.entryErrors);
-    if (profileJson !== null) this.warnFileIssues(profileJson, `用户层 MCP（${profileJson}）`, profile.fileError, profile.entryErrors);
+    this.warnFileIssues(paths.mcpJson, `用户层 MCP（${paths.mcpJson}）`, json.fileError, jsonIssueNotes(json));
+    if (profileJson !== null) this.warnFileIssues(profileJson, `用户层 MCP（${profileJson}）`, profile.fileError, jsonIssueNotes(profile));
+    if (json.formatHint !== undefined) {
+      await this.writeGlobalDiag({ kind: "foreign-format", path: paths.mcpJson, message: json.formatHint });
+    }
+    const foreignPath = foreignUserMcpJsonFile(dirname(paths.mcpJson));
+    if (!isSameFilePath(foreignPath, paths.mcpJson)) {
+      const foreign = await readDshJsonFile(foreignPath, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" });
+      this.warnFileIssues(foreignPath, `用户层 MCP（${foreignPath}）`, foreign.fileError, jsonIssueNotes(foreign));
+      if (foreign.formatHint !== undefined) {
+        await this.writeGlobalDiag({ kind: "foreign-format", path: foreignPath, message: foreign.formatHint });
+      }
+    }
   }
 
   /**
@@ -978,8 +996,8 @@ export class ProjectMcpRegistry {
     // 项目不写任何记录——用户层行落到每个项目不算该项目的事件。
     const diag = buildScanDiag({ yml, projectJson, cc, ownRows, shadowedOwnCc: merged.shadowedOwnCc, suppressed, identityShadows, shadowChanged });
     if (diag !== null) await this.writeDiag(projectRoot, diag);
-    this.warnFileIssues(key + "\u0000json", `项目 MCP（.dsh/${JSON_MCP_FILE}，${projectRoot}）`, projectJson.fileError, projectJson.entryErrors);
-    this.warnFileIssues(key + "\u0000cc", `项目 MCP（${CC_PROJECT_FILE}，${projectRoot}）`, cc.fileError, cc.entryErrors);
+    this.warnFileIssues(key + "\u0000json", `项目 MCP（.dsh/${JSON_MCP_FILE}，${projectRoot}）`, projectJson.fileError, jsonIssueNotes(projectJson));
+    this.warnFileIssues(key + "\u0000cc", `项目 MCP（${CC_PROJECT_FILE}，${projectRoot}）`, cc.fileError, jsonIssueNotes(cc));
     // 源级隔离：某个源坏了只清空该源的 rows（读取器已保证），其余源照常进
     // desired。绝不能整项目一票否决——那会把坏文件的代价转嫁给好文件的行。
     // 项目容器只装项目层行；用户层行由全局容器装载（见 reconcileGlobals）。

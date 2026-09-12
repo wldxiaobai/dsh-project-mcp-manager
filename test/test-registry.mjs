@@ -1063,6 +1063,42 @@ try {
       }
     }
 
+    // 36. C4：对方 {version, servers} 项目文件写入诊断；~/.dsh/dsh-mcp.json 同理；
+    // mcpServers 与 servers 并存时不告警。
+    {
+      const homeF = await mkdtemp(join(tmpdir(), "dsh-mcp-foreign-home-"));
+      const projF = await mkdtemp(join(tmpdir(), "dsh-mcp-foreign-proj-"));
+      try {
+        await mkdir(join(projF, ".dsh"), { recursive: true });
+        await writeFile(join(projF, ".dsh", "mcp.json"), JSON.stringify({ version: 1, servers: [{ name: "x" }] }), "utf8");
+        await writeFile(join(homeF, "dsh-mcp.json"), JSON.stringify({ version: 1, servers: [] }), "utf8");
+        await writeFile(join(homeF, "mcp.json"), JSON.stringify({ mcpServers: {}, servers: [] }), "utf8");
+        const ctxF = fakeCtx();
+        const warnsF = [];
+        ctxF.logger.warn = (msg) => { warnsF.push(String(msg)); };
+        const registryF = new ProjectMcpRegistry(ctxF, {
+          globalNames: async () => [],
+          userLayerPaths: { mcpYml: join(homeF, "mcp.yml"), mcpJson: join(homeF, "mcp.json"), profilesDir: join(homeF, "profiles") }
+        });
+        ctxF.agentsList.push(fakeAgent("session-foreign", projF));
+        await registryF.reconcileNow();
+        const diagF = await readDiag(projF);
+        assert.ok(diagF.some((row) => typeof row.foreignFormat === "string" && row.foreignFormat.includes("dsh-mcp-manager")), "project diag names the foreign format: " + JSON.stringify(diagF));
+        const globalDiag = JSON.parse(await readFile(join(homeF, ".mcp-diag.json"), "utf8"));
+        assert.ok(globalDiag.some((row) => row.kind === "foreign-format" && String(row.path).includes("dsh-mcp.json")), "global diag mentions dsh-mcp.json: " + JSON.stringify(globalDiag));
+        assert.ok(warnsF.some((w) => w.includes("dsh-mcp-manager")), "host log names the other plugin");
+        assert.equal(warnsF.filter((w) => w.includes(join(homeF, "mcp.json")) && w.includes("dsh-mcp-manager")).length, 0, "mcpServers + servers together does not warn");
+        for (const disposer of ctxF.disposers) {
+          const cleanup = disposer();
+          if (typeof cleanup === "function") cleanup();
+        }
+        pass("foreign {version, servers} format is diagnosed at project and user layers");
+      } finally {
+        await rmRetry(homeF);
+        await rmRetry(projF);
+      }
+    }
+
     // 场景 24 的 unlink 会留下防抖后的迟到 reconcile 与 chokidar 内部重扫：
     // 先让队列落空再关 watcher，否则 close 与临时目录删除赛跑、句柄不释放。
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 800));

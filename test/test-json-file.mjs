@@ -182,6 +182,23 @@ try {
   const rHttpUrlStdio = await readDshJsonFile(pHttpUrlStdio, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" });
   assert.ok(rHttpUrlStdio.entryErrors.some((e) => /httpUrl/.test(e) && /stdio/.test(e)), "httpUrl vs stdio conflict");
   pass("httpUrl, transport key, url/httpUrl and transport/type conflicts, transport:sse");
+
+  // 6c. C4：对方 {version, servers} 格式诊断；与 mcpServers 共存时不告警
+  const pForeign = await write("foreign.json", JSON.stringify({ version: 1, servers: [{ name: "x", transport: "stdio" }] }));
+  const rForeign = await readDshJsonFile(pForeign, { source: "dsh-project-json", cwdPolicy: "project", projectRoot: "/work/proj" });
+  assert.equal(rForeign.rows.length, 0);
+  assert.equal(rForeign.fileError, undefined, "foreign format is an empty DSH layer, not a parse error");
+  assert.match(rForeign.formatHint ?? "", /dsh-mcp-manager/);
+  assert.match(rForeign.formatHint ?? "", /mcpServers/);
+  const pBoth = await write("both.json", JSON.stringify({ mcpServers: { keep: { command: "node" } }, servers: [], version: 1 }));
+  const rBoth = await readDshJsonFile(pBoth, { source: "dsh-project-json", cwdPolicy: "project", projectRoot: "/work/proj" });
+  assert.equal(rBoth.formatHint, undefined, "mcpServers + servers together is our dialect");
+  assert.equal(rBoth.rows[0].rawName, "keep");
+  const pServersOnly = await write("servers-only.json", JSON.stringify({ servers: [] }));
+  assert.match((await readDshJsonFile(pServersOnly, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" })).formatHint ?? "", /servers/);
+  const pTheme = await write("theme.json", JSON.stringify({ theme: "dark" }));
+  assert.equal((await readDshJsonFile(pTheme, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" })).formatHint, undefined, "unrelated JSON stays a silent empty layer");
+  pass("foreign {version, servers} format is diagnosed; mcpServers coexistence is silent");
 } finally {
   await rm(dir, { recursive: true, force: true });
 }

@@ -125,3 +125,19 @@ pnpm test          # node 直跑 test/ 下六个 .mjs（model / mcp-file / json-
 连接，所有项目可见），不再按项目 fan-out。装载失败/配置无效行仅告警跳过，不影响
 其他服务器。`~/.claude.json` 这类 Claude 用户态单体文件（混存凭据与项目历史）
 自 v0.4.0 起**完全不再读取**。
+
+## 与同类插件共存
+
+本插件与 `@wingsky-1/dsh-mcp-manager` 都做按项目自带 MCP，但**文件格式互不兼容**：
+
+1. **项目文件格式互不兼容。** 本插件读 `<projectRoot>/.dsh/mcp.json` 里的
+   `{ mcpServers: { … } }`；对方在同一路径存 `{ version, servers: [] }`。缺
+   `mcpServers` 在本插件是合法空层，对方格式会表现为「我配了但没生效」。装载器
+   现在会写一条诊断，指认该格式并建议改用 `mcpServers` 或 `.dsh/mcp.yml`。
+   全局 `~/.dsh/dsh-mcp.json` 同样提示。
+2. **同名服务器会被两个插件各启动一次**，stdio 可能互相抢端口或独占资源。
+3. **建议同一项目只启用一个**，或让两者分居 `mcp.yml`（本插件）与
+   `.dsh/mcp.json`（对方）。
+
+`globalNames()` 只读官方 loader patch 行，看不到对方运行时注册的工具，因此
+「改名避让」不会覆盖对方实例。

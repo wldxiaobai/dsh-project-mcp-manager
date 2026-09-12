@@ -109,3 +109,19 @@ global row's tools (project-side suppression).
   `toolCallTimeoutMs` / `failOnStartupError` / `reconnect` now **apply** in
   legacy files too (previously ignored). Both only change behavior for entries
   that spell them out.
+
+## Coexistence with `@wingsky-1/dsh-mcp-manager`
+
+Both plugins auto-load MCP servers from `<projectRoot>/.dsh/mcp.json`, but
+the on-disk dialects differ. This plugin reads `mcpServers`; the other
+stores `{ version, servers: [] }`. A file in the other format is a legal
+empty layer here (missing `mcpServers`), so the loader now writes a
+`foreignFormat` diagnostic instead of staying silent. The same check applies
+to `~/.dsh/dsh-mcp.json`.
+
+If both plugins run in one host, the same `serverName` can be spawned twice.
+Prefer a single plugin per project, or keep this plugin on `.dsh/mcp.yml` and
+the other on `.dsh/mcp.json`. `globalNames()` only sees official loader patch
+rows, not tools the other plugin registered at runtime, so rename-to-avoid
+does not cover that other instance. See the README section
+[Coexistence with other MCP manager plugins](../../README.md#coexistence-with-other-mcp-manager-plugins).

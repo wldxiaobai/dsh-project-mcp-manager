@@ -27,6 +27,25 @@ import { MAX_TIMER_DELAY_MS, SERVER_NAME_RE, mcpServerInputSchema, resolveMcpTra
 
 /** DSH 自有 JSON 配置文件名（位于 `<root>/.dsh/`、`$DSH_HOME/`、`$DSH_HOME/profiles/<name>/`）。 */
 export const JSON_MCP_FILE = "mcp.json";
+/** 对方插件（`@wingsky-1/dsh-mcp-manager`）的全局存储文件名（位于 `$DSH_HOME/`）。 */
+export const FOREIGN_MCP_JSON_FILE = "dsh-mcp.json";
+
+/** 对方 `{version, servers}` 存储格式的可执行诊断（本插件不读取该方言）。 */
+export const FOREIGN_MCP_FORMAT_HINT =
+  "该文件疑似 @wingsky-1/dsh-mcp-manager 的存储格式（{version, servers}），本插件不读取。建议改用 mcpServers 方言，或改用 .dsh/mcp.yml";
+
+/**
+ * 检测对方插件的存储格式。`mcpServers` 一旦存在（即便同时有 `servers`）就不告警——
+ * 那是本插件方言。缺 `mcpServers` 且顶层是 `servers` 数组，或同时有 `version` 与
+ * `servers`，才认定为对方格式。
+ */
+export function detectForeignMcpFormat(value: Record<string, unknown>): string | undefined {
+  if ("mcpServers" in value) return undefined;
+  const servers = value.servers;
+  if (Array.isArray(servers) || ("version" in value && servers !== undefined)) return FOREIGN_MCP_FORMAT_HINT;
+  return undefined;
+}
+
 /** 遗留 Claude Code project 层文件名（位于项目根，与 `.dsh/` 并列，只读）。 */
 export const CC_PROJECT_FILE = ".mcp.json";
 /** 置为 "1" 时跳过遗留 `<projectRoot>/.mcp.json` 的读取与监听；DSH 自有 JSON 层不受影响。 */
@@ -59,6 +78,11 @@ export interface JsonReadResult {
   entryErrors: string[];
   /** 整文件级错误（不存在=正常空结果；解析失败等）。消息不含文件内容。 */
   fileError?: string;
+  /**
+   * 文件存在、缺 `mcpServers`、且顶层像 `{version, servers}`（对方插件存储格式）时的
+   * 诊断。缺 `mcpServers` 仍是合法空层；此字段只为「配了但不生效」提供可执行说明。
+   */
+  formatHint?: string;
 }
 
 /** stdio 空 cwd 的解析策略：项目层=项目根；用户层=继承宿主工作目录。 */
@@ -253,7 +277,16 @@ export async function readJsonRows(path: string, options: JsonReadOptions): Prom
   if (result.error !== undefined) return { rows: [], entryErrors: [], fileError: `${label} ${result.error}` };
   if (!isPlainObject(result.value)) return { rows: [], entryErrors: [], fileError: `${label} 顶层必须是 JSON 对象` };
   if (!("mcpServers" in result.value)) {
-    if (options.requireMcpServers === true) return { rows: [], entryErrors: [], fileError: `${label} 缺少 mcpServers 字段` };
+    const formatHint = detectForeignMcpFormat(result.value);
+    if (options.requireMcpServers === true) {
+      return {
+        rows: [],
+        entryErrors: [],
+        fileError: `${label} 缺少 mcpServers 字段`,
+        ...(formatHint === undefined ? {} : { formatHint })
+      };
+    }
+    if (formatHint !== undefined) return { rows: [], entryErrors: [], formatHint };
     return { rows: [], entryErrors: [] };
   }
   const { rows, entryErrors } = parseJsonServersValue(result.value.mcpServers, options);

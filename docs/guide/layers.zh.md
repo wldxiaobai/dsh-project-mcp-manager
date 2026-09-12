@@ -81,3 +81,15 @@
   条目里显式写的 `cwd` 现在**生效**（旧实现一律强制为项目根，仅缺省或空串时
   才落到项目根）；DSH 透传键 `toolCallTimeoutMs`/`failOnStartupError`/`reconnect`
   在遗留文件里也**生效**（旧实现忽略）。两者都只在条目显式给出时改变行为。
+
+## 与 `@wingsky-1/dsh-mcp-manager` 共存
+
+两个插件都会读 `<projectRoot>/.dsh/mcp.json`，但方言不同。本插件认
+`mcpServers`；对方存 `{ version, servers: [] }`。对方格式在本插件是合法空层
+（缺 `mcpServers`），所以装载器现在会写 `foreignFormat` 诊断而不是静默无行。
+全局 `~/.dsh/dsh-mcp.json` 同样检查。
+
+若两个插件同时在一个宿主里跑，同名服务器可能被启动两次。建议同一项目只启用
+一个，或让本插件走 `.dsh/mcp.yml`、对方走 `.dsh/mcp.json`。`globalNames()`
+只看见官方 loader patch 行，看不见对方运行时注册的工具，因此改名避让不会覆盖
+对方实例。详见 [与同类插件共存](../README.zh.md#与同类插件共存)。

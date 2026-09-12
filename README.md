@@ -153,3 +153,24 @@ longer fanned out per project. Lines that fail to mount or are invalid are
 skipped with a warning and do not affect other servers. Claude user-state
 monoliths such as `~/.claude.json` (mixing credentials with project history)
 are **no longer read at all** as of v0.4.0.
+
+## Coexistence with other MCP manager plugins
+
+This plugin and `@wingsky-1/dsh-mcp-manager` both auto-load per-project MCP
+servers, but they do **not** share a file format:
+
+1. **Project files are mutually incompatible.** This plugin reads
+   `{ mcpServers: { … } }` in `<projectRoot>/.dsh/mcp.json`. The other plugin
+   stores `{ version, servers: [] }` at the same path. A missing `mcpServers`
+   key is a legal empty layer here, so the other format would otherwise look
+   like "I configured it but nothing happens". The loader now writes a
+   diagnostic naming that format and suggesting `mcpServers` or
+   `.dsh/mcp.yml`. The same hint applies to `~/.dsh/dsh-mcp.json`.
+2. **The same `serverName` can be started twice** (once by each plugin).
+   stdio servers may contend for ports or exclusive resources.
+3. **Prefer one plugin per project**, or keep this plugin on `.dsh/mcp.yml`
+   and the other on `.dsh/mcp.json`.
+
+`globalNames()` only sees official loader patch rows, not tools registered by
+the other plugin at runtime, so rename-to-avoid-collision does **not** cover
+that other instance.
