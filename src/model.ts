@@ -538,6 +538,8 @@ export interface McpServerView {
   // http
   url?: string;
   headerKeys: string[];
+  /** 条目级工具过滤（模式原文，不含密钥）。 */
+  tools?: ToolFilter;
   toolCallTimeoutMs: number;
   failOnStartupError: boolean;
   reconnect: ReconnectConfig;
@@ -572,6 +574,7 @@ export function patchRowToView(row: PatchRow, scope?: McpScopeInfo, effectiveSer
   if (!SERVER_NAME_RE.test(serverName)) return undefined;
   const transport = config.transport === "streamable-http" ? "streamable-http" : config.transport === "stdio" ? "stdio" : "unknown";
   const reconnectRaw = config.reconnect !== null && typeof config.reconnect === "object" && !Array.isArray(config.reconnect) ? config.reconnect as Record<string, unknown> : {};
+  const tools = toolFilterFromConfig(config);
   return {
     serverName,
     transport,
@@ -585,6 +588,7 @@ export function patchRowToView(row: PatchRow, scope?: McpScopeInfo, effectiveSer
     cwd: transport === "stdio" ? asString(config.cwd) : undefined,
     url: transport === "streamable-http" ? asString(config.url) : undefined,
     headerKeys: transport === "streamable-http" ? secretKeys(config.headers) : [],
+    ...(tools === undefined ? {} : { tools }),
     toolCallTimeoutMs: asNumber(config.toolCallTimeoutMs, DEFAULT_TOOL_CALL_TIMEOUT_MS),
     failOnStartupError: asBoolean(config.failOnStartupError, false),
     reconnect: {

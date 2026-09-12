@@ -323,14 +323,23 @@ async function collectLayers(deps: CliDeps): Promise<LayerRows[]> {
   return layers;
 }
 
+function toolFilterHint(view: ReturnType<typeof patchRowToView>): string {
+  if (view?.tools === undefined) return "";
+  const parts: string[] = [];
+  if (view.tools.allow !== undefined) parts.push(`allow=${view.tools.allow.join(",")}`);
+  if (view.tools.deny !== undefined) parts.push(`deny=${view.tools.deny.join(",")}`);
+  return parts.length === 0 ? "" : `; tools ${parts.join(" ")}`;
+}
+
 function describeTarget(row: PatchRow): string {
   const view = patchRowToView(row);
   if (view === undefined) return "(无效行)";
   const config = row.config ?? {};
-  if (typeof config.url === "string") return `${config.url} (streamable-http)`;
+  const tools = toolFilterHint(view);
+  if (typeof config.url === "string") return `${config.url} (streamable-http)${tools}`;
   const args = Array.isArray(config.args) ? config.args.map(String).join(" ") : "";
   const command = typeof config.command === "string" ? config.command : "?";
-  return (args === "" ? command : `${command} ${args}`) + " (stdio)";
+  return (args === "" ? command : `${command} ${args}`) + " (stdio)" + tools;
 }
 
 function isProjectSource(source: McpRowSource): boolean {
@@ -591,6 +600,8 @@ function printServerDetails(hit: { name: string; row: PatchRow; layer: LayerRows
   if (env !== undefined) io.out(env);
   const headers = kvLine("Headers:  ", view?.headerKeys);
   if (headers !== undefined) io.out(headers);
+  if (view?.tools?.allow !== undefined) io.out(`Allow:    ${view.tools.allow.join(", ")}`);
+  if (view?.tools?.deny !== undefined) io.out(`Deny:     ${view.tools.deny.join(", ")}`);
   if (hit.row.disabled === true) io.out("注意：     该行被标记 disabled，不会装载。");
 }
 

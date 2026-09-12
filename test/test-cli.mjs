@@ -119,6 +119,30 @@ try {
     pass("cli get resolves the winning layer without leaking secret values");
   }
 
+  // 6b. get/list 展示条目级 tools.allow/deny（脱敏模式原文）
+  {
+    const src = join(project, "tools-import.json");
+    await writeFile(src, JSON.stringify({
+      mcpServers: {
+        filtered: {
+          command: "node",
+          args: ["f.js"],
+          tools: { allow: ["read_*"], deny: ["read_secret"] }
+        }
+      }
+    }), "utf8");
+    assert.equal(await runCli(["import", "--from", src], io().io, deps), 0);
+    const capList = io();
+    assert.equal(await runCli(["list"], capList.io, deps), 0);
+    assert.ok(capList.lines.some((line) => line.includes("filtered:") && line.includes("allow=read_*") && line.includes("deny=read_secret")), "list shows tool filters: " + capList.lines.join("\n"));
+    const capGet = io();
+    assert.equal(await runCli(["get", "filtered"], capGet.io, deps), 0);
+    const text = capGet.lines.join("\n");
+    assert.ok(text.includes("Allow:    read_*"), "get prints allow: " + text);
+    assert.ok(text.includes("Deny:     read_secret"), "get prints deny: " + text);
+    pass("cli get/list show per-entry tool filters");
+  }
+
   // 7. remove：只动原生 yml；只读层给出指引
   {
     const cap = io();

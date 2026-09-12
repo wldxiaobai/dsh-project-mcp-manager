@@ -97,6 +97,7 @@ const envKeys = [...view.envKeys];
 envKeys.sort(byCodeUnit);
 assert.deepEqual(envKeys, ["FOO", "GITHUB_TOKEN"]);
 assert.equal(JSON.stringify(view).includes("super-secret"), false);
+assert.equal(view.tools, undefined);
 pass("patchRowToView redacts secret values");
 
 const httpView = patchRowToView(toPatchRow(http));
@@ -315,6 +316,7 @@ const row = toPatchRow(mcpServerInputSchema.parse({
 }));
 assert.deepEqual(row.config.tools, { deny: ["delete_*"] });
 assert.deepEqual(inputFromPatchRow(row).tools, { deny: ["delete_*"] });
+assert.deepEqual(patchRowToView(row)?.tools, { deny: ["delete_*"] });
 pass("tool allow/deny globs, deny-over-allow, and official config strips tools");
 
 assert.deepEqual(parseToolBudgetWarn(""), { maxTools: 200, maxBytes: 256 * 1024 });

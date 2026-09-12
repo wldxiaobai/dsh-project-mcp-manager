@@ -30,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tearing down the MCP connection.
 - Tool-budget warn gates reset when a server drops back under the threshold,
   so the same tools/bytes overage warns again.
+- `patchRowToView` / `dsh-mcp get` / `list` / snapshots expose per-entry
+  `tools.allow` / `tools.deny` (pattern text only).
 
 ## [0.6.0] - 2026-09-12
 
