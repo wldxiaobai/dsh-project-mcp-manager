@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   https://github.com/wldxiaobai/dsh-project-mcp-manager so npm and GitHub can
   surface the source, issues, and README.
 
+### Changed
+
+- Documented compatibility with dsh **0.1.5-rc.2**
+  (`docs/design/adaptation-dsh-0.1.5-rc2.md`). Official rc.2 is UI-only relative
+  to rc.1; `dsh-mcp-client` / `dsh-tools` `lib/` are byte-identical, so the
+  existing `^0.1.5-rc.1` range already covers the new host. No runtime change.
+
 ## [0.4.3] - 2026-09-10
 
 Host-alignment release for dsh 0.1.5-rc.1. **No user-visible behaviour
