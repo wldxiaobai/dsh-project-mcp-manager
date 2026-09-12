@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Config fingerprints include the current profile name and sorted host
   global server names, so changing `DSH_MCP_PROFILE` or the host patch set
   without touching files still rereads and refreshes `suppressedGlobals`.
+- Diagnostic file read-modify-write uses the same per-path lock as config
+  writes, so a `kind:active` event and the post-reconcile `summary` cannot
+  clobber each other.
 
 ## [0.6.0] - 2026-09-12
 

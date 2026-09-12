@@ -37,7 +37,6 @@ async function waitForDiag(projectRoot, predicate, timeoutMs = 5000) {
       if (predicate(await readDiag(projectRoot))) return true;
     } catch {
       // diag 尚不存在或正被半读到截断 JSON：视为「暂不满足」，继续轮询。
-      // （writeDiag 用非原子的 writeFile，轮询方必须自己扛住中间态。）
     }
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 150));
   }

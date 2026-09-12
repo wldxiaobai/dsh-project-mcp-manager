@@ -39,7 +39,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import * as mcpClient from "@deepseek-ai/dsh-mcp-client";
-import { extractManagedRows, readPatchFile, type PatchRow } from "./mcp-file.js";
+import { extractManagedRows, readPatchFile, withPatchLock, type PatchRow } from "./mcp-file.js";
 import {
   DIAG_FILE,
   DSH_DIR,
@@ -1464,25 +1464,31 @@ export class ProjectMcpRegistry {
   }
 
   private async writeDiagAt(path: string, event?: Record<string, unknown>, summary?: DiagSummary): Promise<void> {
-    const tmp = path + `.tmp-${process.pid}`;
     try {
-      let doc: DiagDocument = { events: [] };
-      try {
-        doc = parseDiagDocument(JSON.parse(await readFile(path, "utf8")));
-      } catch {
-        doc = { events: [] };
-      }
-      if (event !== undefined) {
-        doc.events.push({ ts: new Date().toISOString(), ...event });
-        if (doc.events.length > 30) doc.events = doc.events.slice(-30);
-      }
-      if (summary !== undefined) doc.summary = summary;
-      const payload = doc.summary === undefined ? { events: doc.events } : { summary: doc.summary, events: doc.events };
-      await mkdir(dirname(path), { recursive: true });
-      await writeFile(tmp, JSON.stringify(payload, null, 2), "utf8");
-      await rename(tmp, path);
+      await withPatchLock(path, async () => {
+        const tmp = path + `.tmp-${process.pid}`;
+        try {
+          let doc: DiagDocument = { events: [] };
+          try {
+            doc = parseDiagDocument(JSON.parse(await readFile(path, "utf8")));
+          } catch {
+            doc = { events: [] };
+          }
+          if (event !== undefined) {
+            doc.events.push({ ts: new Date().toISOString(), ...event });
+            if (doc.events.length > 30) doc.events = doc.events.slice(-30);
+          }
+          if (summary !== undefined) doc.summary = summary;
+          const payload = doc.summary === undefined ? { events: doc.events } : { summary: doc.summary, events: doc.events };
+          await mkdir(dirname(path), { recursive: true });
+          await writeFile(tmp, JSON.stringify(payload, null, 2), "utf8");
+          await rename(tmp, path);
+        } catch {
+          await rm(tmp, { force: true }).catch(() => {});
+        }
+      });
     } catch {
-      await rm(tmp, { force: true }).catch(() => {});
+      // 锁超时等：诊断尽力而为，不能打断对账
     }
   }
 
