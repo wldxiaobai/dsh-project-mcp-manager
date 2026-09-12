@@ -769,6 +769,66 @@ function mergeLayerRows(existing: { name: string; row: PatchRow }[], incoming: {
   return [...byName.values()];
 }
 
+interface ImportPlan {
+  written: { name: string; row: PatchRow }[];
+  added: string[];
+  skipped: string[];
+  overwritten: string[];
+}
+
+/** 按锁内（或 dry-run 快照）已有名字决定 skip / overwrite / add。 */
+function planImport(incoming: { name: string; row: PatchRow }[], existing: Set<string>, overwrite: boolean): ImportPlan {
+  const written: { name: string; row: PatchRow }[] = [];
+  const added: string[] = [];
+  const skipped: string[] = [];
+  const overwritten: string[] = [];
+  for (const item of incoming) {
+    if (existing.has(item.name)) {
+      if (overwrite) {
+        overwritten.push(item.name);
+        written.push(item);
+      } else skipped.push(item.name);
+    } else {
+      added.push(item.name);
+      written.push(item);
+    }
+  }
+  return { written, added, skipped, overwritten };
+}
+
+function printImportReport(target: WriteTarget, plan: ImportPlan, dryRun: boolean, io: CliIo): void {
+  io.out(`${dryRun ? "预演导入" : "导入"} → ${target.path}${dryRun ? "（不写入）" : ""}`);
+  if (plan.added.length > 0) io.out(`  ${dryRun ? "将添加" : "已添加"}：${formatNameList(plan.added)}`);
+  if (plan.overwritten.length > 0) io.out(`  ${dryRun ? "将覆盖" : "已覆盖"}：${formatNameList(plan.overwritten)}`);
+  if (plan.skipped.length > 0) io.out(`  跳过（已存在，加 --overwrite 覆盖）：${formatNameList(plan.skipped)}`);
+  if (plan.added.length === 0 && plan.skipped.length === 0 && plan.overwritten.length === 0) io.out("  没有可写入的行");
+}
+
+async function writeImportedRows(target: WriteTarget, incoming: { name: string; row: PatchRow }[], overwrite: boolean): Promise<ImportPlan> {
+  let plan: ImportPlan = { written: [], added: [], skipped: [], overwritten: [] };
+  if (incoming.length === 0) return plan;
+  if (target.format === "json") {
+    await mkdir(dirname(target.path), { recursive: true });
+    await updateJsonServers(target.path, (servers) => {
+      plan = planImport(incoming, new Set(Object.keys(servers)), overwrite);
+      for (const item of plan.written) servers[item.name] = jsonEntryFromRow(item.row);
+    });
+    return plan;
+  }
+  await updateManagedRows(target.path, (rows) => {
+    const existing = new Set(rows.map((row) => rowNameOf(row)).filter((name): name is string => name !== undefined));
+    plan = planImport(incoming, existing, overwrite);
+    const next = [...rows];
+    for (const item of plan.written) {
+      const index = next.findIndex((row) => rowNameOf(row) === item.name);
+      if (index >= 0) next[index] = item.row;
+      else next.push(item.row);
+    }
+    return next;
+  }, { createIfMissing: true });
+  return plan;
+}
+
 /** 把导入行套进目标层（文件尚不在 collectLayers 结果里时按优先序插入）。 */
 function layersWithImportedTarget(
   layers: LayerRows[],
@@ -807,26 +867,6 @@ function printImportShadowPreview(incoming: { name: string; row: PatchRow }[], l
   }
 }
 
-async function writeImportedRows(target: WriteTarget, incoming: { name: string; row: PatchRow }[]): Promise<void> {
-  if (incoming.length === 0) return;
-  if (target.format === "json") {
-    await mkdir(dirname(target.path), { recursive: true });
-    await updateJsonServers(target.path, (servers) => {
-      for (const item of incoming) servers[item.name] = jsonEntryFromRow(item.row);
-    });
-    return;
-  }
-  await updateManagedRows(target.path, (rows) => {
-    const next = [...rows];
-    for (const item of incoming) {
-      const index = next.findIndex((row) => rowNameOf(row) === item.name);
-      if (index >= 0) next[index] = item.row;
-      else next.push(item.row);
-    }
-    return next;
-  }, { createIfMissing: true });
-}
-
 async function cmdImport(parsed: ParsedArgs, rest: string[], io: CliIo, deps: CliDeps): Promise<number> {
   if (rest.length > 0) return fail(io, "import 不接受位置参数（用法：dsh-mcp import --from <file|-> …）");
   if (parsed.from === undefined) return fail(io, "用法：dsh-mcp import --from <file|-> [--scope project|user|profile] [--format yml|json] [--dry-run] [--overwrite]");
@@ -851,37 +891,25 @@ async function cmdImport(parsed: ParsedArgs, rest: string[], io: CliIo, deps: Cl
   for (const note of entryErrors) io.err(`错误：${note}`);
   if (rows.length === 0 && entryErrors.length === 0) return fail(io, "没有可导入的服务器");
   if (rows.length === 0) return 1;
-  const existing = await existingNames(target);
-  if (!Array.isArray(existing)) return fail(io, existing.error);
-  const existingSet = new Set(existing);
-  const skipped: string[] = [];
-  const overwritten: string[] = [];
-  const added: { name: string; row: PatchRow }[] = [];
-  for (const item of rows) {
-    if (existingSet.has(item.rawName)) {
-      if (parsed.overwrite) {
-        overwritten.push(item.rawName);
-        added.push({ name: item.rawName, row: item.row });
-      } else skipped.push(item.rawName);
-    } else added.push({ name: item.rawName, row: item.row });
+  const incoming = rows.map((item) => ({ name: item.rawName, row: item.row }));
+  if (parsed.dryRun) {
+    const existing = await existingNames(target);
+    if (!Array.isArray(existing)) return fail(io, existing.error);
+    const plan = planImport(incoming, new Set(existing), parsed.overwrite);
+    printImportReport(target, plan, true, io);
+    const previewLayers = layersWithImportedTarget(await collectLayers(deps), target, plan.written, parsed.overwrite);
+    printImportShadowPreview(plan.written, previewLayers, io);
+    return entryErrors.length > 0 ? 1 : 0;
   }
-  io.out(`${parsed.dryRun ? "预演导入" : "导入"} → ${target.path}${parsed.dryRun ? "（不写入）" : ""}`);
-  if (added.length > 0) {
-    const fresh = added.filter((item) => !overwritten.includes(item.name)).map((item) => item.name);
-    if (fresh.length > 0) io.out(`  ${parsed.dryRun ? "将添加" : "已添加"}：${formatNameList(fresh)}`);
-  }
-  if (overwritten.length > 0) io.out(`  ${parsed.dryRun ? "将覆盖" : "已覆盖"}：${formatNameList(overwritten)}`);
-  if (skipped.length > 0) io.out(`  跳过（已存在，加 --overwrite 覆盖）：${formatNameList(skipped)}`);
-  if (added.length === 0 && skipped.length === 0) io.out("  没有可写入的行");
-  const previewLayers = layersWithImportedTarget(await collectLayers(deps), target, added, parsed.overwrite);
-  printImportShadowPreview(added, previewLayers, io);
-  if (parsed.dryRun) return entryErrors.length > 0 ? 1 : 0;
+  let plan: ImportPlan;
   try {
-    await writeImportedRows(target, added);
+    plan = await writeImportedRows(target, incoming, parsed.overwrite);
   } catch (error) {
     return fail(io, error instanceof Error ? error.message : String(error));
   }
-  if (added.length > 0) io.out("运行中的 dsh 会话会经文件监听自动收敛（宿主未运行时下次启动生效）。");
+  printImportReport(target, plan, false, io);
+  printImportShadowPreview(plan.written, await collectLayers(deps), io);
+  if (plan.written.length > 0) io.out("运行中的 dsh 会话会经文件监听自动收敛（宿主未运行时下次启动生效）。");
   return entryErrors.length > 0 ? 1 : 0;
 }
 

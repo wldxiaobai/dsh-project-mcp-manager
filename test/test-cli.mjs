@@ -517,6 +517,22 @@ try {
       const capShadow = io();
       assert.equal(await runCli(["import", "--from", srcShadow, "--scope", "user", "--dry-run"], capShadow.io, importDeps), 0);
       assert.ok(capShadow.lines.join("\n").includes("不会装载"), "dry-run previews shadow: " + capShadow.lines.join("\n"));
+      const srcRaceA = join(importDir, "race-a.json");
+      const srcRaceB = join(importDir, "race-b.json");
+      await writeFile(srcRaceA, JSON.stringify({ mcpServers: { race: { command: "node", args: ["ra.js"] } } }), "utf8");
+      await writeFile(srcRaceB, JSON.stringify({ mcpServers: { race: { command: "node", args: ["rb.js"] } } }), "utf8");
+      const capRaceA = io();
+      const capRaceB = io();
+      await Promise.all([
+        runCli(["import", "--from", srcRaceA], capRaceA.io, importDeps),
+        runCli(["import", "--from", srcRaceB], capRaceB.io, importDeps)
+      ]);
+      const raceYml = await readFile(projectMcpFile(importProj), "utf8");
+      const hasRa = raceYml.includes("ra.js");
+      const hasRb = raceYml.includes("rb.js");
+      assert.equal(hasRa !== hasRb, true, "concurrent import without overwrite keeps exactly one winner: " + raceYml);
+      const raceOut = capRaceA.lines.join("\n") + "\n" + capRaceB.lines.join("\n");
+      assert.ok(raceOut.includes("已添加") && raceOut.includes("跳过"), "loser skips inside the lock: " + raceOut);
       pass("cli import reads mcpServers, dry-runs, skips/overwrites, and writes user scope");
     } finally {
       await rm(importDir, { recursive: true, force: true });
