@@ -39,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-server `tools.allow` / `tools.deny` (full glob; deny wins). JSON also
   maps `includeTools` / `excludeTools`; DSH `tools.*` keys win. Patterns are
   stripped before `ctx.plugin` and expanded to registered tool names only.
+- Tool-budget guardrail: after inspect, each active effective name is
+  measured via `ctx.tools.schemas()`. Crossing `DSH_MCP_TOOL_BUDGET_WARN`
+  (default 200 tools / 256KiB) warns once and records `summary.toolBudget`;
+  tools are never clipped.
 
 - `package.json` discovery fields: `repository`, `bugs`, and `homepage` point at
   https://github.com/wldxiaobai/dsh-project-mcp-manager so npm and GitHub can

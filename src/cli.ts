@@ -912,6 +912,11 @@ async function printDiagStatus(path: string, io: CliIo): Promise<boolean> {
     const projects = doc.summary.projects === undefined ? "" : `，项目 ${doc.summary.projects}`;
     io.out(`  行 ${doc.summary.rows}，已装载 ${doc.summary.mounted}${projects}${skipped === "" ? "" : `，跳过 ${skipped}`}`);
     for (const item of doc.summary.unhealthy) io.out(`  不健康：${item.name} (${item.reason})`);
+    if (doc.summary.toolBudget !== undefined) {
+      for (const item of doc.summary.toolBudget) {
+        io.out(`  工具预算：${item.name} ${item.tools} 个工具 / ${item.bytes} 字节`);
+      }
+    }
   }
   for (const event of doc.events) {
     if (event.kind === "foreign-format" && typeof event.message === "string") {

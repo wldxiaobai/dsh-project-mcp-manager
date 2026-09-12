@@ -1273,6 +1273,41 @@ try {
     }
     await rmRetry(dirT);
     pass("registry expands tools.allow/deny to registered names and retries unknown denies");
+
+    const dirBgt = await mkdtemp(join(tmpdir(), "dsh-mcp-budget-"));
+    const projBgt = join(dirBgt, "proj");
+    await mkdir(projBgt, { recursive: true });
+    await writeManagedRows(projectMcpFile(projBgt), [stdioRow("heavy")], { createIfMissing: true });
+    const ctxBgt = fakeCtx();
+    const warnsBgt = [];
+    ctxBgt.logger.warn = (msg) => { warnsBgt.push(String(msg)); };
+    const registryBgt = new ProjectMcpRegistry(ctxBgt, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(dirBgt, "home", ".dsh", "mcp.yml"), mcpJson: join(dirBgt, "home", ".dsh", "mcp.json"), profilesDir: join(dirBgt, "home", ".dsh", "profiles") },
+      toolBudget: { maxTools: 2, maxBytes: 1024 * 1024 }
+    });
+    ctxBgt.agentsList.push(fakeAgent("session-bgt", projBgt));
+    await registryBgt.reconcileNow();
+    const heavyName = ctxBgt.mounts[0].serverName;
+    ctxBgt.schemas.push(
+      { id: `mcp__${heavyName}__a`, description: "a" },
+      { id: `mcp__${heavyName}__b`, description: "b" },
+      { id: `mcp__${heavyName}__c`, description: "c" }
+    );
+    await registryBgt.reconcileNow();
+    const budgetWarns = warnsBgt.filter((w) => w.includes("超过告警阈值"));
+    assert.equal(budgetWarns.length, 1, "budget warns once: " + budgetWarns.join("|"));
+    await registryBgt.reconcileNow();
+    assert.equal(warnsBgt.filter((w) => w.includes("超过告警阈值")).length, 1, "budget warn is gated");
+    const summaryBgt = await readDiagSummary(projBgt);
+    assert.ok(summaryBgt.toolBudget?.some((item) => item.name === heavyName && item.tools === 3), "summary lists over-budget server: " + JSON.stringify(summaryBgt.toolBudget));
+    assert.equal(ctxBgt.schemas.length, 3, "budget never clips tools");
+    for (const disposer of ctxBgt.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    await rmRetry(dirBgt);
+    pass("registry warns once when a server exceeds the tool budget and never clips");
   } finally {
     process.chdir(savedCwd);
     await rmRetry(dirH);

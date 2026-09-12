@@ -29,6 +29,7 @@ import {
 } from "../lib/model.js";
 import { jsonServerEntrySchema } from "../lib/json-file.js";
 import { dshHomeDir, dshHomeFor, isValidProfileName, profileMcpJsonFile, userLayerPathsIn } from "../lib/dsh-paths.js";
+import { mcpToolBudgetStats, parseToolBudgetWarn } from "../lib/status.js";
 import { join, resolve } from "node:path";
 
 let passed = 0;
@@ -315,6 +316,22 @@ const row = toPatchRow(mcpServerInputSchema.parse({
 assert.deepEqual(row.config.tools, { deny: ["delete_*"] });
 assert.deepEqual(inputFromPatchRow(row).tools, { deny: ["delete_*"] });
 pass("tool allow/deny globs, deny-over-allow, and official config strips tools");
+
+assert.deepEqual(parseToolBudgetWarn(""), { maxTools: 200, maxBytes: 256 * 1024 });
+assert.deepEqual(parseToolBudgetWarn("10"), { maxTools: 10, maxBytes: 256 * 1024 });
+assert.deepEqual(parseToolBudgetWarn("10,4096"), { maxTools: 10, maxBytes: 4096 });
+assert.deepEqual(parseToolBudgetWarn("nope,-1"), { maxTools: 200, maxBytes: 256 * 1024 });
+const budgetStats = mcpToolBudgetStats({
+  tools: {
+    schemas: () => [
+      { id: "mcp__heavy__a", description: "aa", inputSchema: { type: "object" } },
+      { id: "mcp__other__b", description: "bb" }
+    ]
+  }
+}, "heavy");
+assert.equal(budgetStats.tools, 1);
+assert.ok(budgetStats.bytes > 0, "budget bytes include id/description/schema");
+pass("tool budget env parse and schema byte stats");
 
 console.log("\n" + passed + " passed, 0 failed");
 console.log("ALL MCP MODEL TESTS PASSED");

@@ -439,7 +439,8 @@ try {
           rows: 1,
           mounted: 0,
           skippedByReason: { "env-missing": 1 },
-          unhealthy: [{ name: "fs", reason: "env-missing" }]
+          unhealthy: [{ name: "fs", reason: "env-missing" }],
+          toolBudget: [{ name: "heavy", tools: 240, bytes: 300000 }]
         },
         events: []
       }), "utf8");
@@ -448,6 +449,7 @@ try {
       const text = capDiag.lines.join("\n");
       assert.ok(text.includes("env-missing"), "status surfaces skip reason: " + text);
       assert.ok(text.includes("不健康：fs"), "status names the unhealthy row: " + text);
+      assert.ok(text.includes("工具预算：heavy 240 个工具"), "status surfaces tool budget: " + text);
       pass("cli status shows empty state, layer rows, and diagnostic skip reasons");
     } finally {
       await rm(statusDir, { recursive: true, force: true });

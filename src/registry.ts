@@ -76,7 +76,7 @@ import {
   toolFilterFromConfig,
   type McpScopeInfo
 } from "./model.js";
-import { mcpToolCount } from "./status.js";
+import { mcpToolBudgetStats, mcpToolCount, parseToolBudgetWarn } from "./status.js";
 
 const delay = (ms: number) => new Promise<void>((resolvePromise) => setTimeout(resolvePromise, ms));
 
@@ -183,6 +183,8 @@ export interface ProjectMcpRegistryOptions {
   healthRemountLimit?: number;
   /** 配置文件指纹（测试注入）；缺省 `fs.stat`。返回 `null` 视为缺失。 */
   statFile?: (path: string) => Promise<{ mtimeMs: number; size: number } | null>;
+  /** 工具预算告警阈值（测试注入）；缺省读 `DSH_MCP_TOOL_BUDGET_WARN`。 */
+  toolBudget?: { maxTools: number; maxBytes: number };
 }
 
 interface ProjectEntry {
@@ -552,6 +554,7 @@ export interface DiagSummary {
   mounted: number;
   skippedByReason: Record<string, number>;
   unhealthy: DiagUnhealthy[];
+  toolBudget?: { name: string; tools: number; bytes: number }[];
 }
 
 export interface DiagDocument {
@@ -594,7 +597,13 @@ function parseDiagSummary(raw: unknown): DiagSummary | undefined {
     rows: raw.rows,
     mounted: raw.mounted,
     skippedByReason,
-    unhealthy
+    unhealthy,
+    ...(Array.isArray(raw.toolBudget)
+      ? {
+        toolBudget: raw.toolBudget.filter((item): item is { name: string; tools: number; bytes: number } =>
+          isRecord(item) && typeof item.name === "string" && typeof item.tools === "number" && typeof item.bytes === "number")
+      }
+      : {})
   };
 }
 
@@ -672,6 +681,8 @@ export class ProjectMcpRegistry {
   private lastScanDesired = new Map<string, { projectRoot: string; rows: DesiredProjectRow[] }>();
   /** 装载行的健康巡检内存（unmount 会删掉 ProjectServerState，不能只挂在 state 上）。 */
   private readonly healthByMount = new Map<string, { everHadTools: boolean; remountCount: number; nextRemountAt: number; givenUp: boolean }>();
+  /** 作用域键 → 超预算的生效名（写入 diag summary；每轮重算）。 */
+  private readonly toolBudgetHits = new Map<string, { name: string; tools: number; bytes: number }[]>();
 
   constructor(ctx: any, providers: ProjectMcpRegistryOptions) {
     this.ctx = ctx;
@@ -1122,6 +1133,7 @@ export class ProjectMcpRegistry {
     this.prunePerProjectState(new Set(desiredByProject.keys()));
     await this.remountUnhealthy();
     await this.sweepRestrictions();
+    this.inspectToolBudgets();
     await this.writeSummaries();
   }
 
@@ -1389,7 +1401,8 @@ export class ProjectMcpRegistry {
       rows: servers.size + skippedCount,
       mounted,
       skippedByReason,
-      unhealthy
+      unhealthy,
+      ...(this.toolBudgetHits.get(key)?.length ? { toolBudget: this.toolBudgetHits.get(key) } : {})
     };
   }
 
@@ -1601,6 +1614,26 @@ export class ProjectMcpRegistry {
       await this.unmountServer(container, state.rawName);
       await this.mountServer(container, item);
     }
+  }
+
+  private inspectToolBudgets(): void {
+    this.toolBudgetHits.clear();
+    const budget = this.providers.toolBudget ?? parseToolBudgetWarn();
+    const visit = (scopeKey: string, label: string, servers: Map<string, ProjectServerState>) => {
+      const hits: { name: string; tools: number; bytes: number }[] = [];
+      for (const state of servers.values()) {
+        if (state.phase !== "active") continue;
+        const stats = mcpToolBudgetStats(this.ctx, state.effectiveName);
+        if (stats.tools <= budget.maxTools && stats.bytes <= budget.maxBytes) continue;
+        hits.push({ name: state.effectiveName, tools: stats.tools, bytes: stats.bytes });
+        this.warnGated("budget\u0000" + state.effectiveName, `${stats.tools}\u0000${stats.bytes}`, () => {
+          this.ctx.logger.warn(`${label} "${state.effectiveName}" 注册了 ${stats.tools} 个工具 / ${stats.bytes} 字节，超过告警阈值 ${budget.maxTools} / ${budget.maxBytes}（只告警不裁剪）`);
+        });
+      }
+      if (hits.length > 0) this.toolBudgetHits.set(scopeKey, hits);
+    };
+    for (const [key, entry] of this.projects) visit(key, `项目 MCP（${entry.projectRoot}）`, entry.servers);
+    visit(GLOBAL_SCOPE_KEY, "全局用户层 MCP", this.globalServers);
   }
 
   // ── 会话可见性（deny 重扫）────────────────────────────────────────────
