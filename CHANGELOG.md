@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `unhealthy` and show `skipReason` even while the fiber is still active.
 - `dsh-mcp import` applies same-name skip/overwrite inside the file lock,
   matching `add`, so two concurrent imports of a new name cannot both write.
+- Config fingerprints include the current profile name and sorted host
+  global server names, so changing `DSH_MCP_PROFILE` or the host patch set
+  without touching files still rereads and refreshes `suppressedGlobals`.
 
 ## [0.6.0] - 2026-09-12
 

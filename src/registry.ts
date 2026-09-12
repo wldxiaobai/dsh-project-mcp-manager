@@ -1133,7 +1133,7 @@ export class ProjectMcpRegistry {
   }
 
   /** 已知项目的 3 个配置路径 + 用户层 3 路径（及对方全局文件）的 mtimeMs+size 指纹。 */
-  private async configFingerprintSignature(roots: string[]): Promise<string> {
+  private async configFingerprintSignature(roots: string[], hostGlobalNames: string[]): Promise<string> {
     const paths = new Set<string>();
     for (const root of roots) {
       paths.add(normalizePathKey(projectMcpFile(root)));
@@ -1143,14 +1143,19 @@ export class ProjectMcpRegistry {
     const user = this.resolveUserLayerPaths();
     paths.add(normalizePathKey(user.mcpYml));
     paths.add(normalizePathKey(user.mcpJson));
-    const profileName = this.activeProfileName ?? await this.resolveActiveProfileName();
+    // 每次现取 profile 名：缓存的 activeProfileName 在跳过重读时不会刷新，
+    // 运行中改 DSH_MCP_PROFILE / 宿主 profile 必须让指纹失配从而重读 profile 层。
+    const profileName = await this.resolveActiveProfileName();
     if (profileName !== undefined) paths.add(normalizePathKey(profileMcpJsonFile(user.profilesDir, profileName)));
     paths.add(normalizePathKey(foreignUserMcpJsonFile(dirname(user.mcpJson))));
     const files = [...paths];
     files.sort(byCodeUnit);
+    const host = [...hostGlobalNames];
+    host.sort(byCodeUnit);
     const parts: string[] = [
       `cc=${mcpJsonLayerEnabled() ? "1" : "0"}`,
-      `profile=${profileName ?? ""}`
+      `profile=${profileName ?? ""}`,
+      `host=${host.join(",")}`
     ];
     for (const file of files) {
       const fp = await this.statConfigFile(file);
@@ -1159,7 +1164,7 @@ export class ProjectMcpRegistry {
     return parts.join("\n");
   }
 
-  private async shouldSkipConfigReread(roots: string[]): Promise<boolean> {
+  private async shouldSkipConfigReread(roots: string[], hostGlobalNames: string[]): Promise<boolean> {
     if (this.lastFingerprintSig === "") return false;
     if (this.configEpoch !== this.lastFingerprintEpoch) return false;
     for (const entry of this.projects.values()) {
@@ -1167,7 +1172,7 @@ export class ProjectMcpRegistry {
       if (!hasYmlMounts) continue;
       if (await this.statConfigFile(projectMcpFile(entry.projectRoot)) === "missing") return false;
     }
-    return await this.configFingerprintSignature(roots) === this.lastFingerprintSig;
+    return await this.configFingerprintSignature(roots, hostGlobalNames) === this.lastFingerprintSig;
   }
 
   // ── 核心 reconcile ───────────────────────────────────────────────────
@@ -1180,7 +1185,8 @@ export class ProjectMcpRegistry {
     if (this.disposed) return;
     this.reconcileCount++;
     const roots = await this.knownProjects();
-    const skipReread = await this.shouldSkipConfigReread(roots);
+    const hostGlobalNames = await this.providers.globalNames().catch(() => []);
+    const skipReread = await this.shouldSkipConfigReread(roots, hostGlobalNames);
     if (!skipReread) {
       await this.readUserLayer();
     }
@@ -1189,7 +1195,6 @@ export class ProjectMcpRegistry {
 
     const globalMerged = mergeSourcedRows([this.userLayer.profileRows, this.userLayer.ymlRows, this.userLayer.jsonRows]);
     this.lastGlobalDesired = globalMerged.rows;
-    const hostGlobalNames = await this.providers.globalNames().catch(() => []);
     const hostTaken = new Set(hostGlobalNames);
     const globalMountable = new Set(globalMerged.rows.map((row) => row.rawName).filter((rawName) => !hostTaken.has(rawName)));
 
@@ -1206,7 +1211,7 @@ export class ProjectMcpRegistry {
         desiredByProject.set(projectKeyOf(projectRoot), await this.scanProject(projectRoot, globalMountable));
       }
       this.lastScanDesired = new Map(desiredByProject);
-      this.lastFingerprintSig = await this.configFingerprintSignature(roots);
+      this.lastFingerprintSig = await this.configFingerprintSignature(roots, hostGlobalNames);
       this.lastFingerprintEpoch = this.configEpoch;
     }
     await this.reportGlobalShadows(globalMerged.shadowedGlobal, globalMerged.shadowedIdentity);

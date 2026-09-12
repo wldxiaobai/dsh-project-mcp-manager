@@ -1551,6 +1551,54 @@ try {
   }
 }
 
+{
+  const dirM1 = await mkdtemp(join(tmpdir(), "dsh-mcp-fp-profile-"));
+  const homeM1 = join(dirM1, "home");
+  const projM1 = join(dirM1, "proj");
+  const profilesM1 = join(homeM1, ".dsh", "profiles");
+  await mkdir(join(profilesM1, "web"), { recursive: true });
+  await mkdir(join(profilesM1, "job"), { recursive: true });
+  await mkdir(projM1, { recursive: true });
+  await writeManagedRows(projectMcpFile(projM1), [stdioRow("keep")], { createIfMissing: true });
+  await writeFile(join(profilesM1, "web", "mcp.json"), JSON.stringify({ mcpServers: { webonly: { command: "node", args: ["w.js"] } } }), "utf8");
+  await writeFile(join(profilesM1, "job", "mcp.json"), JSON.stringify({ mcpServers: { jobonly: { command: "node", args: ["j.js"] } } }), "utf8");
+  const savedCwdM1 = process.cwd();
+  let profile = "web";
+  let hostNames = [];
+  try {
+    process.chdir(dirM1);
+    const ctxM1 = fakeCtx();
+    const registryM1 = new ProjectMcpRegistry(ctxM1, {
+      globalNames: async () => hostNames,
+      activeProfile: async () => profile,
+      userLayerPaths: { mcpYml: join(homeM1, ".dsh", "mcp.yml"), mcpJson: join(homeM1, ".dsh", "mcp.json"), profilesDir: profilesM1 }
+    });
+    ctxM1.agentsList.push(fakeAgent("session-m1", projM1));
+    await registryM1.reconcileNow();
+    assert.ok(registryM1.globalState("webonly")?.phase === "active", "web profile row mounts");
+    const readsAfterWeb = registryM1.debugConfigReadCount;
+    await registryM1.reconcileNow();
+    assert.equal(registryM1.debugConfigReadCount, readsAfterWeb, "unchanged profile+host still skip reread");
+    profile = "job";
+    await registryM1.reconcileNow();
+    assert.ok(registryM1.debugConfigReadCount > readsAfterWeb, "switching profile rereads despite unchanged files");
+    assert.ok(registryM1.globalState("jobonly")?.phase === "active", "job profile row mounts after switch");
+    assert.equal(registryM1.globalState("webonly"), undefined, "previous profile row unmounts");
+    const readsAfterJob = registryM1.debugConfigReadCount;
+    hostNames = ["host-patch-x"];
+    await registryM1.reconcileNow();
+    assert.ok(registryM1.debugConfigReadCount > readsAfterJob, "host globalNames change rereads despite unchanged files");
+    for (const disposer of ctxM1.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    pass("fingerprint includes active profile and host global names so env/host changes reread");
+  } finally {
+    process.chdir(savedCwdM1);
+    await rmRetry(dirM1);
+  }
+}
+
 console.log("\n" + passed + " passed, 0 failed");
 console.log("ALL PROJECT REGISTRY TESTS PASSED");
 // chokidar close() is fire-and-forget in registry dispose; on Windows a
