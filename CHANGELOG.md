@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Health remount treats `everHadTools` as per fiber generation: a remounted
+  official client that has not listed tools yet is left to its own reconnect
+  window instead of being torn down every few seconds. `snapshot()` is
+  memory-only; only `reload()` / `reconcileNow()` run reconcile. Tool-budget
+  stats prefer `schema.name` to match official `tools.schemas()`.
+
 ## [0.6.0] - 2026-09-12
 
 Runtime robustness and JSON interop. **On-demand project mounts (B1) are a
@@ -37,11 +45,12 @@ VS Code `.vscode/mcp.json` (C3) is not in this release.
   yml or JSON file. Same-name keys are skipped unless `--overwrite`;
   `--dry-run` previews shadow conflicts without writing. VS Code `servers`
   objects and bare entries/arrays are rejected.
-- Connection health remount: after a server has exposed tools, a later
-  `mcpToolCount === 0` triggers unmount-then-mount (max 3, then `give-up`).
-  `disabled: true` / `enabled: false` rows are never revived. Unchanged
-  config fingerprints (`mtimeMs+size`) skip file rereads but still run
-  remount, deny sweep and diag summaries.
+- Connection health remount: after **the current fiber** has exposed tools, a
+  later `mcpToolCount === 0` triggers unmount-then-mount (max 3 generations,
+  then `give-up`). A new fiber's first connect/reconnect window is not
+  treated as death. `disabled: true` / `enabled: false` rows are never
+  revived. Unchanged config fingerprints (`mtimeMs+size`) skip file rereads
+  but still run remount, deny sweep and diag summaries.
 - Per-server `tools.allow` / `tools.deny` (full glob; deny wins). JSON also
   maps `includeTools` / `excludeTools`; DSH `tools.*` keys win. Patterns are
   stripped before `ctx.plugin` and expanded to registered tool names only.
@@ -51,7 +60,8 @@ VS Code `.vscode/mcp.json` (C3) is not in this release.
   tools are never clipped.
 - Unstable `ctx.provide("projectMcp", { snapshot, serverView, globalState,
   reload })` query surface so other plugins can read mount state without
-  opening diagnostic files. `reload` is one `reconcileAll`.
+  opening diagnostic files. `snapshot` / `serverView` / `globalState` are
+  memory-only; `reload` is one `reconcileAll`.
 - On-demand project mounts: scan and effective names stay full-catalog;
   fibers are created only for projects with a live session or the process
   cwd. After the last session leaves (and the project is not cwd) servers

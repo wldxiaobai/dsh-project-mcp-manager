@@ -277,7 +277,7 @@ try {
 
   // 2. 会话可见性：session-a 只见自己项目（从不 deny 自己的服务器）；session-b deny 全部。
   //    deny 集 = 工具名展开（mcp__<server>__*），不是 serverName。
-  ctx.schemas.push({ id: "mcp__" + mounted.serverName + "__echo" });
+  ctx.schemas.push({ name: "mcp__" + mounted.serverName + "__echo" });
   await registry.reconcileNow();
   assert.equal(agentA.denies.length, 0, "session in the owning project is never restricted");
   assert.deepEqual(agentB.denies[agentB.denies.length - 1], ["mcp__" + mounted.serverName + "__echo"]);
@@ -722,7 +722,7 @@ try {
         assert.ok(viewCpu !== undefined && viewCpu.source === "dsh-user-yml", "serverView resolves the global row to its user-layer source");
         // 全局实例仍在（只挂一条），但 proj6 的会话按项目侧压制 deny 掉它的工具。
         assert.ok(await registry2.waitForGlobalState("unity-mcp", (state) => state?.phase === "active", 5000), "the shadowed global row still mounts exactly once");
-        ctx2.schemas.push({ id: "mcp__unity-mcp__ping" }, { id: "mcp__unityMCP__ping" });
+        ctx2.schemas.push({ name: "mcp__unity-mcp__ping" }, { name: "mcp__unityMCP__ping" });
         await registry2.reconcileNow();
         const agentJ = ctx2.agentsList.find((agent) => agent.id === "session-j");
         assert.ok(agentJ.denies.some((deny) => deny.includes("mcp__unity-mcp__ping")), "proj6 denies the suppressed global server's tools: " + JSON.stringify(agentJ.denies));
@@ -902,7 +902,7 @@ try {
         const mountedA = ctxA.mounts.map((config) => config.serverName);
         assert.ok(mountedA.includes("selfx"), "a disabled user placeholder does not claim the global name: " + mountedA.join(","));
         assert.equal(registryA.globalState("selfx"), undefined, "the disabled placeholder mounts nothing globally");
-        ctxA.schemas.push({ id: "mcp__selfx__ping" });
+        ctxA.schemas.push({ name: "mcp__selfx__ping" });
         await registryA.reconcileNow();
         const agentA = ctxA.agentsList[0];
         assert.ok(agentA.denies.every((deny) => !deny.includes("mcp__selfx__ping")), "the project must not deny its own tools: " + JSON.stringify(agentA.denies));
@@ -923,7 +923,7 @@ try {
         assert.equal(registryB.globalState("hostx"), undefined, "the user row is blocked by the host patch name");
         const projectEffective = ctxB.mounts.map((config) => config.serverName).find((name) => name.endsWith("_hostx"));
         assert.ok(projectEffective !== undefined, "the project row is namespaced around the host patch name: " + ctxB.mounts.map((c) => c.serverName).join(","));
-        ctxB.schemas.push({ id: "mcp__hostx__ping" }, { id: `mcp__${projectEffective}__ping` });
+        ctxB.schemas.push({ name: "mcp__hostx__ping" }, { name: `mcp__${projectEffective}__ping` });
         await registryB.reconcileNow();
         const agentB = ctxB.agentsList[0];
         assert.ok(agentB.denies.every((deny) => !deny.includes("mcp__hostx__ping")), "a blocked user row must not make the project deny the host patch tools: " + JSON.stringify(agentB.denies));
@@ -1166,23 +1166,34 @@ try {
     await registryH.reconcileNow();
     assert.equal(registryH.debugConfigReadCount, reads1, "unchanged files skip reread");
     const effective = ctxH.mounts[0].serverName;
-    ctxH.schemas.push({ id: "mcp__" + effective + "__ping" });
-    await registryH.reconcileNow();
-    ctxH.schemas.length = 0;
-    await registryH.reconcileNow();
+    const pulseDead = async () => {
+      ctxH.schemas.push({ name: "mcp__" + effective + "__ping" });
+      await registryH.reconcileNow();
+      ctxH.schemas.length = 0;
+      await registryH.reconcileNow();
+    };
+    await pulseDead();
     assert.equal(ctxH.disposals.length, 1, "dead connection is unmounted once");
     assert.equal(ctxH.mounts.length, 2, "dead connection is remounted once");
     const diagH = await readDiag(projH);
     assert.ok(diagH.some((row) => row.kind === "remount" && row.attempt === 1), "remount diag: " + JSON.stringify(diagH.slice(-4)));
+    const mountsAfterFirst = ctxH.mounts.length;
     await registryH.reconcileNow();
     await registryH.reconcileNow();
-    await registryH.reconcileNow();
-    assert.ok(ctxH.mounts.length >= 4, "three remounts then stop: " + ctxH.mounts.length);
+    assert.equal(ctxH.mounts.length, mountsAfterFirst, "new fiber without tools does not remount (official reconnect window)");
+    await pulseDead();
+    await pulseDead();
+    assert.equal(ctxH.mounts.length, 4, "three generation deaths remount three times: " + ctxH.mounts.length);
+    await pulseDead();
     const diagGive = await readDiag(projH);
     assert.ok(diagGive.some((row) => row.kind === "give-up"), "give-up after remount limit: " + JSON.stringify(diagGive.slice(-6)));
     const mountsAtGiveUp = ctxH.mounts.length;
     await registryH.reconcileNow();
     assert.equal(ctxH.mounts.length, mountsAtGiveUp, "give-up stops further remounts");
+    const snapCount = registryH.debugReconcileCount;
+    await registryH.snapshot();
+    await registryH.snapshot();
+    assert.equal(registryH.debugReconcileCount, snapCount, "snapshot is read-only and does not reconcile");
     await writeManagedRows(projectMcpFile(projH), [{ ...stdioRow("alive"), config: { ...stdioRow("alive").config, args: ["srv-alive-2.js"] } }]);
     await registryH.reconcileNow();
     assert.ok(registryH.debugConfigReadCount > reads1, "fingerprint change rereads files");
@@ -1264,9 +1275,9 @@ try {
     await registryT.reconcileNow();
     const mountedT = ctxT.mounts[0].serverName;
     ctxT.schemas.push(
-      { id: `mcp__${mountedT}__read_file` },
-      { id: `mcp__${mountedT}__read_secret` },
-      { id: `mcp__${mountedT}__delete_file` }
+      { name: `mcp__${mountedT}__read_file` },
+      { name: `mcp__${mountedT}__read_secret` },
+      { name: `mcp__${mountedT}__delete_file` }
     );
     await registryT.reconcileNow();
     assert.ok(warnsT.some((w) => w.includes("暂未应用")), "unknown names are retried: " + warnsT.join("|"));
@@ -1299,9 +1310,9 @@ try {
     await registryBgt.reconcileNow();
     const heavyName = ctxBgt.mounts[0].serverName;
     ctxBgt.schemas.push(
-      { id: `mcp__${heavyName}__a`, description: "a" },
-      { id: `mcp__${heavyName}__b`, description: "b" },
-      { id: `mcp__${heavyName}__c`, description: "c" }
+      { name: `mcp__${heavyName}__a`, description: "a" },
+      { name: `mcp__${heavyName}__b`, description: "b" },
+      { name: `mcp__${heavyName}__c`, description: "c" }
     );
     await registryBgt.reconcileNow();
     const budgetWarns = warnsBgt.filter((w) => w.includes("超过告警阈值"));
@@ -1482,3 +1493,6 @@ try {
 
 console.log("\n" + passed + " passed, 0 failed");
 console.log("ALL PROJECT REGISTRY TESTS PASSED");
+// chokidar close() is fire-and-forget in registry dispose; on Windows a
+// pending FSWatcher can keep the event loop alive after the suite finishes.
+process.exit(0);

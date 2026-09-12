@@ -18,7 +18,7 @@ export function parseToolBudgetWarn(raw: string | undefined = process.env[TOOL_B
 }
 
 function schemaToolId(schema: any): string {
-  return typeof schema?.id === "string" ? schema.id : typeof schema?.name === "string" ? schema.name : "";
+  return typeof schema?.name === "string" ? schema.name : typeof schema?.id === "string" ? schema.id : "";
 }
 
 /** 统计某 serverName 当前在全局工具层注册的工具数（前缀 mcp__<serverName>__）。 */

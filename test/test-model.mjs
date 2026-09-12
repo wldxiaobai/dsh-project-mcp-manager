@@ -324,8 +324,8 @@ assert.deepEqual(parseToolBudgetWarn("nope,-1"), { maxTools: 200, maxBytes: 256 
 const budgetStats = mcpToolBudgetStats({
   tools: {
     schemas: () => [
-      { id: "mcp__heavy__a", description: "aa", inputSchema: { type: "object" } },
-      { id: "mcp__other__b", description: "bb" }
+      { name: "mcp__heavy__a", description: "aa", inputSchema: { type: "object" } },
+      { name: "mcp__other__b", description: "bb" }
     ]
   }
 }, "heavy");

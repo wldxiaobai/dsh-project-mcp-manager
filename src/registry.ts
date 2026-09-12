@@ -782,6 +782,7 @@ export class ProjectMcpRegistry {
         await this.reconcileAll();
       }).catch(() => {});
     }, 150);
+    this.timer.unref();
   }
 
   /**
@@ -841,7 +842,7 @@ export class ProjectMcpRegistry {
     this.watcher = undefined;
     if (old !== undefined) await old.close().catch(() => {});
     this.watchedFiles = keys;
-    if (keys.length === 0) return;
+    if (keys.length === 0 || this.disposed) return;
     // chokidar 不会监听尚不存在的嵌套文件：改为监听项目根（depth 2 覆盖
     // .dsh/mcp.yml），事件回调里按精确路径过滤。
     const watcher = chokidar.watch(roots, {
@@ -1107,6 +1108,7 @@ export class ProjectMcpRegistry {
         await this.reconcileAll();
       }).catch(() => {});
     }, delayMs);
+    this.graceTimer.unref();
   }
 
   private async statConfigFile(path: string): Promise<{ mtimeMs: number; size: number } | "missing"> {
@@ -1627,7 +1629,13 @@ export class ProjectMcpRegistry {
     );
   }
 
-  private async unmountServer(container: MountContainer, rawName: string) {
+  private async unmountServer(container: MountContainer, rawName: string, health: "forget" | "generation" = "forget") {
+    const mark = this.healthKey(container.key, rawName);
+    if (health === "forget") this.healthByMount.delete(mark);
+    else {
+      const record = this.healthByMount.get(mark);
+      if (record !== undefined) record.everHadTools = false;
+    }
     const state = container.servers.get(rawName);
     if (state === undefined) return;
     container.servers.delete(rawName);
@@ -1653,8 +1661,10 @@ export class ProjectMcpRegistry {
   }
 
   /**
-   * 连接死亡自愈：曾经有过工具、当前 0 工具、未 disabled、退避已过 → unmount 再 mount。
-   * 连续 HEALTH_REMOUNT_LIMIT 次仍为 0 工具则 give-up。JSON enabled:false 本就不在装载集。
+   * 连接死亡自愈：当前 fiber 世代曾经有过工具、当前 0 工具、未 disabled、退避已过
+   * → unmount 再 mount（新世代清 everHadTools，不抢官方内部重连）。
+   * 连续 HEALTH_REMOUNT_LIMIT 个世代仍为 0 工具则 give-up。JSON enabled:false 本就不在装载集。
+   * 工具重新出现时不清 remountCount，否则跨世代的 give-up 永远攒不上。
    */
   private async remountUnhealthy(): Promise<void> {
     for (const [key, entry] of this.projects) {
@@ -1679,14 +1689,13 @@ export class ProjectMcpRegistry {
       const tools = mcpToolCount(this.ctx, state.effectiveName);
       if (tools > 0) {
         health.everHadTools = true;
-        health.remountCount = 0;
         health.nextRemountAt = 0;
-        health.givenUp = false;
         continue;
       }
       if (!health.everHadTools || state.phase !== "active" || health.givenUp) continue;
       if (health.remountCount >= this.remountLimit()) {
         health.givenUp = true;
+        this.skipReasons.set(container.key + "\u0000" + state.rawName, "give-up");
         await container.diag({ kind: "give-up", rawName: state.rawName, effectiveName: state.effectiveName, remountCount: health.remountCount });
         this.ctx.logger.warn(`${container.label} "${state.effectiveName}" 连续重挂 ${health.remountCount} 次后仍无工具，停止自愈`);
         continue;
@@ -1697,7 +1706,7 @@ export class ProjectMcpRegistry {
       await container.diag({ kind: "remount", rawName: state.rawName, effectiveName: state.effectiveName, attempt: health.remountCount });
       this.ctx.logger.warn(`${container.label} "${state.effectiveName}" 连接巡检：工具数为 0，第 ${health.remountCount} 次重挂`);
       const item: DesiredProjectRow = { rawName: state.rawName, row: state.row, source: state.source };
-      await this.unmountServer(container, state.rawName);
+      await this.unmountServer(container, state.rawName, "generation");
       await this.mountServer(container, item);
     }
   }
@@ -1979,11 +1988,8 @@ export class ProjectMcpRegistry {
     };
   }
 
-  /** 全量快照：每个已知项目一个 yml 分区 + 一个 .mcp.json 分区（有内容才出），外加用户层分区。 */
+  /** 内存快照：不触发对账。要收敛请走 `reload()` / `reconcileNow()`。 */
   async snapshot(): Promise<ProjectFileState[]> {
-    await this.enqueue(async () => {
-      await this.reconcileAll();
-    });
     const out: ProjectFileState[] = [];
     const userPaths = this.resolveUserLayerPaths();
     for (const [key, entry] of this.projects) {
