@@ -38,6 +38,16 @@ described in [configuration format](format.md).
   line, the user-layer row is **skipped** and recorded as
   `skipReason: "name-taken"` in the snapshot (no renaming, to avoid
   `serverName` reservation conflicts).
+- **On-demand project mounts** (v0.6.0): the catalog and effective names are
+  still computed for every known project. Project-layer fibers are created
+  only for projects with a live session or the process cwd. After the last
+  session leaves (and the project is not cwd) servers unmount after a
+  5 minute grace; the project entry and file watcher remain. User-layer
+  globals stay resident.
+
+A server that registers more than `DSH_MCP_TOOL_BUDGET_WARN` tools or
+description/schema bytes (default 200 / 256KiB) is warned once and listed in
+the diagnostic `summary.toolBudget`. Tools are never clipped.
 
 **Shadow priority** — layers merge first-come-first-served (1 → 6 above), and
 a row is shadowed when it collides with an earlier row on **any** of three
@@ -78,11 +88,19 @@ global row's tools (project-side suppression).
   inside `~/.claude.json` (`projects.<cwd>.mcpServers`, the local layer); this
   plugin does not read that layer. Use `dsh-mcp add --scope user` or the
   project files.
-- `type: "sse"` entries are rejected with a per-entry diagnostic — the mount
-  backend (`dsh-mcp-client`) only speaks `stdio` and `streamable-http`. CC's
-  `type: "http"` and an explicit `type: "streamable-http"` both map to
-  `streamable-http`; with `type` omitted, an entry that has only `url` (no
-  `command`) is treated as http, everything else as stdio.
+- `type: "sse"` entries are the **MCP SSE endpoint transport** and are
+  rejected per entry with an actionable diagnostic — the mount backend
+  (`dsh-mcp-client`) only speaks `stdio` and `streamable-http`. If the server
+  already speaks Streamable HTTP, change `type` to `"http"`; or drop `type`
+  and keep `url` (this plugin infers streamable-http). There is no implicit
+  fallback. CC's `type: "http"` and an explicit `type: "streamable-http"`
+  both map to `streamable-http`; with `type` omitted, an entry that has only
+  `url` or `httpUrl` (no `command`) is treated as http, everything else as
+  stdio. `httpUrl` is Gemini's Streamable HTTP field and is accepted as an
+  explicit streamable-http URL. A native `transport` key is accepted too
+  (`transport` wins when it agrees with `type`; a conflict errors). **A bare
+  `url` is Streamable HTTP here**, which is the opposite of Gemini CLI
+  (`url` = MCP SSE); see [configuration format](format.md#httpurl-transport-and-url-inference).
 - Broken files/entries never take down the valid ones, and they fail **per
   source**: an unreadable `.mcp.json` cannot unmount the same project's yml
   rows (and vice versa). Entry errors land in `.dsh/.mcp-diag.json` and the
@@ -101,3 +119,19 @@ global row's tools (project-side suppression).
   `toolCallTimeoutMs` / `failOnStartupError` / `reconnect` now **apply** in
   legacy files too (previously ignored). Both only change behavior for entries
   that spell them out.
+
+## Coexistence with `@wingsky-1/dsh-mcp-manager`
+
+Both plugins auto-load MCP servers from `<projectRoot>/.dsh/mcp.json`, but
+the on-disk dialects differ. This plugin reads `mcpServers`; the other
+stores `{ version, servers: [] }`. A file in the other format is a legal
+empty layer here (missing `mcpServers`), so the loader now writes a
+`foreignFormat` diagnostic instead of staying silent. The same check applies
+to `~/.dsh/dsh-mcp.json`.
+
+If both plugins run in one host, the same `serverName` can be spawned twice.
+Prefer a single plugin per project, or keep this plugin on `.dsh/mcp.yml` and
+the other on `.dsh/mcp.json`. `globalNames()` only sees official loader patch
+rows, not tools the other plugin registered at runtime, so rename-to-avoid
+does not cover that other instance. See the README section
+[Coexistence with other MCP manager plugins](../../README.md#coexistence-with-other-mcp-manager-plugins).

@@ -12,8 +12,10 @@
  * 本插件永不读取任何 Claude 用户态状态文件（凭据/历史混杂的单体文件），也永不写入上述任一文件。
  *
  * 条目映射：stdio（`command`/`args`/`env`/`cwd`）与 http（`url`/`headers`）之外，
- * 容忍 `type`（`stdio`|`http`|`streamable-http`；`sse` 逐条拒绝）与 DSH 透传键
- * （`toolCallTimeoutMs`/`failOnStartupError`/`reconnect`）。未知键忽略。
+ * 容忍 `type` 与原生 `transport`（官方 `SUPPORTED_MCP_TRANSPORTS` + 别名 `http`；
+ * 未知值与 `sse` 走 `resolveMcpTransport` 逐条拒绝）、Gemini 的 `httpUrl`，
+ * 以及 DSH 透传键（`toolCallTimeoutMs`/`failOnStartupError`/`reconnect`）。
+ * 未知键忽略。
  * `enabled:false` 静默跳过且不占名；`disabled:true` 占名但不装载（与原生 yml 一致）。
  * `${VAR}` 占位保持字面值进行，由 model.expandEnvRefs 在 mount 时运行时展开。
  */
@@ -21,10 +23,35 @@ import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { z } from "zod";
 import { type PatchRow } from "./mcp-file.js";
-import { MAX_TIMER_DELAY_MS, SERVER_NAME_RE, mcpServerInputSchema, toPatchRow, type McpServerInput } from "./model.js";
+import { MAX_TIMER_DELAY_MS, SERVER_NAME_RE, mcpServerInputSchema, resolveMcpTransport, toPatchRow, type McpServerInput, type SupportedMcpTransport } from "./model.js";
 
 /** DSH 自有 JSON 配置文件名（位于 `<root>/.dsh/`、`$DSH_HOME/`、`$DSH_HOME/profiles/<name>/`）。 */
 export const JSON_MCP_FILE = "mcp.json";
+/** 对方插件（`@wingsky-1/dsh-mcp-manager`）的全局存储文件名（位于 `$DSH_HOME/`）。 */
+export const FOREIGN_MCP_JSON_FILE = "dsh-mcp.json";
+
+/** 对方 `{version, servers}` 存储格式的可执行诊断（本插件不读取该方言）。 */
+export const FOREIGN_MCP_FORMAT_HINT =
+  "该文件疑似 @wingsky-1/dsh-mcp-manager 的存储格式（{version, servers}），本插件不读取。建议改用 mcpServers 方言，或改用 .dsh/mcp.yml";
+
+/** 对方文件名里误写了本插件 `mcpServers`：不装载，提示改用 mcp.json。 */
+export const FOREIGN_MCP_WRONG_FILE_HINT =
+  "该文件名为 dsh-mcp.json（@wingsky-1/dsh-mcp-manager 的全局存储），本插件不从此路径装载。请把 mcpServers 写到 mcp.json";
+
+/**
+ * 检测对方插件的存储格式。本插件方言文件（mcp.json / .mcp.json）里一旦有
+ * `mcpServers`（即便同时有 `servers`）就不告警。对方文件名 `dsh-mcp.json`
+ * 即使写了 `mcpServers` 也不装载，并提示改用 mcp.json。缺 `mcpServers` 且顶层
+ * 是 `servers` 数组，或同时有 `version` 与 `servers`，认定为对方格式。
+ */
+export function detectForeignMcpFormat(value: Record<string, unknown>, fileName?: string): string | undefined {
+  if (fileName === FOREIGN_MCP_JSON_FILE && "mcpServers" in value) return FOREIGN_MCP_WRONG_FILE_HINT;
+  if ("mcpServers" in value) return undefined;
+  const servers = value.servers;
+  if (Array.isArray(servers) || ("version" in value && servers !== undefined)) return FOREIGN_MCP_FORMAT_HINT;
+  return undefined;
+}
+
 /** 遗留 Claude Code project 层文件名（位于项目根，与 `.dsh/` 并列，只读）。 */
 export const CC_PROJECT_FILE = ".mcp.json";
 /** 置为 "1" 时跳过遗留 `<projectRoot>/.mcp.json` 的读取与监听；DSH 自有 JSON 层不受影响。 */
@@ -57,6 +84,11 @@ export interface JsonReadResult {
   entryErrors: string[];
   /** 整文件级错误（不存在=正常空结果；解析失败等）。消息不含文件内容。 */
   fileError?: string;
+  /**
+   * 文件存在、缺 `mcpServers`、且顶层像 `{version, servers}`（对方插件存储格式）时的
+   * 诊断。缺 `mcpServers` 仍是合法空层；此字段只为「配了但不生效」提供可执行说明。
+   */
+  formatHint?: string;
 }
 
 /** stdio 空 cwd 的解析策略：项目层=项目根；用户层=继承宿主工作目录。 */
@@ -82,21 +114,30 @@ const jsonReconnectSchema = z
 
 /**
  * 单条目宽松 schema：未知字段（timeout/scope 等生态附加键）容忍并忽略。
- * `type` 缺省视为 stdio（有 url 无 command 时按 http 推断）。
+ * `type` 缺省视为 stdio（有 url/httpUrl 无 command 时按 http 推断）。
+ * `transport` 与 `httpUrl` 为原生/Gemini 方言别名，由 jsonEntryToInput 归一。
  */
 export const jsonServerEntrySchema = z.looseObject({
-  type: z.enum(["stdio", "http", "streamable-http", "sse"]).optional(),
+  type: z.string().optional(),
+  transport: z.string().optional(),
   command: z.string().optional(),
   args: z.array(z.string()).optional(),
   env: z.record(z.string(), z.string()).optional(),
   cwd: z.string().optional(),
   url: z.string().optional(),
+  httpUrl: z.string().optional(),
   headers: z.record(z.string(), z.string()).optional(),
   enabled: z.boolean().optional(),
   disabled: z.boolean().optional(),
   toolCallTimeoutMs: z.number().int().min(1).optional(),
   failOnStartupError: z.boolean().optional(),
-  reconnect: jsonReconnectSchema
+  reconnect: jsonReconnectSchema,
+  tools: z.object({
+    allow: z.array(z.string()).optional(),
+    deny: z.array(z.string()).optional()
+  }).optional(),
+  includeTools: z.array(z.string()).optional(),
+  excludeTools: z.array(z.string()).optional()
 });
 
 export type JsonServerEntry = z.infer<typeof jsonServerEntrySchema>;
@@ -114,45 +155,112 @@ function passthroughKeys(entry: JsonServerEntry): Record<string, unknown> {
   return out;
 }
 
+function resolveJsonToolFilter(entry: JsonServerEntry): { tools?: { allow?: string[]; deny?: string[] } } {
+  const allow = entry.tools?.allow !== undefined ? entry.tools.allow : entry.includeTools;
+  const deny = entry.tools?.deny !== undefined ? entry.tools.deny : entry.excludeTools;
+  if (allow === undefined && deny === undefined) return {};
+  return { tools: { ...(allow === undefined ? {} : { allow }), ...(deny === undefined ? {} : { deny }) } };
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+/**
+ * 条目上显式给出的 transport/type → 官方传输。两者都给且映射结果不同则报错；
+ * `transport` 优先（原生方言优先），但冲突仍报错而不是静默覆盖。
+ * `sse` 等不受支持值走 resolveMcpTransport 的可执行文案。
+ */
+function resolveDeclaredTransport(entry: JsonServerEntry): { transport?: SupportedMcpTransport } | { error: string } {
+  const fromTransport = entry.transport === undefined || entry.transport === "" ? undefined : resolveMcpTransport(entry.transport);
+  const fromType = entry.type === undefined || entry.type === "" ? undefined : resolveMcpTransport(entry.type);
+  if (fromTransport !== undefined && "error" in fromTransport) return fromTransport;
+  if (fromType !== undefined && "error" in fromType) return fromType;
+  if (fromTransport !== undefined && fromType !== undefined && fromTransport.transport !== fromType.transport) {
+    return { error: `transport (${entry.transport}) 与 type (${entry.type}) 冲突` };
+  }
+  return { transport: fromTransport?.transport ?? fromType?.transport };
+}
+
+/** cwd 缺省语义：显式写的非空 cwd 原样保留；项目层缺省落到项目根；全局层留空串（继承宿主工作目录）。 */
+function jsonStdioCwd(entry: JsonServerEntry, options: JsonReadOptions): string {
+  if (typeof entry.cwd === "string" && entry.cwd !== "") return entry.cwd;
+  if (options.cwdPolicy === "project") return options.projectRoot;
+  return "";
+}
+
+function parseJsonHttpEntry(name: string, entry: JsonServerEntry, remoteUrl: string): McpServerInput {
+  return mcpServerInputSchema.parse({
+    serverName: name,
+    transport: "streamable-http",
+    url: remoteUrl,
+    headers: entry.headers,
+    ...passthroughKeys(entry),
+    ...resolveJsonToolFilter(entry)
+  });
+}
+
+function parseJsonStdioEntry(name: string, entry: JsonServerEntry, options: JsonReadOptions): McpServerInput {
+  return mcpServerInputSchema.parse({
+    serverName: name,
+    transport: "stdio",
+    command: entry.command,
+    args: entry.args ?? [],
+    env: entry.env,
+    cwd: jsonStdioCwd(entry, options),
+    ...passthroughKeys(entry),
+    ...resolveJsonToolFilter(entry)
+  });
+}
+
+function wantsJsonHttp(
+  declared: SupportedMcpTransport | undefined,
+  remoteUrl: string | undefined,
+  httpUrl: string | undefined,
+  entry: JsonServerEntry
+): boolean {
+  if (declared === "streamable-http" || httpUrl !== undefined) return true;
+  return declared === undefined && remoteUrl !== undefined && entry.command === undefined;
+}
+
+function jsonEntryFromDeclared(
+  name: string,
+  entry: JsonServerEntry,
+  options: JsonReadOptions,
+  declared: SupportedMcpTransport | undefined,
+  remoteUrl: string | undefined,
+  httpUrl: string | undefined
+): { input: McpServerInput } | { error: string } {
+  const hasCommand = typeof entry.command === "string" && entry.command !== "";
+  if (declared === undefined && hasCommand && remoteUrl !== undefined) {
+    return { error: "同时有 command 与 url，请显式写 type 或 transport" };
+  }
+  if (wantsJsonHttp(declared, remoteUrl, httpUrl, entry)) {
+    if (remoteUrl === undefined) return { error: 'type:"http" 条目缺少 url' };
+    return { input: parseJsonHttpEntry(name, entry, remoteUrl) };
+  }
+  if (!hasCommand) {
+    const typedStdio = declared === "stdio" || entry.type === "stdio";
+    return { error: typedStdio ? 'type:"stdio" 条目缺少 command' : '条目缺少 command（且无 type:"http"/url）' };
+  }
+  return { input: parseJsonStdioEntry(name, entry, options) };
+}
+
 /** 单条 JSON 条目 → 官方输入。坏条目返回 `{ error }` 由调用方逐条收集。 */
 export function jsonEntryToInput(name: string, entry: JsonServerEntry, options: JsonReadOptions): { input: McpServerInput } | { error: string } {
-  if (entry.type === "sse") {
-    return { error: "sse transport not supported（dsh-mcp-client 仅支持 stdio | streamable-http）" };
+  const url = nonEmptyString(entry.url);
+  const httpUrl = nonEmptyString(entry.httpUrl);
+  if (url !== undefined && httpUrl !== undefined && url !== httpUrl) {
+    return { error: "url 与 httpUrl 同时出现且值不同；请只保留其一" };
+  }
+  const remoteUrl = httpUrl ?? url;
+  const declared = resolveDeclaredTransport(entry);
+  if ("error" in declared) return declared;
+  if (httpUrl !== undefined && declared.transport === "stdio") {
+    return { error: "httpUrl 表示 streamable-http，与 transport/type 声明的 stdio 冲突" };
   }
   try {
-    // url 而无 type/command：按 http 处理（手写文件常见，官方要求 type 但容忍度向实用倾斜）
-    const inferredHttp = entry.type === undefined && typeof entry.url === "string" && entry.command === undefined;
-    if (entry.type === "http" || entry.type === "streamable-http" || inferredHttp) {
-      if (typeof entry.url !== "string" || entry.url === "") return { error: 'type:"http" 条目缺少 url' };
-      const input = mcpServerInputSchema.parse({
-        serverName: name,
-        transport: "streamable-http",
-        url: entry.url,
-        headers: entry.headers,
-        ...passthroughKeys(entry)
-      });
-      return { input };
-    }
-    if (typeof entry.command !== "string" || entry.command === "") {
-      return { error: entry.type === "stdio" ? 'type:"stdio" 条目缺少 command' : '条目缺少 command（且无 type:"http"/url）' };
-    }
-    // cwd 缺省语义：显式写的非空 cwd 原样保留；项目层缺省落到项目根；全局层留空串（继承宿主工作目录）。
-    let cwd = "";
-    if (typeof entry.cwd === "string" && entry.cwd !== "") {
-      cwd = entry.cwd;
-    } else if (options.cwdPolicy === "project") {
-      cwd = options.projectRoot;
-    }
-    const input = mcpServerInputSchema.parse({
-      serverName: name,
-      transport: "stdio",
-      command: entry.command,
-      args: entry.args ?? [],
-      env: entry.env,
-      cwd,
-      ...passthroughKeys(entry)
-    });
-    return { input };
+    return jsonEntryFromDeclared(name, entry, options, declared.transport, remoteUrl, httpUrl);
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
   }
@@ -219,8 +327,20 @@ export async function readJsonRows(path: string, options: JsonReadOptions): Prom
   if (result.missing === true) return { rows: [], entryErrors: [] };
   if (result.error !== undefined) return { rows: [], entryErrors: [], fileError: `${label} ${result.error}` };
   if (!isPlainObject(result.value)) return { rows: [], entryErrors: [], fileError: `${label} 顶层必须是 JSON 对象` };
+  const formatHint = detectForeignMcpFormat(result.value, label);
+  if (label === FOREIGN_MCP_JSON_FILE && "mcpServers" in result.value) {
+    return { rows: [], entryErrors: [], formatHint };
+  }
   if (!("mcpServers" in result.value)) {
-    if (options.requireMcpServers === true) return { rows: [], entryErrors: [], fileError: `${label} 缺少 mcpServers 字段` };
+    if (options.requireMcpServers === true) {
+      return {
+        rows: [],
+        entryErrors: [],
+        fileError: `${label} 缺少 mcpServers 字段`,
+        ...(formatHint === undefined ? {} : { formatHint })
+      };
+    }
+    if (formatHint !== undefined) return { rows: [], entryErrors: [], formatHint };
     return { rows: [], entryErrors: [] };
   }
   const { rows, entryErrors } = parseJsonServersValue(result.value.mcpServers, options);

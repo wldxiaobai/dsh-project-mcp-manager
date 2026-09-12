@@ -8,6 +8,11 @@ official `@deepseek-ai/dsh-mcp-client`) whenever a dsh session opens in that
 project. Changes to the file hot-reload into the running dsh process, and tool
 visibility is scoped per session cwd. No UI — core functionality only.
 
+**Capability boundary**: this plugin = official `@deepseek-ai/dsh-mcp-client`
+transports + six-layer source governance + per-session isolation.
+**Transport types are decided by the official client**; this plugin does not
+implement MCP transports.
+
 ## Documentation
 
 Feature documentation lives in `docs/`, English and Chinese side by side:
@@ -26,13 +31,16 @@ Design and release records (Chinese): [dsh 0.1.5-rc.2 adaptation](docs/design/ad
 [dsh 0.1.2-rc.1 adaptation](docs/design/adaptation-dsh-0.1.2-rc1.md) ·
 [JSON config layer proposal](docs/design/proposal-json-mcp-config.md) ·
 [Runtime robustness & JSON interop proposal](docs/design/proposal-runtime-robustness-and-json-interop.md) ·
+[v0.6.0 release notes](docs/releases/v0.6.0.md) ·
 [v0.4.3 release notes](docs/releases/v0.4.3.md) ·
 [v0.4.2 release notes](docs/releases/v0.4.2.md) ·
 [v0.4.1 release notes](docs/releases/v0.4.1.md) ·
 [v0.4.0 release notes](docs/releases/v0.4.0.md) ·
 [v0.3.1 release notes](docs/releases/v0.3.1.md).
 
-Code review records (Chinese): [TypeScript changes since v0.3.1](docs/code-review/ts-review-since-v0.3.1.zh.md).
+Code review records (Chinese): [TypeScript changes since v0.3.1](docs/code-review/ts-review-since-v0.3.1.zh.md) ·
+[v0.4.3 to v0.6.0](docs/code-review/ts-review-v0.4.3-to-v0.6.0.zh.md) ·
+[7e0088d to 804662f (fix follow-up)](docs/code-review/ts-review-7e0088d-to-804662f.zh.md).
 
 ## Installation (mount into a profile)
 
@@ -59,7 +67,7 @@ dsh plugin --profile web add dsh-project-mcp-manager@latest
 
 # Install a specific version (check available versions with
 # npm view dsh-project-mcp-manager versions)
-dsh plugin --profile web add dsh-project-mcp-manager@0.4.2
+dsh plugin --profile web add dsh-project-mcp-manager@0.6.0
 ```
 
 **Option 2: install directly with pnpm** (equivalent to option 1):
@@ -86,7 +94,7 @@ pnpm add link:<path-to-your-dsh-mcp-project-source>   # e.g. D:\dev\dsh-mcp-proj
 > trigger the bundle reconcile.
 
 **Upgrading / pinning versions**: re-run the `add` command from option 1 with
-the desired version suffix — `@latest` upgrades to the newest release, `@0.4.2`
+the desired version suffix — `@latest` upgrades to the newest release, `@0.6.0`
 pins to a specific version.
 
 ## Build & test
@@ -106,8 +114,12 @@ pnpm test          # node test/test-model.mjs / test-mcp-file / test-json-file /
 - **Mounting**: each `(project, serverName)` pair in the project layers mounts
   one `@deepseek-ai/dsh-mcp-client` instance (`ctx.plugin`) on the host ctx and
   registers it into the global tool layer; multiple sessions inside the same
-  project share a single connection. **Every user-layer row mounts exactly one
-  instance** (global, independent of the number of projects) — see
+  project share a single connection. **Project-layer fibers are created only
+  for projects with a live session or the process cwd**; after the last
+  session leaves (and the project is not cwd) servers unmount following a
+  5 minute grace while the catalog entry and watcher remain. **Every
+  user-layer row mounts exactly one instance** (global, independent of the
+  number of projects) — see
   [configuration sources and layers](docs/guide/layers.md).
 - **Hot reload**: chokidar watches each project root (depth 2, ignoring
   node_modules/.git/.hg/.svn), but only edits to the **exact** config files of
@@ -153,3 +165,24 @@ longer fanned out per project. Lines that fail to mount or are invalid are
 skipped with a warning and do not affect other servers. Claude user-state
 monoliths such as `~/.claude.json` (mixing credentials with project history)
 are **no longer read at all** as of v0.4.0.
+
+## Coexistence with other MCP manager plugins
+
+This plugin and `@wingsky-1/dsh-mcp-manager` both auto-load per-project MCP
+servers, but they do **not** share a file format:
+
+1. **Project files are mutually incompatible.** This plugin reads
+   `{ mcpServers: { … } }` in `<projectRoot>/.dsh/mcp.json`. The other plugin
+   stores `{ version, servers: [] }` at the same path. A missing `mcpServers`
+   key is a legal empty layer here, so the other format would otherwise look
+   like "I configured it but nothing happens". The loader now writes a
+   diagnostic naming that format and suggesting `mcpServers` or
+   `.dsh/mcp.yml`. The same hint applies to `~/.dsh/dsh-mcp.json`.
+2. **The same `serverName` can be started twice** (once by each plugin).
+   stdio servers may contend for ports or exclusive resources.
+3. **Prefer one plugin per project**, or keep this plugin on `.dsh/mcp.yml`
+   and the other on `.dsh/mcp.json`.
+
+`globalNames()` only sees official loader patch rows, not tools registered by
+the other plugin at runtime, so rename-to-avoid-collision does **not** cover
+that other instance.

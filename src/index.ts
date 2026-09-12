@@ -12,6 +12,9 @@ import { Context } from "@deepseek-ai/cordis";
 import { MCP_PLUGIN_NAME } from "./mcp-file.js";
 import { PROFILE_ENV } from "./dsh-paths.js";
 import { ProjectMcpRegistry, profileNameFromConfigPath } from "./registry.js";
+import { bindProjectMcpService, PROJECT_MCP_SERVICE } from "./service.js";
+
+export { bindProjectMcpService, PROJECT_MCP_SERVICE, type ProjectMcpService } from "./service.js";
 
 export const name = "dsh-project-mcp-manager";
 /** agents 为硬依赖：宿主启动早期插件行先于 agents 服务装载时，等待其就绪后再 apply，
@@ -70,7 +73,7 @@ export function apply(ctx: Context) {
     }
   });
 
-  // registry 的装载/清理全部由其自身在构造时经 ctx.on / ctx.effect 注册，
-  // 此处只需保持引用存活（apply 作用域 + registry 内部 fiber 持有）。
-  void registry;
+  // 查询面经 cordis 服务暴露；registry 的装载/清理由其自身在构造时经
+  // ctx.on / ctx.effect 注册，provide 同时钉住引用（fiber 卸载时注销服务）。
+  ctx.provide(PROJECT_MCP_SERVICE, bindProjectMcpService(registry));
 }

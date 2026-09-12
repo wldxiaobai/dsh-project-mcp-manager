@@ -7,6 +7,9 @@
 `@deepseek-ai/dsh-mcp-client`），文件改动热重载到运行中的 dsh 进程，并按
 会话 cwd 控制工具可见性。无 UI，仅具备核心功能。
 
+**能力边界**：本插件 = 官方 `@deepseek-ai/dsh-mcp-client` 传输 + 六层来源治理 +
+按会话隔离。**传输类型由官方 client 决定**；本插件不实现任何 MCP 传输。
+
 ## 文档
 
 功能说明已拆分到 `docs/`，中英双版并存：
@@ -23,13 +26,16 @@
 [dsh 0.1.2-rc.1 适配记录](design/adaptation-dsh-0.1.2-rc1.md) ·
 [JSON 配置层设计提案](design/proposal-json-mcp-config.md) ·
 [运行时稳健性与 JSON 互通提案](design/proposal-runtime-robustness-and-json-interop.md) ·
+[v0.6.0 发布说明](releases/v0.6.0.md) ·
 [v0.4.3 发布说明](releases/v0.4.3.md) ·
 [v0.4.2 发布说明](releases/v0.4.2.md) ·
 [v0.4.1 发布说明](releases/v0.4.1.md) ·
 [v0.4.0 发布说明](releases/v0.4.0.md) ·
 [v0.3.1 发布说明](releases/v0.3.1.md)。
 
-代码审查记录（中文）：[v0.3.1 以来 TypeScript 变更审查](code-review/ts-review-since-v0.3.1.zh.md)。
+代码审查记录（中文）：[v0.3.1 以来 TypeScript 变更审查](code-review/ts-review-since-v0.3.1.zh.md) ·
+[v0.4.3 至 v0.6.0](code-review/ts-review-v0.4.3-to-v0.6.0.zh.md) ·
+[7e0088d 至 804662f（审查落地复查）](code-review/ts-review-7e0088d-to-804662f.zh.md)。
 
 ## 安装（挂载到 profile）
 
@@ -52,7 +58,7 @@ npm install -g deepseek-ai/dsh         # 或从 GitHub 源码安装
 dsh plugin --profile web add dsh-project-mcp-manager@latest
 
 # 安装指定版本（版本号可先 npm view dsh-project-mcp-manager versions 查看）
-dsh plugin --profile web add dsh-project-mcp-manager@0.4.2
+dsh plugin --profile web add dsh-project-mcp-manager@0.6.0
 ```
 
 **方式二：直接 pnpm 安装**（与方式一等价）：
@@ -77,7 +83,7 @@ pnpm add link:<你的 dsh-mcp-project 源码目录>   # 例如 D:\dev\dsh-mcp-pr
 > bundle reconcile。
 
 **升级/锁定版本**：重跑方式一的 `add` 命令并带上目标版本后缀——`@latest`
-升级到最新，`@0.4.2` 锁定到指定版本。
+升级到最新，`@0.6.0` 锁定到指定版本。
 
 ## 构建与测试
 
@@ -93,7 +99,9 @@ pnpm test          # node 直跑 test/ 下六个 .mjs（model / mcp-file / json-
   向上找最近的含 `.git` 的祖先目录作为项目根（无 `.git` 时退回目录本身）。
 - **装载**：项目层每个 `(项目, serverName)` 在宿主 ctx 上装载一个
   `@deepseek-ai/dsh-mcp-client` 实例（`ctx.plugin`），注册进全局工具层，同一
-  项目内多会话共享同一连接；**用户层每行只装载一个实例**（全局，与项目数无关）
+  项目内多会话共享同一连接。**项目层只给有活跃会话或进程 cwd 的项目发起装载**；
+  最后一次会话离开且该项目不是 cwd 后，宽限 5 分钟再卸载服务器，条目与文件监听
+  保留。**用户层每行只装载一个实例**（全局，与项目数无关）
   ——详见[配置来源与分层](guide/layers.zh.md)。
 - **热重载**：chokidar 监听各项目根（depth 2，忽略 node_modules/.git/.hg/
   .svn），但只有**已知项目根的精确配置文件**（`<projectRoot>/.dsh/mcp.yml`、
@@ -125,3 +133,19 @@ pnpm test          # node 直跑 test/ 下六个 .mjs（model / mcp-file / json-
 连接，所有项目可见），不再按项目 fan-out。装载失败/配置无效行仅告警跳过，不影响
 其他服务器。`~/.claude.json` 这类 Claude 用户态单体文件（混存凭据与项目历史）
 自 v0.4.0 起**完全不再读取**。
+
+## 与同类插件共存
+
+本插件与 `@wingsky-1/dsh-mcp-manager` 都做按项目自带 MCP，但**文件格式互不兼容**：
+
+1. **项目文件格式互不兼容。** 本插件读 `<projectRoot>/.dsh/mcp.json` 里的
+   `{ mcpServers: { … } }`；对方在同一路径存 `{ version, servers: [] }`。缺
+   `mcpServers` 在本插件是合法空层，对方格式会表现为「我配了但没生效」。装载器
+   现在会写一条诊断，指认该格式并建议改用 `mcpServers` 或 `.dsh/mcp.yml`。
+   全局 `~/.dsh/dsh-mcp.json` 同样提示。
+2. **同名服务器会被两个插件各启动一次**，stdio 可能互相抢端口或独占资源。
+3. **建议同一项目只启用一个**，或让两者分居 `mcp.yml`（本插件）与
+   `.dsh/mcp.json`（对方）。
+
+`globalNames()` 只读官方 loader patch 行，看不到对方运行时注册的工具，因此
+「改名避让」不会覆盖对方实例。
