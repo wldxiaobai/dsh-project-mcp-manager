@@ -34,7 +34,8 @@
 [v0.3.1 发布说明](releases/v0.3.1.md)。
 
 代码审查记录（中文）：[v0.3.1 以来 TypeScript 变更审查](code-review/ts-review-since-v0.3.1.zh.md) ·
-[v0.4.3 至 v0.6.0](code-review/ts-review-v0.4.3-to-v0.6.0.zh.md)。
+[v0.4.3 至 v0.6.0](code-review/ts-review-v0.4.3-to-v0.6.0.zh.md) ·
+[7e0088d 至 804662f（审查落地复查）](code-review/ts-review-7e0088d-to-804662f.zh.md)。
 
 ## 安装（挂载到 profile）
 

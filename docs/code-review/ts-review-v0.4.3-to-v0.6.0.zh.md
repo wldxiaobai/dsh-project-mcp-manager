@@ -4,6 +4,9 @@
 [运行时稳健性与 JSON 互通提案](../design/proposal-runtime-robustness-and-json-interop.md) ·
 [上一轮审查（v0.3.1 以来，已在 v0.4.1 落地）](ts-review-since-v0.3.1.zh.md)
 
+> 本文 H1–H2 / M1–M8 / L1–L12 已在 `7e0088d`…`804662f` 落地（L4/L9 以文档关闭）。
+> 修复批次的复查见 [7e0088d 至 804662f](ts-review-7e0088d-to-804662f.zh.md)。
+
 **审查日期**：2026-09-12 ｜ **区间**：`v0.4.3..HEAD`（HEAD = `8996af1`，分支
 `feat/runtime-robustness-and-json-interop`；尚未打 `v0.6.0` tag，内容即发布说明所述的
 v0.6.0）
