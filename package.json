@@ -19,6 +19,14 @@
   },
   "license": "MIT",
   "author": "wldxiaobai <944418001@qq.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wldxiaobai/dsh-project-mcp-manager.git"
+  },
+  "bugs": {
+    "url": "https://github.com/wldxiaobai/dsh-project-mcp-manager/issues"
+  },
+  "homepage": "https://github.com/wldxiaobai/dsh-project-mcp-manager#readme",
   "keywords": [
     "dsh",
     "deepseek-harness",

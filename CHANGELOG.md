@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `package.json` discovery fields: `repository`, `bugs`, and `homepage` point at
+  https://github.com/wldxiaobai/dsh-project-mcp-manager so npm and GitHub can
+  surface the source, issues, and README.
+
 ## [0.4.3] - 2026-09-10
 
 Host-alignment release for dsh 0.1.5-rc.1. **No user-visible behaviour
