@@ -19,7 +19,9 @@ export function parseToolBudgetWarn(raw: string | undefined = process.env[TOOL_B
 
 /** 工具层 schema 的 id 口径：官方 `ToolSchema` 只有 `name`；假 ctx 可能只有 `id`。deny 展开与预算统计共用。 */
 export function schemaToolId(schema: any): string {
-  return typeof schema?.name === "string" ? schema.name : typeof schema?.id === "string" ? schema.id : "";
+  if (typeof schema?.name === "string") return schema.name;
+  if (typeof schema?.id === "string") return schema.id;
+  return "";
 }
 
 /** 统计某 serverName 当前在全局工具层注册的工具数（前缀 mcp__<serverName>__）。 */

@@ -42,7 +42,32 @@ export function byCodeUnit(a: string, b: string): number {
 }
 
 function escapeRegexChar(char: string): string {
-  return /[\\^$*+?.()|{}\[\]]/.test(char) ? "\\" + char : char;
+  return /[\\^$*+?.()|{}[\]]/.test(char) ? "\\" + char : char;
+}
+
+function escapeCharClassItem(item: string): string {
+  if (item === "\\") return String.raw`\\`;
+  if (item === "]") return String.raw`\]`;
+  return item;
+}
+
+function consumeGlobStar(pattern: string, index: number): { out: string; next: number } {
+  if (pattern[index + 1] === "*") return { out: ".*", next: index + 2 };
+  return { out: "[^/]*", next: index + 1 };
+}
+
+function consumeGlobCharClass(pattern: string, index: number): { out: string; next: number } {
+  const close = pattern.indexOf("]", index + 1);
+  if (close === -1 || close === index + 1) return { out: String.raw`\[`, next: index + 1 };
+  let body = pattern.slice(index + 1, close);
+  let negated = false;
+  if (body.startsWith("!") || body.startsWith("^")) {
+    negated = true;
+    body = body.slice(1);
+  }
+  let cls = "";
+  for (const item of body) cls += escapeCharClassItem(item);
+  return { out: "[" + (negated ? "^" : "") + cls + "]", next: close + 1 };
 }
 
 /**
@@ -54,13 +79,9 @@ export function globToRegExp(pattern: string): RegExp {
   for (let index = 0; index < pattern.length; ) {
     const char = pattern[index];
     if (char === "*") {
-      if (pattern[index + 1] === "*") {
-        out += ".*";
-        index += 2;
-      } else {
-        out += "[^/]*";
-        index += 1;
-      }
+      const star = consumeGlobStar(pattern, index);
+      out += star.out;
+      index = star.next;
       continue;
     }
     if (char === "?") {
@@ -69,22 +90,9 @@ export function globToRegExp(pattern: string): RegExp {
       continue;
     }
     if (char === "[") {
-      const close = pattern.indexOf("]", index + 1);
-      if (close === -1 || close === index + 1) {
-        out += "\\[";
-        index += 1;
-        continue;
-      }
-      let body = pattern.slice(index + 1, close);
-      let negated = false;
-      if (body.startsWith("!") || body.startsWith("^")) {
-        negated = true;
-        body = body.slice(1);
-      }
-      let cls = "";
-      for (const item of body) cls += item === "\\" ? "\\\\" : item === "]" ? "\\]" : item;
-      out += "[" + (negated ? "^" : "") + cls + "]";
-      index = close + 1;
+      const cls = consumeGlobCharClass(pattern, index);
+      out += cls.out;
+      index = cls.next;
       continue;
     }
     out += escapeRegexChar(char);
@@ -152,7 +160,7 @@ export function deniedToolsForFilter(effectiveName: string, filter: ToolFilter |
   for (const id of registeredToolIds) {
     if (!id.startsWith(prefix) || id.length <= prefix.length) continue;
     const shortName = id.slice(prefix.length);
-    const denyHit = deny !== undefined && deny.some((pattern) => patternHitsTool(pattern, shortName, id));
+    const denyHit = deny?.some((pattern) => patternHitsTool(pattern, shortName, id)) === true;
     if (denyHit) {
       denied.push(id);
       continue;
@@ -594,14 +602,54 @@ function secretKeys(value: unknown): string[] {
   return Object.keys(value as Record<string, unknown>).filter((key) => typeof (value as Record<string, unknown>)[key] === "string");
 }
 
+function viewTransportOf(transport: unknown): McpTransport | "unknown" {
+  if (transport === "streamable-http" || transport === "stdio") return transport;
+  return "unknown";
+}
+
+function reconnectViewOf(config: Record<string, unknown>): ReconnectConfig {
+  const raw = config.reconnect !== null && typeof config.reconnect === "object" && !Array.isArray(config.reconnect)
+    ? config.reconnect as Record<string, unknown>
+    : {};
+  return {
+    enabled: asBoolean(raw.enabled, DEFAULT_RECONNECT.enabled),
+    initialDelayMs: asNumber(raw.initialDelayMs, DEFAULT_RECONNECT.initialDelayMs),
+    maxDelayMs: asNumber(raw.maxDelayMs, DEFAULT_RECONNECT.maxDelayMs),
+    maxAttempts: asNumber(raw.maxAttempts, DEFAULT_RECONNECT.maxAttempts)
+  };
+}
+
+function viewEndpointFields(transport: McpTransport | "unknown", config: Record<string, unknown>): Pick<McpServerView, "command" | "args" | "envKeys" | "cwd" | "url" | "headerKeys"> {
+  if (transport === "stdio") {
+    return {
+      command: asString(config.command),
+      args: asStringArray(config.args),
+      envKeys: secretKeys(config.env),
+      cwd: asString(config.cwd),
+      url: undefined,
+      headerKeys: []
+    };
+  }
+  if (transport === "streamable-http") {
+    return {
+      command: undefined,
+      args: undefined,
+      envKeys: [],
+      cwd: undefined,
+      url: asString(config.url),
+      headerKeys: secretKeys(config.headers)
+    };
+  }
+  return { command: undefined, args: undefined, envKeys: [], cwd: undefined, url: undefined, headerKeys: [] };
+}
+
 /** patch 行 → 脱敏 view。密钥值不返回。scope/effectiveServerName 由调用方给出。 */
 export function patchRowToView(row: PatchRow, scope?: McpScopeInfo, effectiveServerName?: string): McpServerView | undefined {
   const config = configFromPatchRow(row);
   if (config === undefined) return undefined;
   const serverName = asString(config.serverName);
   if (!SERVER_NAME_RE.test(serverName)) return undefined;
-  const transport = config.transport === "streamable-http" ? "streamable-http" : config.transport === "stdio" ? "stdio" : "unknown";
-  const reconnectRaw = config.reconnect !== null && typeof config.reconnect === "object" && !Array.isArray(config.reconnect) ? config.reconnect as Record<string, unknown> : {};
+  const transport = viewTransportOf(config.transport);
   const tools = toolFilterFromConfig(config);
   return {
     serverName,
@@ -610,21 +658,11 @@ export function patchRowToView(row: PatchRow, scope?: McpScopeInfo, effectiveSer
     entryId: row.id,
     ...(scope === undefined ? {} : { scope }),
     ...(effectiveServerName === undefined ? {} : { effectiveServerName }),
-    command: transport === "stdio" ? asString(config.command) : undefined,
-    args: transport === "stdio" ? asStringArray(config.args) : undefined,
-    envKeys: transport === "stdio" ? secretKeys(config.env) : [],
-    cwd: transport === "stdio" ? asString(config.cwd) : undefined,
-    url: transport === "streamable-http" ? asString(config.url) : undefined,
-    headerKeys: transport === "streamable-http" ? secretKeys(config.headers) : [],
+    ...viewEndpointFields(transport, config),
     ...(tools === undefined ? {} : { tools }),
     toolCallTimeoutMs: asNumber(config.toolCallTimeoutMs, DEFAULT_TOOL_CALL_TIMEOUT_MS),
     failOnStartupError: asBoolean(config.failOnStartupError, false),
-    reconnect: {
-      enabled: asBoolean(reconnectRaw.enabled, DEFAULT_RECONNECT.enabled),
-      initialDelayMs: asNumber(reconnectRaw.initialDelayMs, DEFAULT_RECONNECT.initialDelayMs),
-      maxDelayMs: asNumber(reconnectRaw.maxDelayMs, DEFAULT_RECONNECT.maxDelayMs),
-      maxAttempts: asNumber(reconnectRaw.maxAttempts, DEFAULT_RECONNECT.maxAttempts)
-    }
+    reconnect: reconnectViewOf(config)
   };
 }
 
