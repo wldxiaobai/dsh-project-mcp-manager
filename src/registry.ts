@@ -284,6 +284,13 @@ function canonicalConfig(config: Record<string, unknown> | undefined): string {
 /** 行的原始 serverName（受管行 id 或 config.serverName）；实现在 model.ts，CLI 与装载同口径。 */
 export { rowNameOf } from "./model.js";
 
+/** 拷贝 Map 值：巡检会在迭代中 unmount/mount，不能直接遍历 live iterator。 */
+function snapshotValues<V>(map: Map<unknown, V>): V[] {
+  const out: V[] = [];
+  for (const value of map.values()) out.push(value);
+  return out;
+}
+
 /**
  * 计算一个项目应当执行的装载变更（纯函数）：
  *   toUnmount —— 已装载但已不存在 / 生效名变化 / 配置变化的 rawName；
@@ -811,6 +818,12 @@ export class ProjectMcpRegistry {
     if (this.graceTimer !== undefined) clearTimeout(this.graceTimer);
     if (this.watcher !== undefined) void this.watcher.close().catch(() => {});
     if (this.userWatcher !== undefined) void this.userWatcher.close().catch(() => {});
+    this.disposeRestrictions();
+    this.disposeMountedFibers();
+    this.suppressedGlobals.clear();
+  }
+
+  private disposeRestrictions(): void {
     for (const disposer of this.restrictions.values()) {
       try {
         disposer();
@@ -819,25 +832,23 @@ export class ProjectMcpRegistry {
       }
     }
     this.restrictions.clear();
-    for (const entry of this.projects.values()) {
-      for (const state of entry.servers.values()) {
-        try {
-          state.fiber?.dispose();
-        } catch {
-          // fiber 随插件 ctx 一并销毁
-        }
-      }
-    }
-    this.projects.clear();
-    for (const state of this.globalServers.values()) {
+  }
+
+  private disposeServerFibers(servers: Map<string, ProjectServerState>): void {
+    for (const state of servers.values()) {
       try {
         state.fiber?.dispose();
       } catch {
         // fiber 随插件 ctx 一并销毁
       }
     }
+  }
+
+  private disposeMountedFibers(): void {
+    for (const entry of this.projects.values()) this.disposeServerFibers(entry.servers);
+    this.projects.clear();
+    this.disposeServerFibers(this.globalServers);
     this.globalServers.clear();
-    this.suppressedGlobals.clear();
   }
 
   // ── 串行化与调度 ─────────────────────────────────────────────────────
@@ -1920,7 +1931,7 @@ export class ProjectMcpRegistry {
   }
 
   private async remountUnhealthyIn(container: MountContainer): Promise<void> {
-    for (const state of [...container.servers.values()]) {
+    for (const state of snapshotValues(container.servers)) {
       if (this.disposed || !container.isCurrent(state) || state.row.disabled === true) continue;
       const health = this.healthOf(container.key, state.rawName);
       if (mcpToolCount(this.ctx, state.effectiveName) > 0) {
