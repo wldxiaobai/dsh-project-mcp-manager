@@ -34,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tools.allow` / `tools.deny` (pattern text only).
 - JSON entries that give both `command` and `url`/`httpUrl` without
   `type`/`transport` fail per entry instead of silently loading as stdio.
+- The user-layer watcher also watches `$DSH_HOME/dsh-mcp.json` so creating
+  the other plugin's file diagnoses it without waiting for an unrelated
+  reconcile.
 
 ## [0.6.0] - 2026-09-12
 

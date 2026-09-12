@@ -1002,7 +1002,13 @@ export class ProjectMcpRegistry {
    */
   private async syncUserWatcher(): Promise<void> {
     const paths = this.resolveUserLayerPaths();
-    const targets = [paths.mcpYml, paths.mcpJson, ...(this.userLayer.profileJson === null ? [] : [this.userLayer.profileJson])];
+    const foreignPath = foreignUserMcpJsonFile(dirname(paths.mcpJson));
+    const targets = [
+      paths.mcpYml,
+      paths.mcpJson,
+      ...(this.userLayer.profileJson === null ? [] : [this.userLayer.profileJson]),
+      ...(isSameFilePath(foreignPath, paths.mcpJson) ? [] : [foreignPath])
+    ];
     // 排序只用于跨轮次相等性比较，须与 locale 无关保持稳定：统一走 byCodeUnit
     // （UTF-16 码元序，与 Array#sort 默认逐字节等价，不经 locale collator），
     // 比较器显式化是静态分析要求，也是本仓的排序口径声明。

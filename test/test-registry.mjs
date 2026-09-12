@@ -1143,6 +1143,56 @@ try {
 }
 
 {
+  // M8：启动时没有对方全局文件，创建 `dsh-mcp.json` 必须经用户 watcher kick 对账并诊断。
+  const homeW = await mkdtemp(join(tmpdir(), "dsh-mcp-foreign-watch-"));
+  const projW = await mkdtemp(join(tmpdir(), "dsh-mcp-foreign-watch-proj-"));
+  try {
+    await mkdir(join(projW, ".dsh"), { recursive: true });
+    const ctxW = fakeCtx();
+    const registryW = new ProjectMcpRegistry(ctxW, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(homeW, "mcp.yml"), mcpJson: join(homeW, "mcp.json"), profilesDir: join(homeW, "profiles") }
+    });
+    ctxW.agentsList.push(fakeAgent("session-fw", projW));
+    await registryW.reconcileNow();
+    let countW = registryW.debugReconcileCount;
+    for (let waited = 0; waited < 6000; waited += 300) {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
+      const next = registryW.debugReconcileCount;
+      if (next === countW) break;
+      countW = next;
+    }
+    await writeFile(join(homeW, "dsh-mcp.json"), JSON.stringify({ version: 1, servers: [] }), "utf8");
+    const startedW = Date.now();
+    let kicked = false;
+    while (Date.now() - startedW < 5000) {
+      if (registryW.debugReconcileCount > countW) {
+        try {
+          const events = parseDiagDocument(JSON.parse(await readFile(join(homeW, ".mcp-diag.json"), "utf8"))).events;
+          if (events.some((row) => row.kind === "foreign-format" && String(row.path).includes("dsh-mcp.json"))) {
+            kicked = true;
+            break;
+          }
+        } catch {
+          // 诊断尚未落盘
+        }
+      }
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 150));
+    }
+    assert.ok(kicked, "creating dsh-mcp.json must kick reconcile and diagnose the foreign format");
+    assert.equal(ctxW.mounts.length, 0, "foreign dsh-mcp.json is never mounted");
+    for (const disposer of ctxW.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    pass("registry watches ~/.dsh/dsh-mcp.json and diagnoses it without mounting");
+  } finally {
+    await rmRetry(homeW);
+    await rmRetry(projW);
+  }
+}
+
+{
   const dirH = await mkdtemp(join(tmpdir(), "dsh-mcp-health-"));
   const homeH = join(dirH, "home");
   const projH = join(dirH, "proj");
