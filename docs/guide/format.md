@@ -88,3 +88,24 @@ Follows the ecosystem (Cursor / Claude Code's `mcpServers` shape):
   never writes these files.
 - `${VAR}` has the same semantics as every other source (expanded at mount
   time, see [`${VAR}` expansion](env-expansion.md)).
+
+### `httpUrl`, `transport`, and `url` inference
+
+- Gemini CLI writes `httpUrl` for Streamable HTTP. This plugin accepts it as
+  an explicit streamable-http URL. If both `url` and `httpUrl` are present
+  with **different** values, the entry errors (the message does not echo the
+  URLs). Identical values are tolerated.
+- Native YAML uses `transport: stdio | streamable-http`. The JSON dialect
+  accepts the same `transport` key. When both `transport` and `type` are set
+  and they map to different official transports, the entry errors;
+  `transport` is preferred when they agree (native dialect wins).
+- **`url` without `type`/`transport` is Streamable HTTP here**, which is the
+  **opposite** of Gemini CLI (`url` = MCP SSE endpoint transport, `httpUrl` =
+  Streamable HTTP). To copy a Gemini `mcpServers` block into `.dsh/mcp.json`:
+  keep `httpUrl` as-is (loaded as streamable-http); convert Gemini `url`
+  (SSE) by either pointing the server at a Streamable HTTP endpoint and
+  renaming the field to `httpUrl` / `type: "http"`, or leaving it as
+  `type: "sse"` and reading the actionable diagnostic.
+- This plugin does **not** treat a bare `url` as MCP SSE. That inference is
+  documented so a file that works in Gemini is not silently given the
+  opposite meaning.

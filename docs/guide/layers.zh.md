@@ -64,7 +64,11 @@
   支持 Streamable HTTP 时把 `type` 改为 `"http"`；或删除 `type` 只留 `url`
   （本插件按 streamable-http 推断）。没有隐式回退。CC 的 `type: "http"` 与显式
   `type: "streamable-http"` 都映射为 `streamable-http`；缺省 `type` 时，
-  只带 `url` 不带 `command` 的条目按 http 处理，其余视为 stdio。
+  只带 `url`/`httpUrl` 不带 `command` 的条目按 http 处理，其余视为 stdio。
+  `httpUrl` 是 Gemini 的 Streamable HTTP 字段，按显式 streamable-http 接受。
+  原生 `transport` 键同样接受（与 `type` 一致时 `transport` 优先；冲突报错）。
+  **裸 `url` 在本插件按 Streamable HTTP 解释**，与 Gemini CLI（`url` = MCP SSE）
+  相反；见 [配置格式](format.zh.md#httpurltransport-与-url-推断)。
 - 坏文件/坏条目不影响其他服务器，且**按源隔离**：`.mcp.json` 坏了不会卸掉
   同项目的 yml 行（反之亦然）；条目错误写入 `.dsh/.mcp-diag.json` 与宿主
   日志（诊断从不带文件内容）。

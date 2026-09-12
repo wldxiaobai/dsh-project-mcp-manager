@@ -76,3 +76,19 @@ process.env.GITHUB_TOKEN }`）在项目文件里**不支持**——受管块内�
 - **JSON 文件由 `dsh-mcp` CLI 独占**：写入保留其他顶层键与键序，但 JSON 没有注释，
   排版与注释不被保留。插件本身**只读**，宿主永不写这些文件。
 - `${VAR}` 与其他来源同语义（装载时展开，见 [`${VAR}` 展开](env-expansion.zh.md)）。
+
+### `httpUrl`、`transport` 与 `url` 推断
+
+- Gemini CLI 用 `httpUrl` 表示 Streamable HTTP。本插件把它当作显式的
+  streamable-http URL。`url` 与 `httpUrl` 同时出现且**值不同**时报条目级错误
+  （消息不回显 URL）；值相同则容忍。
+- 原生 yml 用 `transport: stdio | streamable-http`。JSON 方言接受同样的
+  `transport` 键。与 `type` 同时给出且映射到不同官方传输时报错；两者一致时
+  `transport` 优先（原生方言优先）。
+- **`url` 在没有 `type`/`transport` 时本插件按 Streamable HTTP 解释**，与
+  Gemini CLI 相反（Gemini：`url` = MCP SSE 端点传输，`httpUrl` = Streamable
+  HTTP）。把 Gemini 的 `mcpServers` 抄进 `.dsh/mcp.json` 时：`httpUrl` 可原样
+  装载；Gemini 的 `url`（SSE）需要把服务端改到 Streamable HTTP 并把字段改成
+  `httpUrl` / `type: "http"`，或保留 `type: "sse"` 阅读可执行诊断。
+- 本插件**不会**把裸 `url` 当成 MCP SSE。这一相反语义写进文档，避免同一份
+  文件在两处被静默赋予相反含义。

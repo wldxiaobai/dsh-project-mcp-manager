@@ -12,9 +12,10 @@
  * 本插件永不读取任何 Claude 用户态状态文件（凭据/历史混杂的单体文件），也永不写入上述任一文件。
  *
  * 条目映射：stdio（`command`/`args`/`env`/`cwd`）与 http（`url`/`headers`）之外，
- * 容忍 `type`（官方 `SUPPORTED_MCP_TRANSPORTS` + 别名 `http`；未知值与 `sse`
- * 走 `resolveMcpTransport` 逐条拒绝）与 DSH 透传键
- * （`toolCallTimeoutMs`/`failOnStartupError`/`reconnect`）。未知键忽略。
+ * 容忍 `type` 与原生 `transport`（官方 `SUPPORTED_MCP_TRANSPORTS` + 别名 `http`；
+ * 未知值与 `sse` 走 `resolveMcpTransport` 逐条拒绝）、Gemini 的 `httpUrl`，
+ * 以及 DSH 透传键（`toolCallTimeoutMs`/`failOnStartupError`/`reconnect`）。
+ * 未知键忽略。
  * `enabled:false` 静默跳过且不占名；`disabled:true` 占名但不装载（与原生 yml 一致）。
  * `${VAR}` 占位保持字面值进行，由 model.expandEnvRefs 在 mount 时运行时展开。
  */
@@ -22,7 +23,7 @@ import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { z } from "zod";
 import { type PatchRow } from "./mcp-file.js";
-import { MAX_TIMER_DELAY_MS, SERVER_NAME_RE, mcpServerInputSchema, resolveMcpTransport, toPatchRow, type McpServerInput } from "./model.js";
+import { MAX_TIMER_DELAY_MS, SERVER_NAME_RE, mcpServerInputSchema, resolveMcpTransport, toPatchRow, type McpServerInput, type SupportedMcpTransport } from "./model.js";
 
 /** DSH 自有 JSON 配置文件名（位于 `<root>/.dsh/`、`$DSH_HOME/`、`$DSH_HOME/profiles/<name>/`）。 */
 export const JSON_MCP_FILE = "mcp.json";
@@ -83,15 +84,18 @@ const jsonReconnectSchema = z
 
 /**
  * 单条目宽松 schema：未知字段（timeout/scope 等生态附加键）容忍并忽略。
- * `type` 缺省视为 stdio（有 url 无 command 时按 http 推断）。
+ * `type` 缺省视为 stdio（有 url/httpUrl 无 command 时按 http 推断）。
+ * `transport` 与 `httpUrl` 为原生/Gemini 方言别名，由 jsonEntryToInput 归一。
  */
 export const jsonServerEntrySchema = z.looseObject({
   type: z.string().optional(),
+  transport: z.string().optional(),
   command: z.string().optional(),
   args: z.array(z.string()).optional(),
   env: z.record(z.string(), z.string()).optional(),
   cwd: z.string().optional(),
   url: z.string().optional(),
+  httpUrl: z.string().optional(),
   headers: z.record(z.string(), z.string()).optional(),
   enabled: z.boolean().optional(),
   disabled: z.boolean().optional(),
@@ -115,27 +119,55 @@ function passthroughKeys(entry: JsonServerEntry): Record<string, unknown> {
   return out;
 }
 
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+/**
+ * 条目上显式给出的 transport/type → 官方传输。两者都给且映射结果不同则报错；
+ * `transport` 优先（原生方言优先），但冲突仍报错而不是静默覆盖。
+ * `sse` 等不受支持值走 resolveMcpTransport 的可执行文案。
+ */
+function resolveDeclaredTransport(entry: JsonServerEntry): { transport?: SupportedMcpTransport } | { error: string } {
+  const fromTransport = entry.transport === undefined || entry.transport === "" ? undefined : resolveMcpTransport(entry.transport);
+  const fromType = entry.type === undefined || entry.type === "" ? undefined : resolveMcpTransport(entry.type);
+  if (fromTransport !== undefined && "error" in fromTransport) return fromTransport;
+  if (fromType !== undefined && "error" in fromType) return fromType;
+  if (fromTransport !== undefined && fromType !== undefined && fromTransport.transport !== fromType.transport) {
+    return { error: `transport (${entry.transport}) 与 type (${entry.type}) 冲突` };
+  }
+  return { transport: fromTransport?.transport ?? fromType?.transport };
+}
+
 /** 单条 JSON 条目 → 官方输入。坏条目返回 `{ error }` 由调用方逐条收集。 */
 export function jsonEntryToInput(name: string, entry: JsonServerEntry, options: JsonReadOptions): { input: McpServerInput } | { error: string } {
+  const url = nonEmptyString(entry.url);
+  const httpUrl = nonEmptyString(entry.httpUrl);
+  if (url !== undefined && httpUrl !== undefined && url !== httpUrl) {
+    return { error: "url 与 httpUrl 同时出现且值不同；请只保留其一" };
+  }
+  const remoteUrl = httpUrl ?? url;
+  const declared = resolveDeclaredTransport(entry);
+  if ("error" in declared) return declared;
+  if (httpUrl !== undefined && declared.transport === "stdio") {
+    return { error: "httpUrl 表示 streamable-http，与 transport/type 声明的 stdio 冲突" };
+  }
   try {
-    // url 而无 type/command：按 http 处理（手写文件常见，官方要求 type 但容忍度向实用倾斜）
-    const inferredHttp = entry.type === undefined && typeof entry.url === "string" && entry.command === undefined;
-    const typeResolved = entry.type === undefined ? undefined : resolveMcpTransport(entry.type);
-    if (typeResolved !== undefined && "error" in typeResolved) return { error: typeResolved.error };
-    const official = typeResolved?.transport;
-    if (official === "streamable-http" || inferredHttp) {
-      if (typeof entry.url !== "string" || entry.url === "") return { error: 'type:"http" 条目缺少 url' };
+    const inferredHttp = declared.transport === undefined && remoteUrl !== undefined && entry.command === undefined;
+    const wantHttp = declared.transport === "streamable-http" || httpUrl !== undefined || inferredHttp;
+    if (wantHttp) {
+      if (remoteUrl === undefined) return { error: 'type:"http" 条目缺少 url' };
       const input = mcpServerInputSchema.parse({
         serverName: name,
         transport: "streamable-http",
-        url: entry.url,
+        url: remoteUrl,
         headers: entry.headers,
         ...passthroughKeys(entry)
       });
       return { input };
     }
     if (typeof entry.command !== "string" || entry.command === "") {
-      return { error: entry.type === "stdio" ? 'type:"stdio" 条目缺少 command' : '条目缺少 command（且无 type:"http"/url）' };
+      return { error: declared.transport === "stdio" || entry.type === "stdio" ? 'type:"stdio" 条目缺少 command' : '条目缺少 command（且无 type:"http"/url）' };
     }
     // cwd 缺省语义：显式写的非空 cwd 原样保留；项目层缺省落到项目根；全局层留空串（继承宿主工作目录）。
     let cwd = "";

@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Actionable diagnostics for the **MCP SSE endpoint transport** (`type: "sse"`
   / `--transport sse`): the error names two fixes (change `type` to `"http"`,
   or drop `type` and keep `url`) and does not silently fall back.
+- JSON dialect accepts Gemini's `httpUrl` (explicit streamable-http) and the
+  native `transport` key. Conflicting `url`/`httpUrl` or `transport`/`type`
+  pairs fail per entry. Bare `url` remains Streamable HTTP here (the opposite
+  of Gemini CLI) and is documented as such.
 
 - `package.json` discovery fields: `repository`, `bugs`, and `homepage` point at
   https://github.com/wldxiaobai/dsh-project-mcp-manager so npm and GitHub can

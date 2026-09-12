@@ -85,7 +85,12 @@ global row's tools (project-side suppression).
   and keep `url` (this plugin infers streamable-http). There is no implicit
   fallback. CC's `type: "http"` and an explicit `type: "streamable-http"`
   both map to `streamable-http`; with `type` omitted, an entry that has only
-  `url` (no `command`) is treated as http, everything else as stdio.
+  `url` or `httpUrl` (no `command`) is treated as http, everything else as
+  stdio. `httpUrl` is Gemini's Streamable HTTP field and is accepted as an
+  explicit streamable-http URL. A native `transport` key is accepted too
+  (`transport` wins when it agrees with `type`; a conflict errors). **A bare
+  `url` is Streamable HTTP here**, which is the opposite of Gemini CLI
+  (`url` = MCP SSE); see [configuration format](format.md#httpurl-transport-and-url-inference).
 - Broken files/entries never take down the valid ones, and they fail **per
   source**: an unreadable `.mcp.json` cannot unmount the same project's yml
   rows (and vice versa). Entry errors land in `.dsh/.mcp-diag.json` and the
