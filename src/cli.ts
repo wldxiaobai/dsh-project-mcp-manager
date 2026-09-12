@@ -22,7 +22,7 @@ import { byCodeUnit, inputFromPatchRow, mcpServerInputSchema, parseCliTransport,
 import { CC_PROJECT_FILE, FOREIGN_MCP_FORMAT_HINT, IGNORE_MCP_JSON_ENV, JSON_MCP_FILE, mcpJsonLayerEnabled, parseJsonServersValue, readDshJsonFile, readMcpJsonFile, type JsonReadResult, type McpRowSource, type SourcedRow } from "./json-file.js";
 import { MCP_YML_FILE, DIAG_FILE, dshHomeFor, profileMcpJsonFile, userLayerPathsIn } from "./dsh-paths.js";
 import { readJsonServers, toJsonEntry, updateJsonServers } from "./json-write.js";
-import { mergeSourcedRows, parseDiagDocument, projectDshJsonFile, projectMcpFile, projectMcpJsonFile, type DiagDocument, type IdentityShadow } from "./registry.js";
+import { mergeSourcedRows, parseDiagDocument, projectDshJsonFile, projectMcpFile, projectMcpJsonFile, type DiagDocument, type DiagSummary, type IdentityShadow } from "./registry.js";
 import { findProjectRoot } from "./project-root.js";
 
 export interface CliIo {
@@ -168,6 +168,22 @@ function applyOption(parsed: ParsedArgs, name: string, value: string): string | 
   }
 }
 
+function applyBareFlag(parsed: ParsedArgs, name: string): boolean {
+  if (name === "--help") {
+    parsed.help = true;
+    return true;
+  }
+  if (name === "--dry-run") {
+    parsed.dryRun = true;
+    return true;
+  }
+  if (name === "--overwrite") {
+    parsed.overwrite = true;
+    return true;
+  }
+  return false;
+}
+
 /**
  * 手搓 argv 解析（零依赖）：`--` 之后全按位置参数；未知「选项」视为服务器命令行
  * token 透传（刻意策略：宁可透传也不误伤 spawn 参数）。
@@ -187,24 +203,14 @@ export function parseArgs(argv: string[]): ParsedArgs | { error: string } {
       noMoreFlags = true;
       continue;
     }
-    if (name === "--help") {
-      parsed.help = true;
-      continue;
-    }
-    if (name === "--dry-run") {
-      parsed.dryRun = true;
-      continue;
-    }
-    if (name === "--overwrite") {
-      parsed.overwrite = true;
-      continue;
-    }
+    if (applyBareFlag(parsed, name)) continue;
     if (!VALUE_OPTIONS.has(name)) {
       parsed.positional.push(token);
       continue;
     }
     const value = argv[cursor++];
-    const error = value === undefined ? `缺少 ${token} 的值` : applyOption(parsed, name, value);
+    if (value === undefined) return { error: `缺少 ${token} 的值` };
+    const error = applyOption(parsed, name, value);
     if (error !== undefined) return { error };
   }
   return parsed;
@@ -861,6 +867,15 @@ function layersWithImportedTarget(
   return next;
 }
 
+function importShadowMessage(name: string, layer: LayerRows, layers: LayerRows[], view: ShadowView): string {
+  const loss = view.identityLosses.get(name);
+  if (loss !== undefined) return `注意：${name} 不会装载——${identityShadowNote(loss)}；确属不同服务器请改名或调整命令与参数。`;
+  if (view.shadowedUser.has(name)) return `注意：${name} 不会装载——已被项目自身配置遮蔽。`;
+  const winner = layers.find((other) => !isSameLayerFile(other.path, layer.path) && other.rows.some((item) => item.name === name));
+  const where = winner === undefined ? "更高优先层" : sourceLabel(winner);
+  return `注意：${name} 不会装载——已被 ${where} 的同名定义遮蔽。`;
+}
+
 function printImportShadowPreview(incoming: { name: string; row: PatchRow }[], layers: LayerRows[], io: CliIo): void {
   const view = shadowViewOf(layers);
   const names = new Set(incoming.map((item) => item.name));
@@ -868,52 +883,44 @@ function printImportShadowPreview(incoming: { name: string; row: PatchRow }[], l
     for (const { name, row } of layer.rows) {
       if (!names.has(name) || row.disabled === true) continue;
       if (view.effective.has(row)) continue;
-      const loss = view.identityLosses.get(name);
-      if (loss !== undefined) io.out(`注意：${name} 不会装载——${identityShadowNote(loss)}；确属不同服务器请改名或调整命令与参数。`);
-      else if (view.shadowedUser.has(name)) io.out(`注意：${name} 不会装载——已被项目自身配置遮蔽。`);
-      else {
-        const winner = layers.find((other) => !isSameLayerFile(other.path, layer.path) && other.rows.some((item) => item.name === name));
-        const where = winner === undefined ? "更高优先层" : sourceLabel(winner);
-        io.out(`注意：${name} 不会装载——已被 ${where} 的同名定义遮蔽。`);
-      }
+      io.out(importShadowMessage(name, layer, layers, view));
     }
   }
 }
 
-async function cmdImport(parsed: ParsedArgs, rest: string[], io: CliIo, deps: CliDeps): Promise<number> {
-  if (rest.length > 0) return fail(io, "import 不接受位置参数（用法：dsh-mcp import --from <file|-> …）");
-  if (parsed.from === undefined) return fail(io, "用法：dsh-mcp import --from <file|-> [--scope project|user|profile] [--format yml|json] [--dry-run] [--overwrite]");
-  const target = await resolveWriteTarget(parsed, deps);
-  if ("error" in target) return fail(io, target.error);
-  const text = await readImportText(parsed.from, deps);
-  if (typeof text !== "string") return fail(io, text.error);
-  let parsedJson: unknown;
+function parseImportJsonText(text: string): { value: unknown } | { error: string } {
   try {
-    parsedJson = JSON.parse(text);
+    return { value: JSON.parse(text) };
   } catch {
-    return fail(io, "JSON 解析失败");
+    return { error: "JSON 解析失败" };
   }
-  const document = parseImportDocument(parsedJson);
-  if ("error" in document) return fail(io, document.error);
-  const source = sourceOfWriteTarget(target);
-  const { rows, entryErrors } = parseJsonServersValue(document.mcpServers, {
-    source,
-    cwdPolicy: "project",
-    projectRoot: target.scope === "project" ? "." : ""
-  });
-  for (const note of entryErrors) io.err(`错误：${note}`);
-  if (rows.length === 0 && entryErrors.length === 0) return fail(io, "没有可导入的服务器");
-  if (rows.length === 0) return 1;
-  const incoming = rows.map((item) => ({ name: item.rawName, row: item.row }));
-  if (parsed.dryRun) {
-    const existing = await existingNames(target);
-    if (!Array.isArray(existing)) return fail(io, existing.error);
-    const plan = planImport(incoming, new Set(existing), parsed.overwrite);
-    printImportReport(target, plan, true, io);
-    const previewLayers = layersWithImportedTarget(await collectLayers(deps), target, plan.written, parsed.overwrite);
-    printImportShadowPreview(plan.written, previewLayers, io);
-    return entryErrors.length > 0 ? 1 : 0;
-  }
+}
+
+async function importDryRun(
+  parsed: ParsedArgs,
+  target: WriteTarget,
+  incoming: { name: string; row: PatchRow }[],
+  entryErrors: string[],
+  io: CliIo,
+  deps: CliDeps
+): Promise<number> {
+  const existing = await existingNames(target);
+  if (!Array.isArray(existing)) return fail(io, existing.error);
+  const plan = planImport(incoming, new Set(existing), parsed.overwrite);
+  printImportReport(target, plan, true, io);
+  const previewLayers = layersWithImportedTarget(await collectLayers(deps), target, plan.written, parsed.overwrite);
+  printImportShadowPreview(plan.written, previewLayers, io);
+  return entryErrors.length > 0 ? 1 : 0;
+}
+
+async function importWrite(
+  parsed: ParsedArgs,
+  target: WriteTarget,
+  incoming: { name: string; row: PatchRow }[],
+  entryErrors: string[],
+  io: CliIo,
+  deps: CliDeps
+): Promise<number> {
   let plan: ImportPlan;
   try {
     plan = await writeImportedRows(target, incoming, parsed.overwrite);
@@ -926,51 +933,96 @@ async function cmdImport(parsed: ParsedArgs, rest: string[], io: CliIo, deps: Cl
   return entryErrors.length > 0 ? 1 : 0;
 }
 
+async function cmdImport(parsed: ParsedArgs, rest: string[], io: CliIo, deps: CliDeps): Promise<number> {
+  if (rest.length > 0) return fail(io, "import 不接受位置参数（用法：dsh-mcp import --from <file|-> …）");
+  if (parsed.from === undefined) return fail(io, "用法：dsh-mcp import --from <file|-> [--scope project|user|profile] [--format yml|json] [--dry-run] [--overwrite]");
+  const target = await resolveWriteTarget(parsed, deps);
+  if ("error" in target) return fail(io, target.error);
+  const text = await readImportText(parsed.from, deps);
+  if (typeof text !== "string") return fail(io, text.error);
+  const parsedJson = parseImportJsonText(text);
+  if ("error" in parsedJson) return fail(io, parsedJson.error);
+  const document = parseImportDocument(parsedJson.value);
+  if ("error" in document) return fail(io, document.error);
+  const source = sourceOfWriteTarget(target);
+  const { rows, entryErrors } = parseJsonServersValue(document.mcpServers, {
+    source,
+    cwdPolicy: "project",
+    projectRoot: target.scope === "project" ? "." : ""
+  });
+  for (const note of entryErrors) io.err(`错误：${note}`);
+  if (rows.length === 0 && entryErrors.length === 0) return fail(io, "没有可导入的服务器");
+  if (rows.length === 0) return 1;
+  const incoming = rows.map((item) => ({ name: item.rawName, row: item.row }));
+  if (parsed.dryRun) return importDryRun(parsed, target, incoming, entryErrors, io, deps);
+  return importWrite(parsed, target, incoming, entryErrors, io, deps);
+}
+
 function formatSkippedByReason(skipped: Record<string, number>): string {
   const parts = Object.entries(skipped).map(([reason, count]) => `${reason}:${count}`);
   parts.sort(byCodeUnit);
   return parts.join("，");
 }
 
-async function printDiagStatus(path: string, io: CliIo): Promise<boolean> {
+async function readJsonFile(path: string): Promise<{ missing: true } | { parseError: true } | { value: unknown }> {
   let raw: string;
   try {
     raw = await readFile(path, "utf8");
   } catch {
-    return false;
+    return { missing: true };
   }
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    return { value: JSON.parse(raw) };
   } catch {
-    io.out(`诊断 ${path}：无法解析`);
-    return true;
+    return { parseError: true };
   }
-  const doc: DiagDocument = parseDiagDocument(parsed);
-  io.out(`诊断 ${path}`);
-  if (doc.summary !== undefined) {
-    const skipped = formatSkippedByReason(doc.summary.skippedByReason);
-    const projects = doc.summary.projects === undefined ? "" : `，项目 ${doc.summary.projects}`;
-    io.out(`  行 ${doc.summary.rows}，已装载 ${doc.summary.mounted}${projects}${skipped === "" ? "" : `，跳过 ${skipped}`}`);
-    for (const item of doc.summary.unhealthy) io.out(`  不健康：${item.name} (${item.reason})`);
-    for (const name of doc.summary.idle ?? []) io.out(`  未装载（无会话）：${name}`);
-    if (doc.summary.toolBudget !== undefined) {
-      for (const item of doc.summary.toolBudget) {
-        io.out(`  工具预算：${item.name} ${item.tools} 个工具 / ${item.bytes} 字节`);
-      }
-    }
+}
+
+function printDiagSummary(summary: DiagSummary, io: CliIo): void {
+  const skipped = formatSkippedByReason(summary.skippedByReason);
+  const projects = summary.projects === undefined ? "" : `，项目 ${summary.projects}`;
+  const skipPart = skipped === "" ? "" : `，跳过 ${skipped}`;
+  io.out(`  行 ${summary.rows}，已装载 ${summary.mounted}${projects}${skipPart}`);
+  for (const item of summary.unhealthy) io.out(`  不健康：${item.name} (${item.reason})`);
+  for (const name of summary.idle ?? []) io.out(`  未装载（无会话）：${name}`);
+  if (summary.toolBudget === undefined) return;
+  for (const item of summary.toolBudget) {
+    io.out(`  工具预算：${item.name} ${item.tools} 个工具 / ${item.bytes} 字节`);
   }
-  for (const event of doc.events) {
+}
+
+function printDiagForeignEvents(events: DiagDocument["events"], io: CliIo): void {
+  for (const event of events) {
     if (event.kind === "foreign-format" && typeof event.message === "string") {
       io.out(`  ${event.message}`);
-      break;
+      return;
     }
     if (typeof event.foreignFormat === "string") {
       io.out(`  ${event.foreignFormat}`);
-      break;
+      return;
     }
   }
+}
+
+async function printDiagStatus(path: string, io: CliIo): Promise<boolean> {
+  const loaded = await readJsonFile(path);
+  if ("missing" in loaded) return false;
+  if ("parseError" in loaded) {
+    io.out(`诊断 ${path}：无法解析`);
+    return true;
+  }
+  const doc: DiagDocument = parseDiagDocument(loaded.value);
+  io.out(`诊断 ${path}`);
+  if (doc.summary !== undefined) printDiagSummary(doc.summary, io);
+  printDiagForeignEvents(doc.events, io);
   return true;
+}
+
+function formatLayerStatusLine(layer: LayerRows): string {
+  const names = layer.rows.map((row) => row.name);
+  const namesPart = names.length === 0 ? "" : `  [${names.join(", ")}]`;
+  const notePart = layer.note === undefined ? "" : `  ${layer.note}`;
+  return `${sourceLabel(layer)}  ${layer.rows.length} 行${namesPart}${notePart}`;
 }
 
 function layersForStatusScope(layers: LayerRows[], scope: string | undefined, profile: string | undefined): LayerRows[] {
@@ -993,8 +1045,7 @@ async function cmdStatus(parsed: ParsedArgs, io: CliIo, deps: CliDeps): Promise<
   const layers = layersForStatusScope(allLayers, parsed.scope, parsed.profile);
   let listed = 0;
   for (const layer of layers) {
-    const names = layer.rows.map((row) => row.name);
-    io.out(`${sourceLabel(layer)}  ${layer.rows.length} 行${names.length === 0 ? "" : `  [${names.join(", ")}]`}${layer.note === undefined ? "" : `  ${layer.note}`}`);
+    io.out(formatLayerStatusLine(layer));
     listed += layer.rows.length;
     if (layer.note !== undefined) listed += 1;
   }
