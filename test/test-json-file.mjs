@@ -183,6 +183,28 @@ try {
   assert.ok(rHttpUrlStdio.entryErrors.some((e) => /httpUrl/.test(e) && /stdio/.test(e)), "httpUrl vs stdio conflict");
   pass("httpUrl, transport key, url/httpUrl and transport/type conflicts, transport:sse");
 
+  // 6d. 无 type/transport 时 command 与 url 并存：条目错误，不静默当 stdio
+  const pBothEnds = await write("both-ends.json", JSON.stringify({
+    mcpServers: { mixed: { command: "npx", args: ["-y", "foo"], url: "https://example/mcp" } }
+  }));
+  const rBothEnds = await readDshJsonFile(pBothEnds, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" });
+  assert.equal(rBothEnds.rows.length, 0, "ambiguous command+url must not mount");
+  assert.ok(rBothEnds.entryErrors.some((e) => /同时有 command 与 url/.test(e) && /type 或 transport/.test(e)), "ambiguous command+url: " + rBothEnds.entryErrors.join(";"));
+  assert.ok(!JSON.stringify(rBothEnds).includes("example/mcp"), "ambiguous error must not echo the url");
+  const pBothHttpUrl = await write("both-httpurl.json", JSON.stringify({
+    mcpServers: { mixed: { command: "npx", httpUrl: "https://gemini.example/mcp" } }
+  }));
+  const rBothHttpUrl = await readDshJsonFile(pBothHttpUrl, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" });
+  assert.equal(rBothHttpUrl.rows.length, 0);
+  assert.ok(rBothHttpUrl.entryErrors.some((e) => /同时有 command 与 url/.test(e)), "command+httpUrl: " + rBothHttpUrl.entryErrors.join(";"));
+  const pTyped = await write("typed-stdio.json", JSON.stringify({
+    mcpServers: { ok: { type: "stdio", command: "npx", url: "https://ignored.example/mcp" } }
+  }));
+  const rTyped = await readDshJsonFile(pTyped, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" });
+  assert.equal(rTyped.rows.length, 1, "explicit type keeps the declared transport");
+  assert.equal(rTyped.rows[0].row.config.transport, "stdio");
+  pass("undeclared command+url is an entry error; explicit type still wins");
+
   // 6c. C4：对方 {version, servers} 格式诊断；与 mcpServers 共存时不告警
   const pForeign = await write("foreign.json", JSON.stringify({ version: 1, servers: [{ name: "x", transport: "stdio" }] }));
   const rForeign = await readDshJsonFile(pForeign, { source: "dsh-project-json", cwdPolicy: "project", projectRoot: "/work/proj" });

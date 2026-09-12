@@ -32,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the same tools/bytes overage warns again.
 - `patchRowToView` / `dsh-mcp get` / `list` / snapshots expose per-entry
   `tools.allow` / `tools.deny` (pattern text only).
+- JSON entries that give both `command` and `url`/`httpUrl` without
+  `type`/`transport` fail per entry instead of silently loading as stdio.
 
 ## [0.6.0] - 2026-09-12
 

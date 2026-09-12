@@ -192,6 +192,10 @@ export function jsonEntryToInput(name: string, entry: JsonServerEntry, options: 
   try {
     const inferredHttp = declared.transport === undefined && remoteUrl !== undefined && entry.command === undefined;
     const wantHttp = declared.transport === "streamable-http" || httpUrl !== undefined || inferredHttp;
+    const hasCommand = typeof entry.command === "string" && entry.command !== "";
+    if (declared.transport === undefined && hasCommand && remoteUrl !== undefined) {
+      return { error: "同时有 command 与 url，请显式写 type 或 transport" };
+    }
     if (wantHttp) {
       if (remoteUrl === undefined) return { error: 'type:"http" 条目缺少 url' };
       const input = mcpServerInputSchema.parse({
