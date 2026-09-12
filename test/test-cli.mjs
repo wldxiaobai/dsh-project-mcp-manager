@@ -462,8 +462,9 @@ try {
           at: "2026-01-01T00:00:00.000Z",
           rows: 1,
           mounted: 0,
-          skippedByReason: { "env-missing": 1 },
+          skippedByReason: { "env-missing": 1, idle: 1 },
           unhealthy: [{ name: "fs", reason: "env-missing" }, { name: "dead", reason: "give-up" }],
+          idle: ["alpha"],
           toolBudget: [{ name: "heavy", tools: 240, bytes: 300000 }]
         },
         events: []
@@ -474,6 +475,8 @@ try {
       assert.ok(text.includes("env-missing"), "status surfaces skip reason: " + text);
       assert.ok(text.includes("不健康：fs"), "status names the unhealthy row: " + text);
       assert.ok(text.includes("不健康：dead (give-up)"), "status names give-up rows: " + text);
+      assert.ok(text.includes("未装载（无会话）：alpha"), "status names idle as not mounted: " + text);
+      assert.ok(!text.includes("不健康：alpha"), "idle is not printed as unhealthy: " + text);
       assert.ok(text.includes("工具预算：heavy 240 个工具"), "status surfaces tool budget: " + text);
       await mkdir(join(statusHome, ".dsh"), { recursive: true });
       await writeFile(join(statusHome, ".dsh", ".mcp-diag.json"), JSON.stringify({
@@ -496,6 +499,14 @@ try {
       const userText = capUser.lines.join("\n");
       assert.ok(userText.includes("user-dead"), "user scope prints global diag: " + userText);
       assert.ok(!userText.includes("不健康：fs"), "user scope hides project diag: " + userText);
+      await mkdir(join(statusHome, ".dsh", "profiles", "web"), { recursive: true });
+      await writeFile(join(statusHome, ".dsh", "profiles", "web", "mcp.json"), JSON.stringify({ mcpServers: { webonly: { command: "node", args: ["w.js"] } } }), "utf8");
+      const capProfile = io();
+      assert.equal(await runCli(["status", "--scope", "profile", "--profile", "web"], capProfile.io, statusDeps), 0);
+      const profileText = capProfile.lines.join("\n");
+      assert.ok(profileText.includes("webonly"), "profile scope lists that profile's rows: " + profileText);
+      assert.ok(!profileText.includes("不健康：fs"), "profile scope hides project diag: " + profileText);
+      assert.ok(profileText.includes("user-dead"), "profile scope still prints global diag: " + profileText);
       pass("cli status shows empty state, layer rows, and diagnostic skip reasons");
     } finally {
       await rm(statusDir, { recursive: true, force: true });

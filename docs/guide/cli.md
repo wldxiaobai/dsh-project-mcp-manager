@@ -41,9 +41,12 @@ the config file or brought in with `dsh-mcp import`.
 prints each layer's row count and names, then the latest `summary`
 (mounted / skipped / unhealthy / tool-budget hits). It does not inspect host memory: if the
 host has never reconciled, the files are absent and the command reports
-that. `--scope project|user` filters which layers are listed and which
+that. `--scope project|user|profile` filters which layers are listed and which
 diagnostic file is printed (project `.dsh/.mcp-diag.json` vs
-`$DSH_HOME/.mcp-diag.json`).
+`$DSH_HOME/.mcp-diag.json`). `--scope profile` lists only profile layers
+(add `--profile <name>` to keep one); `--scope user` still lists every
+user-layer file, including all profiles. Idle catalog rows print as
+not-mounted (no session), not as unhealthy.
 
 **`import`** copies `{"mcpServers":{...}}` into a native yml or JSON file
 (`--scope` / `--format` / `--profile` match `add`; default scope is

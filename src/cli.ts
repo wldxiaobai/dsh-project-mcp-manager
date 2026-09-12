@@ -78,7 +78,7 @@ const HELP = `dsh-mcp —— 项目/用户/profile 级 MCP 服务器管理（原
   dsh-mcp list [--scope project|user]
   dsh-mcp get <name>
   dsh-mcp remove <name> [--scope project|user|profile] [--format yml|json]
-  dsh-mcp status [--scope project|user]
+  dsh-mcp status [--scope project|user|profile] [--profile <name>]
   dsh-mcp import --from <file|-> [--scope project|user|profile] [--format yml|json] [--dry-run] [--overwrite] [--profile <name>]
 
 写入位置：
@@ -98,6 +98,8 @@ const HELP = `dsh-mcp —— 项目/用户/profile 级 MCP 服务器管理（原
   sse 为 MCP SSE 端点传输，不受支持（后端只支持 stdio 与 streamable-http；把 type 改为 http，或删除 type 只留 url）。
   list/get 展示全部来源层（含遗留只读层），不显示任何密钥值。
   status 读取各层文件与诊断摘要（不连接运行中的宿主）。
+  status --scope project|user|profile 同时过滤层列表与诊断文件（project 打项目诊断，user/profile 打全局诊断）。
+  --scope profile 只列 profile 层；再配 --profile <name> 则只打该名。--scope user 仍列全部用户层（含所有 profile 文件）。
   import 只接受 {"mcpServers":{...}}（不接受 VS Code servers / 单条对象 / 数组）；同名默认跳过，--overwrite 才覆盖；--dry-run 预演影子冲突且不写盘。`
 
 function fail(io: CliIo, message: string): number {
@@ -951,6 +953,7 @@ async function printDiagStatus(path: string, io: CliIo): Promise<boolean> {
     const projects = doc.summary.projects === undefined ? "" : `，项目 ${doc.summary.projects}`;
     io.out(`  行 ${doc.summary.rows}，已装载 ${doc.summary.mounted}${projects}${skipped === "" ? "" : `，跳过 ${skipped}`}`);
     for (const item of doc.summary.unhealthy) io.out(`  不健康：${item.name} (${item.reason})`);
+    for (const name of doc.summary.idle ?? []) io.out(`  未装载（无会话）：${name}`);
     if (doc.summary.toolBudget !== undefined) {
       for (const item of doc.summary.toolBudget) {
         io.out(`  工具预算：${item.name} ${item.tools} 个工具 / ${item.bytes} 字节`);
@@ -970,11 +973,24 @@ async function printDiagStatus(path: string, io: CliIo): Promise<boolean> {
   return true;
 }
 
+function layersForStatusScope(layers: LayerRows[], scope: string | undefined, profile: string | undefined): LayerRows[] {
+  if (scope === undefined) return layers;
+  if (scope === "project") return layers.filter((layer) => isProjectSource(layer.source));
+  if (scope === "profile") {
+    const profileLayers = layers.filter((layer) => layer.source === "dsh-profile-user");
+    if (profile === undefined || profile === "") return profileLayers;
+    const needle = `/profiles/${profile}/`.replaceAll("\\", "/");
+    return profileLayers.filter((layer) => {
+      const path = layer.path.replaceAll("\\", "/");
+      return path.includes(needle) || layer.label === `profile (${profile})`;
+    });
+  }
+  return layers.filter((layer) => !isProjectSource(layer.source));
+}
+
 async function cmdStatus(parsed: ParsedArgs, io: CliIo, deps: CliDeps): Promise<number> {
   const allLayers = await collectLayers(deps);
-  const layers = parsed.scope === undefined
-    ? allLayers
-    : allLayers.filter((layer) => isProjectSource(layer.source) === (parsed.scope === "project"));
+  const layers = layersForStatusScope(allLayers, parsed.scope, parsed.profile);
   let listed = 0;
   for (const layer of layers) {
     const names = layer.rows.map((row) => row.name);

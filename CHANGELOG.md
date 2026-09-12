@@ -11,13 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Health remount treats `everHadTools` as per fiber generation: a remounted
   official client that has not listed tools yet is left to its own reconnect
-  window instead of being torn down every few seconds. `snapshot()` is
-  memory-only; only `reload()` / `reconcileNow()` run reconcile. Tool-budget
-  stats prefer `schema.name` to match official `tools.schemas()`.
+  window instead of being torn down every few seconds. A single 0-tool inspect
+  does not remount (debounce / `list_changed` flicker). `tools > 0` resets
+  `remountCount` and `givenUp`, so give-up means consecutive failures rather
+  than a lifetime quota. `snapshot()` / `serverView()` enqueue without
+  running reconcile and assemble from the last scan's in-memory catalog.
+  Tool-budget stats and deny expansion both use `schemaToolId` (`name` then `id`).
 - Diagnostic `summary.rows` counts the config catalog (`lastScanDesired`),
   not the live mount map. Idle unmounts keep `skipReason: "idle"` (more
-  specific skips such as `env-missing` are preserved). `give-up` rows are
-  `unhealthy` and show `skipReason` even while the fiber is still active.
+  specific skips such as `env-missing` are preserved) and are listed in
+  `summary.idle` rather than `unhealthy`. `give-up` rows are `unhealthy`
+  and show `skipReason` even while the fiber is still active; tools
+  returning after give-up clear that mark.
 - `dsh-mcp import` applies same-name skip/overwrite inside the file lock,
   matching `add`, so two concurrent imports of a new name cannot both write.
 - Config fingerprints include the current profile name and sorted host
@@ -25,7 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without touching files still rereads and refreshes `suppressedGlobals`.
 - Diagnostic file read-modify-write uses the same per-path lock as config
   writes, so a `kind:active` event and the post-reconcile `summary` cannot
-  clobber each other.
+  clobber each other. Lock timeout or write failure logs a warning instead
+  of dropping the summary silently.
 - Changing only `tools.allow` / `tools.deny` updates `tools.restrict` without
   tearing down the MCP connection.
 - Tool-budget warn gates reset when a server drops back under the threshold,
@@ -43,12 +49,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Illegal `tools.allow` / `tools.deny` globs (for example `[z-a]`) warn
   once per entry instead of silently never matching.
 - Config fingerprints reuse the signature from the skip check instead of
-  statting files twice. Per-project `idleSince` / `lastScanDesired` tables
-  drop keys that are no longer known.
+  statting files twice. Per-project `idleSince` / `lastScanDesired` /
+  `lastScanFiles` / `warnGates` tables drop keys that are no longer known.
 - `projectMcp.serverView` is typed as the same runtime view as `snapshot`
   rows (`McpServerRuntimeView`), still an unstable API.
-- `dsh-mcp status --scope project|user` prints only that scope's diagnostic
-  file, matching the layer list filter.
+- `dsh-mcp status --scope project|user|profile` prints only that scope's
+  layers and diagnostic file (`profile` lists profile json layers; `--profile`
+  narrows to one name). Idle rows print as "未装载（无会话）" rather than
+  unhealthy. Matching `list` still shows all user layers for `--scope user`.
 - `$DSH_HOME/dsh-mcp.json` that contains this plugin's `mcpServers` dialect
   is still not loaded, and now hints to move the object into `mcp.json`.
 

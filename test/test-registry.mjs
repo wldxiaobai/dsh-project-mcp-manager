@@ -1220,6 +1220,7 @@ try {
       await registryH.reconcileNow();
       ctxH.schemas.length = 0;
       await registryH.reconcileNow();
+      await registryH.reconcileNow();
     };
     await pulseDead();
     assert.equal(ctxH.disposals.length, 1, "dead connection is unmounted once");
@@ -1230,12 +1231,34 @@ try {
     await registryH.reconcileNow();
     await registryH.reconcileNow();
     assert.equal(ctxH.mounts.length, mountsAfterFirst, "new fiber without tools does not remount (official reconnect window)");
+
+    ctxH.schemas.push({ name: "mcp__" + effective + "__ping" });
+    await registryH.reconcileNow();
+    const mountsFlicker = ctxH.mounts.length;
+    ctxH.schemas.length = 0;
+    await registryH.reconcileNow();
+    ctxH.schemas.push({ name: "mcp__" + effective + "__ping" });
+    await registryH.reconcileNow();
+    assert.equal(ctxH.mounts.length, mountsFlicker, "brief 0-tool window on the same fiber does not remount");
+    assert.equal(registryH.debugHealth(projH, "alive")?.remountCount, 0, "tools returning reset remountCount");
+
     await pulseDead();
     await pulseDead();
-    assert.equal(ctxH.mounts.length, 4, "three generation deaths remount three times: " + ctxH.mounts.length);
     await pulseDead();
+    assert.equal(ctxH.mounts.length, 5, "four recovered deaths remount four times, no give-up: " + ctxH.mounts.length);
+    ctxH.schemas.push({ name: "mcp__" + effective + "__ping" });
+    await registryH.reconcileNow();
+    assert.equal(registryH.debugHealth(projH, "alive")?.remountCount, 0, "recovery after the fourth remount still resets the counter");
+    assert.equal(registryH.debugHealth(projH, "alive")?.givenUp, false);
+
+    ctxH.schemas.length = 0;
+    await registryH.reconcileNow();
+    await registryH.reconcileNow();
+    await registryH.reconcileNow();
+    await registryH.reconcileNow();
+    await registryH.reconcileNow();
     const diagGive = await readDiag(projH);
-    assert.ok(diagGive.some((row) => row.kind === "give-up"), "give-up after remount limit: " + JSON.stringify(diagGive.slice(-6)));
+    assert.ok(diagGive.some((row) => row.kind === "give-up"), "give-up after remount limit without recovery: " + JSON.stringify(diagGive.slice(-6)));
     const mountsAtGiveUp = ctxH.mounts.length;
     await registryH.reconcileNow();
     assert.equal(ctxH.mounts.length, mountsAtGiveUp, "give-up stops further remounts");
@@ -1244,10 +1267,30 @@ try {
     assert.ok((summaryGive?.skippedByReason["give-up"] ?? 0) >= 1, "summary counts give-up skips");
     const giveView = (await registryH.snapshot()).flatMap((file) => file.servers ?? []).find((row) => row.serverName === "alive");
     assert.equal(giveView?.skipReason, "give-up", "snapshot skipReason is give-up while the fiber is still active");
+
+    ctxH.schemas.push({ name: "mcp__" + effective + "__ping" });
+    await registryH.reconcileNow();
+    assert.equal(registryH.debugHealth(projH, "alive")?.givenUp, false, "tools returning after give-up clears givenUp");
+    assert.equal(registryH.debugHealth(projH, "alive")?.remountCount, 0);
+    const summaryRecovered = await readDiagSummary(projH);
+    assert.ok(summaryRecovered?.unhealthy.every((item) => item.reason !== "give-up"), "summary drops give-up after recovery: " + JSON.stringify(summaryRecovered));
+    assert.ok((summaryRecovered?.mounted ?? 0) >= 1, "recovered row counts as mounted");
+    const recoveredView = (await registryH.snapshot()).flatMap((file) => file.servers ?? []).find((row) => row.serverName === "alive");
+    assert.equal(recoveredView?.skipReason, null, "snapshot no longer marks give-up after tools return");
+
     const snapCount = registryH.debugReconcileCount;
+    const during = registryH.reconcileNow();
+    const snapA = registryH.snapshot();
+    const snapB = registryH.snapshot();
+    await during;
+    const [viewA, viewB] = await Promise.all([snapA, snapB]);
+    const rowA = viewA.flatMap((file) => file.servers ?? []).find((row) => row.serverName === "alive");
+    const rowB = viewB.flatMap((file) => file.servers ?? []).find((row) => row.serverName === "alive");
+    assert.equal(rowA?.fiberPhase, rowB?.fiberPhase, "concurrent snapshots share one reconcile generation");
+    assert.equal(rowA?.skipReason, rowB?.skipReason);
     await registryH.snapshot();
     await registryH.snapshot();
-    assert.equal(registryH.debugReconcileCount, snapCount, "snapshot is read-only and does not reconcile");
+    assert.equal(registryH.debugReconcileCount, snapCount + 1, "snapshot is read-only and does not reconcile");
     await writeManagedRows(projectMcpFile(projH), [{ ...stdioRow("alive"), config: { ...stdioRow("alive").config, args: ["srv-alive-2.js"] } }]);
     await registryH.reconcileNow();
     assert.ok(registryH.debugConfigReadCount > reads1, "fingerprint change rereads files");
@@ -1564,6 +1607,8 @@ try {
     const summaryIdleA = await readDiagSummary(projA);
     assert.ok(summaryIdleA !== undefined && summaryIdleA.rows >= 1, "idle unmount still counts catalog rows: " + JSON.stringify(summaryIdleA));
     assert.equal(summaryIdleA.skippedByReason.idle, 1, "summary records idle skip");
+    assert.ok(!(summaryIdleA.unhealthy ?? []).some((item) => item.reason === "idle"), "idle is not listed as unhealthy");
+    assert.ok((summaryIdleA.idle ?? []).includes("alpha"), "idle names go to summary.idle: " + JSON.stringify(summaryIdleA));
 
     ctxOn.agentsList.unshift(agentA);
     await registryOn.reconcileNow();
@@ -1628,6 +1673,8 @@ try {
     assert.ok(summaryIdle.rows >= 2, "idle unmount keeps catalog row count: " + JSON.stringify(summaryIdle));
     assert.equal(summaryIdle.skippedByReason["env-missing"], 1, "env-missing survives idle prune");
     assert.equal(summaryIdle.skippedByReason.idle, 1, "mounted row becomes idle");
+    assert.ok(!(summaryIdle.unhealthy ?? []).some((item) => item.reason === "idle"), "idle is not unhealthy: " + JSON.stringify(summaryIdle));
+    assert.ok((summaryIdle.idle ?? []).includes("ok"), "idle names are listed separately: " + JSON.stringify(summaryIdle));
     const snapT3 = (await registryT3.snapshot()).find((file) => file.project === projT3);
     const byName = Object.fromEntries((snapT3?.servers ?? []).map((row) => [row.serverName, row.skipReason]));
     assert.equal(byName.ok, "idle");

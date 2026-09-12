@@ -82,7 +82,7 @@ import {
   type McpScopeInfo,
   type McpServerView
 } from "./model.js";
-import { mcpToolBudgetStats, mcpToolCount, parseToolBudgetWarn } from "./status.js";
+import { mcpToolBudgetStats, mcpToolCount, parseToolBudgetWarn, schemaToolId } from "./status.js";
 
 const delay = (ms: number) => new Promise<void>((resolvePromise) => setTimeout(resolvePromise, ms));
 
@@ -235,6 +235,31 @@ export interface DesiredProjectRow {
   source?: McpRowSource;
 }
 
+/** 装载行的健康巡检记录（按 containerKey+rawName 存活，跨 fiber 世代）。 */
+interface MountHealth {
+  everHadTools: boolean;
+  remountCount: number;
+  nextRemountAt: number;
+  givenUp: boolean;
+}
+
+/** 单次 scanProject 缓存的分文件目录，供 snapshot / serverView 内存拼装。 */
+interface ProjectScanFiles {
+  projectRoot: string;
+  skipYmlPartition: boolean;
+  ymlPath: string;
+  ymlRows: PatchRow[];
+  ymlError: string | null;
+  ymlOk: boolean;
+  ymlMissing: boolean;
+  skipJsonPartition: boolean;
+  jsonPath: string;
+  json: JsonReadResult;
+  ccEnabled: boolean;
+  ccPath: string;
+  cc: JsonReadResult;
+}
+
 export interface ProjectChangePlan {
   toUnmount: string[];
   toMount: DesiredProjectRow[];
@@ -342,9 +367,9 @@ function isProjectLayerSource(source: McpRowSource | undefined): boolean {
 
 /** 全局（用户层）装载的作用域键：参与 skipReasons 与日志归因。 */
 export const GLOBAL_SCOPE_KEY = "\u0000global";
-/** 连接死后连续重挂次数上限；达到后写 `give-up` 诊断并停止。 */
+/** 连续重挂次数上限：工具恢复后清零；达到后写 `give-up` 诊断并停止。 */
 export const HEALTH_REMOUNT_LIMIT = 3;
-/** 两次健康重挂之间的缺省退避（毫秒）。测试可经 options 注入 0。 */
+/** 0 工具去抖与两次重挂之间的缺省退避（毫秒）。测试可经 options 注入 0。 */
 export const HEALTH_REMOUNT_BACKOFF_MS = 5_000;
 /** 项目无活跃会话且不是进程 cwd 之后，再卸载其服务器的缺省宽限。 */
 export const UNMOUNT_GRACE_MS = 5 * 60 * 1000;
@@ -580,6 +605,8 @@ export interface DiagSummary {
   mounted: number;
   skippedByReason: Record<string, number>;
   unhealthy: DiagUnhealthy[];
+  /** 宽限卸载的行（不是故障；`status` 打成「未装载（无会话）」）。 */
+  idle?: string[];
   toolBudget?: { name: string; tools: number; bytes: number }[];
 }
 
@@ -617,6 +644,12 @@ function parseDiagSummary(raw: unknown): DiagSummary | undefined {
       }
     }
   }
+  const idle: string[] = [];
+  if (Array.isArray(raw.idle)) {
+    for (const item of raw.idle) {
+      if (typeof item === "string") idle.push(item);
+    }
+  }
   return {
     at: raw.at,
     ...(typeof raw.projects === "number" ? { projects: raw.projects } : {}),
@@ -624,6 +657,7 @@ function parseDiagSummary(raw: unknown): DiagSummary | undefined {
     mounted: raw.mounted,
     skippedByReason,
     unhealthy,
+    ...(idle.length > 0 ? { idle } : {}),
     ...(Array.isArray(raw.toolBudget)
       ? {
         toolBudget: raw.toolBudget.filter((item): item is { name: string; tools: number; bytes: number } =>
@@ -707,10 +741,15 @@ export class ProjectMcpRegistry {
   private lastFingerprintEpoch = -1;
   /** 上一轮 scanProject 的期望行（指纹未变时复用；摘要 rows 也按这份目录计）。 */
   private lastScanDesired = new Map<string, { projectRoot: string; rows: DesiredProjectRow[] }>();
+  /**
+   * 上一轮扫描的分文件目录（snapshot / serverView 的内存拼装；含被遮蔽行与
+   * entryErrors）。与 lastScanDesired 同生命周期，随 prunePerProjectState 剪。
+   */
+  private lastScanFiles = new Map<string, ProjectScanFiles>();
   /** 上一轮用户层合并后的全局期望行（摘要按目录计，不按当前装载 Map）。 */
   private lastGlobalDesired: DesiredProjectRow[] = [];
   /** 装载行的健康巡检内存（unmount 会删掉 ProjectServerState，不能只挂在 state 上）。 */
-  private readonly healthByMount = new Map<string, { everHadTools: boolean; remountCount: number; nextRemountAt: number; givenUp: boolean }>();
+  private readonly healthByMount = new Map<string, MountHealth>();
   /** 作用域键 → 超预算的生效名（写入 diag summary；每轮重算）。 */
   private readonly toolBudgetHits = new Map<string, { name: string; tools: number; bytes: number }[]>();
   /** 项目离开活跃挂载集的时刻（宽限内仍保持装载）。 */
@@ -803,6 +842,7 @@ export class ProjectMcpRegistry {
         await this.reconcileAll();
       }).catch(() => {});
     }, 150);
+    // 不挡住进程退出：短进程在 150ms 内结束时，已 kick 的对账会被丢掉（有意）。
     this.timer.unref();
   }
 
@@ -905,33 +945,28 @@ export class ProjectMcpRegistry {
   }
 
   /** 原生受管块文件通用读取（项目 yml 与用户层 yml 共用）。 */
-  private async readNativeRows(path: string, source: McpRowSource, hasYmlMounts: boolean): Promise<{ rows: SourcedRow[]; ok: boolean; error: string | null }> {
+  private async readNativeRows(path: string, source: McpRowSource, hasYmlMounts: boolean): Promise<{ rows: SourcedRow[]; ok: boolean; error: string | null; missing: boolean }> {
     let rows: SourcedRow[] = [];
     let ok = true;
     let error: string | null = null;
+    let missing = false;
     try {
       this.noteConfigRead();
       const raw = await readPatchFile(path);
       for (const row of extractManagedRows(raw)) {
         const rawName = rowNameOf(row);
-        // disabled 行不跳过：带着占位旗进合并——显式禁用应同时遮蔽下层同名，
-        // 否则「关掉 yml 行」会意外改去装载 .mcp.json 副本。
         if (rawName !== undefined) rows.push({ rawName, row, source, disabled: row.disabled === true });
       }
     } catch (catchError) {
       const message = catchError instanceof Error ? catchError.message : String(catchError);
-      // 「配置文件不存在」(ENOENT) 只有在该项目确实有活着的 yml 来源装载时才算异常——
-      // 意味着文件在装载之后被删/移走。零配置项目缺文件是常态：不能用
-      // projects.has(key) 当判据，空项目条目也会让它恒真（误报根因）。
-      // hasYmlMounts 同样不能拿 servers.size 充数——用户层行也占装载实例，
-      // 纯用户层挂载的项目缺 yml 依旧常态（与 snapshot 的 ymlLive 同一判据）。
-      if (hasYmlMounts || !message.includes("ENOENT")) {
+      if (message.includes("ENOENT") && !hasYmlMounts) missing = true;
+      else {
         ok = false;
         error = message;
       }
       rows = [];
     }
-    return { rows, ok, error };
+    return { rows, ok, error, missing };
   }
 
   /**
@@ -1151,6 +1186,7 @@ export class ProjectMcpRegistry {
         await this.reconcileAll();
       }).catch(() => {});
     }, delayMs);
+    // 宽限 timer 同样不挡住退出（与 kick 的 150ms 防抖同口径）。
     this.graceTimer.unref();
   }
 
@@ -1291,7 +1327,7 @@ export class ProjectMcpRegistry {
     const ymlPath = projectMcpFile(projectRoot);
     const jsonPath = projectDshJsonFile(projectRoot);
     const yml = isSameFilePath(ymlPath, userPaths.mcpYml)
-      ? { rows: [], ok: true, error: null }
+      ? { rows: [], ok: true, error: null, missing: false }
       : await this.readNativeRows(ymlPath, "dsh-project", hasYmlMounts);
     const projectJson: JsonReadResult = isSameFilePath(jsonPath, userPaths.mcpJson)
       ? { rows: [], entryErrors: [] }
@@ -1322,6 +1358,21 @@ export class ProjectMcpRegistry {
     this.warnInvalidToolGlobs(key + "\u0000yml", `项目 MCP（.dsh/${MCP_YML_FILE}，${projectRoot}）`, yml.rows);
     this.warnInvalidToolGlobs(key + "\u0000json", `项目 MCP（.dsh/${JSON_MCP_FILE}，${projectRoot}）`, projectJson.rows);
     this.warnInvalidToolGlobs(key + "\u0000cc", `项目 MCP（${CC_PROJECT_FILE}，${projectRoot}）`, cc.rows);
+    this.lastScanFiles.set(key, {
+      projectRoot,
+      skipYmlPartition: isSameFilePath(ymlPath, userPaths.mcpYml),
+      ymlPath,
+      ymlRows: yml.rows.map((item) => item.row),
+      ymlError: yml.error,
+      ymlOk: yml.ok,
+      ymlMissing: yml.missing,
+      skipJsonPartition: isSameFilePath(jsonPath, userPaths.mcpJson),
+      jsonPath,
+      json: projectJson,
+      ccEnabled: mcpJsonLayerEnabled(),
+      ccPath: projectMcpJsonFile(projectRoot),
+      cc
+    });
     // 源级隔离：某个源坏了只清空该源的 rows（读取器已保证），其余源照常进
     // desired。绝不能整项目一票否决——那会把坏文件的代价转嫁给好文件的行。
     // 项目容器只装项目层行；用户层行由全局容器装载（见 reconcileGlobals）。
@@ -1387,6 +1438,36 @@ export class ProjectMcpRegistry {
     }
     for (const key of this.lastScanDesired.keys()) {
       if (!knownKeys.has(key)) this.lastScanDesired.delete(key);
+    }
+    for (const key of this.lastScanFiles.keys()) {
+      if (!knownKeys.has(key)) this.lastScanFiles.delete(key);
+    }
+    this.pruneWarnGates(knownKeys);
+  }
+
+  /**
+   * 告警门控按已知项目剪：`entries\0` / `globs\0` 里带项目键的前缀、以及已不在
+   * 装载集里的 `budget\0<effectiveName>`。用户层路径门控与 profile 名门控保留。
+   */
+  private pruneWarnGates(knownKeys: Set<string>): void {
+    const liveBudget = new Set<string>();
+    for (const entry of this.projects.values()) {
+      for (const state of entry.servers.values()) liveBudget.add(state.effectiveName);
+    }
+    for (const state of this.globalServers.values()) liveBudget.add(state.effectiveName);
+    for (const gate of [...this.warnGates.keys()]) {
+      if (gate.startsWith("budget\u0000")) {
+        if (!liveBudget.has(gate.slice("budget\u0000".length))) this.warnGates.delete(gate);
+        continue;
+      }
+      if (!gate.startsWith("entries\u0000") && !gate.startsWith("globs\u0000")) continue;
+      const rest = gate.slice(gate.indexOf("\u0000") + 1);
+      const sep = rest.lastIndexOf("\u0000");
+      if (sep <= 0) continue;
+      const suffix = rest.slice(sep + 1);
+      if (suffix !== "yml" && suffix !== "json" && suffix !== "cc") continue;
+      const projectKey = rest.slice(0, sep);
+      if (!knownKeys.has(projectKey)) this.warnGates.delete(gate);
     }
   }
 
@@ -1538,16 +1619,19 @@ export class ProjectMcpRegistry {
           await rename(tmp, path);
         } catch {
           await rm(tmp, { force: true }).catch(() => {});
+          throw new Error("写入诊断文件失败");
         }
       });
-    } catch {
-      // 锁超时等：诊断尽力而为，不能打断对账
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.ctx.logger.warn(`写入诊断 ${path} 失败：${message}（本轮 summary 可能未落盘）`);
     }
   }
 
   private summarizeScope(key: string, servers: Map<string, ProjectServerState>, catalog: DesiredProjectRow[], at: string, projects?: number): DiagSummary {
     const skippedByReason: Record<string, number> = {};
     const unhealthy: DiagUnhealthy[] = [];
+    const idle: string[] = [];
     const seenUnhealthy = new Set<string>();
     const addUnhealthy = (name: string, reason: string) => {
       if (seenUnhealthy.has(name)) return;
@@ -1568,7 +1652,14 @@ export class ProjectMcpRegistry {
     }
     for (const [mark, reason] of this.skipReasons) {
       if (!mark.startsWith(prefix)) continue;
-      addUnhealthy(mark.slice(prefix.length), reason);
+      const name = mark.slice(prefix.length);
+      if (reason === "idle") {
+        if (idle.includes(name)) continue;
+        idle.push(name);
+        skippedByReason.idle = (skippedByReason.idle ?? 0) + 1;
+        continue;
+      }
+      addUnhealthy(name, reason);
     }
     return {
       at,
@@ -1577,6 +1668,7 @@ export class ProjectMcpRegistry {
       mounted,
       skippedByReason,
       unhealthy,
+      ...(idle.length > 0 ? { idle } : {}),
       ...(this.toolBudgetHits.get(key)?.length ? { toolBudget: this.toolBudgetHits.get(key) } : {})
     };
   }
@@ -1587,7 +1679,7 @@ export class ProjectMcpRegistry {
       const catalog = this.lastScanDesired.get(key)?.rows ?? [];
       const summary = this.summarizeScope(key, entry.servers, catalog, at);
       const path = join(entry.projectRoot, DSH_DIR, DIAG_FILE);
-      if (summary.rows === 0 && summary.unhealthy.length === 0) {
+      if (summary.rows === 0 && summary.unhealthy.length === 0 && (summary.idle?.length ?? 0) === 0) {
         try {
           await readFile(path);
         } catch {
@@ -1602,7 +1694,7 @@ export class ProjectMcpRegistry {
       || this.userLayer.jsonError !== null
       || this.userLayer.profileError !== null;
     const globalPath = join(dirname(this.resolveUserLayerPaths().mcpYml), DIAG_FILE);
-    if (globalSummary.rows === 0 && globalSummary.unhealthy.length === 0 && !userHasContent) {
+    if (globalSummary.rows === 0 && globalSummary.unhealthy.length === 0 && (globalSummary.idle?.length ?? 0) === 0 && !userHasContent) {
       try {
         await readFile(globalPath);
       } catch {
@@ -1722,7 +1814,10 @@ export class ProjectMcpRegistry {
     if (health === "forget") this.healthByMount.delete(mark);
     else {
       const record = this.healthByMount.get(mark);
-      if (record !== undefined) record.everHadTools = false;
+      if (record !== undefined) {
+        record.everHadTools = false;
+        record.nextRemountAt = 0;
+      }
     }
     const state = container.servers.get(rawName);
     if (state === undefined) return;
@@ -1739,20 +1834,21 @@ export class ProjectMcpRegistry {
     return containerKey + "\u0000" + rawName;
   }
 
-  private healthOf(containerKey: string, rawName: string): { everHadTools: boolean; remountCount: number; nextRemountAt: number; givenUp: boolean } {
+  private healthOf(containerKey: string, rawName: string): MountHealth {
     const key = this.healthKey(containerKey, rawName);
     const existing = this.healthByMount.get(key);
     if (existing !== undefined) return existing;
-    const created = { everHadTools: false, remountCount: 0, nextRemountAt: 0, givenUp: false };
+    const created: MountHealth = { everHadTools: false, remountCount: 0, nextRemountAt: 0, givenUp: false };
     this.healthByMount.set(key, created);
     return created;
   }
 
   /**
-   * 连接死亡自愈：当前 fiber 世代曾经有过工具、当前 0 工具、未 disabled、退避已过
+   * 连接死亡自愈：当前 fiber 世代曾经有过工具、当前 0 工具持续超过退避窗口、未 disabled
    * → unmount 再 mount（新世代清 everHadTools，不抢官方内部重连）。
-   * 连续 HEALTH_REMOUNT_LIMIT 个世代仍为 0 工具则 give-up。JSON enabled:false 本就不在装载集。
-   * 工具重新出现时不清 remountCount，否则跨世代的 give-up 永远攒不上。
+   * 单次 `mcpToolCount === 0` 边沿不拆连接（同世代 list_changed 清空再填回）。
+   * 工具重新出现时清 remountCount / givenUp：give-up 表示连续失败，不是寿命配额。
+   * 已重挂过、新世代仍长时间 0 工具则累加失败世代（仍不拆官方首连窗口），满上限 give-up。
    */
   private async remountUnhealthy(): Promise<void> {
     for (const [key, entry] of this.projects) {
@@ -1775,28 +1871,49 @@ export class ProjectMcpRegistry {
       if (state.row.disabled === true) continue;
       const health = this.healthOf(container.key, state.rawName);
       const tools = mcpToolCount(this.ctx, state.effectiveName);
+      const markKey = container.key + "\u0000" + state.rawName;
       if (tools > 0) {
         health.everHadTools = true;
+        health.remountCount = 0;
+        health.givenUp = false;
         health.nextRemountAt = 0;
+        if (this.skipReasons.get(markKey) === "give-up") this.skipReasons.delete(markKey);
         continue;
       }
-      if (!health.everHadTools || state.phase !== "active" || health.givenUp) continue;
-      if (health.remountCount >= this.remountLimit()) {
-        health.givenUp = true;
-        this.skipReasons.set(container.key + "\u0000" + state.rawName, "give-up");
-        await container.diag({ kind: "give-up", rawName: state.rawName, effectiveName: state.effectiveName, remountCount: health.remountCount });
-        this.ctx.logger.warn(`${container.label} "${state.effectiveName}" 连续重挂 ${health.remountCount} 次后仍无工具，停止自愈`);
+      if (state.phase !== "active" || health.givenUp) continue;
+      const now = this.nowMs();
+      if (health.nextRemountAt === 0) {
+        health.nextRemountAt = now + this.remountBackoffMs();
         continue;
       }
-      if (this.nowMs() < health.nextRemountAt) continue;
-      health.remountCount += 1;
-      health.nextRemountAt = this.nowMs() + this.remountBackoffMs();
-      await container.diag({ kind: "remount", rawName: state.rawName, effectiveName: state.effectiveName, attempt: health.remountCount });
-      this.ctx.logger.warn(`${container.label} "${state.effectiveName}" 连接巡检：工具数为 0，第 ${health.remountCount} 次重挂`);
-      const item: DesiredProjectRow = { rawName: state.rawName, row: state.row, source: state.source };
-      await this.unmountServer(container, state.rawName, "generation");
-      await this.mountServer(container, item);
+      if (now < health.nextRemountAt) continue;
+      if (health.everHadTools) {
+        if (health.remountCount >= this.remountLimit()) {
+          await this.markGiveUp(container, state, health);
+          continue;
+        }
+        health.remountCount += 1;
+        health.nextRemountAt = 0;
+        await container.diag({ kind: "remount", rawName: state.rawName, effectiveName: state.effectiveName, attempt: health.remountCount });
+        this.ctx.logger.warn(`${container.label} "${state.effectiveName}" 连接巡检：工具数为 0，第 ${health.remountCount} 次重挂`);
+        const item: DesiredProjectRow = { rawName: state.rawName, row: state.row, source: state.source };
+        await this.unmountServer(container, state.rawName, "generation");
+        await this.mountServer(container, item);
+        continue;
+      }
+      if (health.remountCount > 0) {
+        health.remountCount += 1;
+        health.nextRemountAt = now + this.remountBackoffMs();
+        if (health.remountCount >= this.remountLimit()) await this.markGiveUp(container, state, health);
+      }
     }
+  }
+
+  private async markGiveUp(container: MountContainer, state: ProjectServerState, health: MountHealth): Promise<void> {
+    health.givenUp = true;
+    this.skipReasons.set(container.key + "\u0000" + state.rawName, "give-up");
+    await container.diag({ kind: "give-up", rawName: state.rawName, effectiveName: state.effectiveName, remountCount: health.remountCount });
+    this.ctx.logger.warn(`${container.label} "${state.effectiveName}" 连续重挂 ${health.remountCount} 次后仍无工具，停止自愈`);
   }
 
   private inspectToolBudgets(): void {
@@ -1892,7 +2009,7 @@ export class ProjectMcpRegistry {
   /** 宿主工具层当前注册的全部工具 id；取不到时按空集（本轮不新增限制，下次 sweep 补）。 */
   private registeredToolIds(): string[] {
     try {
-      return (this.ctx.tools?.schemas?.() ?? []).map((schema: any) => String(schema?.id ?? schema?.name ?? ""));
+      return (this.ctx.tools?.schemas?.() ?? []).map((schema: any) => schemaToolId(schema)).filter((id: string) => id !== "");
     } catch {
       return [];
     }
@@ -1984,6 +2101,11 @@ export class ProjectMcpRegistry {
     return this.configReadCount;
   }
 
+  /** 健康巡检记录（测试用：断言恢复后 remountCount / givenUp 清零）。 */
+  debugHealth(projectRoot: string, rawName: string): { everHadTools: boolean; remountCount: number; nextRemountAt: number; givenUp: boolean } | undefined {
+    return this.healthByMount.get(this.healthKey(projectKeyOf(projectRoot), rawName));
+  }
+
   /** 等待某项目某行的装载状态满足 predicate（写入后 reconciliation 用）。 */
   async waitForState(projectRoot: string, rawName: string, predicate: (state: ProjectServerState | undefined) => boolean, timeoutMs = 3000): Promise<boolean> {
     const key = projectKeyOf(projectRoot);
@@ -2011,30 +2133,22 @@ export class ProjectMcpRegistry {
     return false;
   }
 
-  /** 行级 view 的逐层影子优先查找：项目 yml > 项目 .dsh/mcp.json > .mcp.json > profile json > 用户 yml > 用户 json > 装载残留态。 */
-  private async locateRow(projectRoot: string, rawName: string, state?: ProjectServerState): Promise<{ row?: PatchRow; source?: McpRowSource; path?: string }> {
+  /** 行级 view 的逐层影子优先查找：项目 yml > 项目 .dsh/mcp.json > .mcp.json > profile json > 用户 yml > 用户 json > 装载残留态。只读内存目录。 */
+  private locateRowFromMemory(projectRoot: string, rawName: string, state?: ProjectServerState): { row?: PatchRow; source?: McpRowSource; path?: string } {
+    const key = projectKeyOf(projectRoot);
+    const files = this.lastScanFiles.get(key);
     const userPaths = this.resolveUserLayerPaths();
-    const ymlPath = projectMcpFile(projectRoot);
-    if (!isSameFilePath(ymlPath, userPaths.mcpYml)) {
-      try {
-        const raw = await readPatchFile(ymlPath);
-        const ymlRow = extractManagedRows(raw).find((candidate) => rowNameOf(candidate) === rawName);
-        if (ymlRow !== undefined) return { row: ymlRow, source: "dsh-project", path: ymlPath };
-      } catch {
-        // 落到后续层
-      }
+    if (files !== undefined && !files.skipYmlPartition) {
+      const ymlRow = files.ymlRows.find((candidate) => rowNameOf(candidate) === rawName);
+      if (ymlRow !== undefined) return { row: ymlRow, source: "dsh-project", path: files.ymlPath };
     }
-    const jsonPath = projectDshJsonFile(projectRoot);
-    if (!isSameFilePath(jsonPath, userPaths.mcpJson)) {
-      const projectJson = await readDshJsonFile(jsonPath, { source: "dsh-project-json", cwdPolicy: "project", projectRoot });
-      const projectJsonRow = projectJson.rows.find((candidate) => candidate.rawName === rawName);
-      if (projectJsonRow !== undefined) return { row: projectJsonRow.row, source: "dsh-project-json", path: jsonPath };
+    if (files !== undefined && !files.skipJsonPartition) {
+      const projectJsonRow = files.json.rows.find((candidate) => candidate.rawName === rawName);
+      if (projectJsonRow !== undefined) return { row: projectJsonRow.row, source: "dsh-project-json", path: files.jsonPath };
     }
-    if (mcpJsonLayerEnabled()) {
-      const ccPath = projectMcpJsonFile(projectRoot);
-      const cc = await readMcpJsonFile(ccPath, projectRoot);
-      const found = cc.rows.find((candidate) => candidate.rawName === rawName);
-      if (found !== undefined) return { row: found.row, source: "cc-project", path: ccPath };
+    if (files?.ccEnabled === true) {
+      const found = files.cc.rows.find((candidate) => candidate.rawName === rawName);
+      if (found !== undefined) return { row: found.row, source: "cc-project", path: files.ccPath };
     }
     const profileRow = this.userLayer.profileRows.find((candidate) => candidate.rawName === rawName);
     if (profileRow !== undefined) return { row: profileRow.row, source: "dsh-profile-user", path: this.userLayer.profileJson ?? undefined };
@@ -2046,14 +2160,16 @@ export class ProjectMcpRegistry {
     return {};
   }
 
-  /** 行级 view；未装载时 phase 按行状态推导。行查找按影子优先序逐层进行。 */
+  /** 行级 view；未装载时 phase 按行状态推导。行查找按影子优先序走内存目录。 */
   async serverView(projectRoot: string, rawName: string): Promise<McpServerRuntimeView | undefined> {
+    return this.enqueue(async () => this.serverViewFromMemory(projectRoot, rawName));
+  }
+
+  private serverViewFromMemory(projectRoot: string, rawName: string): McpServerRuntimeView | undefined {
     const key = projectKeyOf(projectRoot);
     const state = this.projects.get(key)?.servers.get(rawName) ?? this.globalServers.get(rawName);
-    const located = await this.locateRow(projectRoot, rawName, state);
+    const located = this.locateRowFromMemory(projectRoot, rawName, state);
     if (located.row === undefined) return undefined;
-    // 用户层行报全局作用域 + 层文件路径（与快照的 pushGlobal 同口径）：报
-    // workspace/项目根会让消费方以为这是项目行、误导「改哪个文件」。
     const isUserLayerRow = located.source !== undefined && !isProjectLayerSource(located.source);
     const scope: McpScopeInfo = isUserLayerRow
       ? { kind: "global", path: located.path ?? "", label: "user" }
@@ -2064,11 +2180,7 @@ export class ProjectMcpRegistry {
     const effectiveName = isUserLayerRow
       ? globalState?.effectiveName ?? rawName
       : this.effective.get(key + "\u0000" + rawName);
-    // owned：装载实例确实来自这条行所在的那个源（与分区视图 partitionServers 的
-    // state?.source === source 同一口径）。异来源实例挂在同一个 rawName 上时，
-    // 本行是被遮蔽方——phase 走 null，toolCount 不借用别源的装载数据。
     const owned = state?.source === located.source;
-    // 跳过原因按「行所在层」的作用域查（被跳过的全局行没有 state，不能靠 state.scope 判）。
     const scopeKey = isUserLayerRow ? GLOBAL_SCOPE_KEY : key;
     return {
       ...view,
@@ -2080,45 +2192,38 @@ export class ProjectMcpRegistry {
     };
   }
 
-  /** 内存快照：不触发对账。要收敛请走 `reload()` / `reconcileNow()`。 */
+  /** 内存快照：进 enqueue 与对账互斥，不读盘、不触发对账。要收敛请走 `reload()` / `reconcileNow()`。 */
   async snapshot(): Promise<ProjectFileState[]> {
+    return this.enqueue(async () => this.buildSnapshotFromMemory());
+  }
+
+  private buildSnapshotFromMemory(): ProjectFileState[] {
     const out: ProjectFileState[] = [];
     const userPaths = this.resolveUserLayerPaths();
     for (const [key, entry] of this.projects) {
-      const path = projectMcpFile(entry.projectRoot);
-      const file: ProjectFileState = { project: entry.projectRoot, path, ok: true, error: null, source: "dsh-project", servers: [] };
-      let rows: PatchRow[] = [];
-      let usable = true;
-      let skipYmlPartition = false;
-      if (isSameFilePath(path, userPaths.mcpYml)) {
-        // 家目录即项目根：该文件就是用户层文件，不作为项目分区展示。
-        skipYmlPartition = true;
-      } else {
-        try {
-          rows = extractManagedRows(await readPatchFile(path));
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          // yml 缺失且没有 yml 来源的装载：文件本就不存在，不出 yml 分区——
-          // 用户层行也能让项目有装载实例，servers.size>0 不再等价「装载后文件被删」。
-          const ymlLive = [...entry.servers.values()].some((state) => state.source === "dsh-project" || state.source === undefined);
-          if (message.includes("ENOENT") && !ymlLive) {
-            skipYmlPartition = true;
-          } else {
-            usable = false;
-            file.ok = false;
-            file.error = message;
-          }
-        }
-      }
-      if (!skipYmlPartition) {
-        if (usable) file.servers = this.partitionServers(entry, key, rows, "dsh-project");
+      const files = this.lastScanFiles.get(key);
+      const ymlPath = files?.ymlPath ?? projectMcpFile(entry.projectRoot);
+      const skipYmlPartition = files?.skipYmlPartition === true || isSameFilePath(ymlPath, userPaths.mcpYml);
+      const ymlLive = [...entry.servers.values()].some((state) => state.source === "dsh-project" || state.source === undefined);
+      const ymlRows = files?.ymlRows ?? [];
+      const ymlError = files?.ymlError ?? null;
+      const ymlOk = files?.ymlOk ?? true;
+      const skipMissingYml = files?.ymlMissing === true && !ymlLive;
+      if (!skipYmlPartition && !skipMissingYml) {
+        const file: ProjectFileState = {
+          project: entry.projectRoot,
+          path: ymlPath,
+          ok: ymlOk,
+          error: ymlError,
+          source: "dsh-project",
+          servers: ymlOk ? this.partitionServers(entry, key, ymlRows, "dsh-project") : []
+        };
         out.push(file);
       }
-      // ── 项目 .dsh/mcp.json 分区（DSH 自有 JSON 方言；家目录即项目根时跳过）──
       {
-        const jsonPath = projectDshJsonFile(entry.projectRoot);
-        if (!isSameFilePath(jsonPath, userPaths.mcpJson)) {
-          const pj = await readDshJsonFile(jsonPath, { source: "dsh-project-json", cwdPolicy: "project", projectRoot: entry.projectRoot });
+        const jsonPath = files?.jsonPath ?? projectDshJsonFile(entry.projectRoot);
+        if (files?.skipJsonPartition !== true && !isSameFilePath(jsonPath, userPaths.mcpJson)) {
+          const pj = files?.json ?? { rows: [], entryErrors: [] };
           const pjLive = [...entry.servers.values()].some((state) => state.source === "dsh-project-json");
           if (pj.rows.length > 0 || pj.fileError !== undefined || pj.entryErrors.length > 0 || pjLive) {
             const pjFile: ProjectFileState = {
@@ -2134,10 +2239,9 @@ export class ProjectMcpRegistry {
           }
         }
       }
-      // ── 项目 .mcp.json 分区（被开关关闭时整分区不出，含残留装载的情形）──
-      if (mcpJsonLayerEnabled()) {
-        const ccPath = projectMcpJsonFile(entry.projectRoot);
-        const cc = await readMcpJsonFile(ccPath, entry.projectRoot);
+      if (files?.ccEnabled !== false && mcpJsonLayerEnabled()) {
+        const ccPath = files?.ccPath ?? projectMcpJsonFile(entry.projectRoot);
+        const cc = files?.cc ?? { rows: [], entryErrors: [] };
         const ccLive = [...entry.servers.values()].some((state) => state.source === "cc-project");
         if (cc.rows.length > 0 || cc.fileError !== undefined || cc.entryErrors.length > 0 || ccLive) {
           const ccFile: ProjectFileState = {
@@ -2153,7 +2257,6 @@ export class ProjectMcpRegistry {
         }
       }
     }
-    // ── 用户层分区（全局装载：fiberPhase/toolCount 取自 globalServers 中同源实例）──
     const pushGlobal = (path: string, source: McpRowSource, rows: SourcedRow[], error: string | null): void => {
       if (path === "" || (rows.length === 0 && error === null)) return;
       out.push({
