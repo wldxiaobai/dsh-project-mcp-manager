@@ -22,7 +22,7 @@ a profile-layer Cordis patch (with that layer's own HMR) plus
 
 Project-file hot reload is this plugin's file watcher. It does not replace
 official profile HMR. **Transport types are decided by the official client.**
-v0.7.0 targets the dsh `0.2.0` line starting at 0.2.0-rc.2. Hosts still on
+v0.7.x targets the dsh `0.2.0` line starting at 0.2.0-rc.2. Hosts still on
 dsh 0.1.5 should stay on plugin v0.6.0.
 
 If this plugin is useful, a GitHub
@@ -51,6 +51,7 @@ Design and release records (Chinese): [dsh 0.2.0-rc.2 adaptation](docs/design/ad
 [dsh 0.1.2-rc.1 adaptation](docs/design/adaptation-dsh-0.1.2-rc1.md) ·
 [JSON config layer proposal](docs/design/proposal-json-mcp-config.md) ·
 [Runtime robustness & JSON interop proposal](docs/design/proposal-runtime-robustness-and-json-interop.md) ·
+[v0.7.1 release notes](docs/releases/v0.7.1.md) ·
 [v0.7.0 release notes](docs/releases/v0.7.0.md) ·
 [v0.6.0 release notes](docs/releases/v0.6.0.md) ·
 [v0.4.3 release notes](docs/releases/v0.4.3.md) ·
@@ -61,7 +62,8 @@ Design and release records (Chinese): [dsh 0.2.0-rc.2 adaptation](docs/design/ad
 
 Code review records (Chinese): [TypeScript changes since v0.3.1](docs/code-review/ts-review-since-v0.3.1.zh.md) ·
 [v0.4.3 to v0.6.0](docs/code-review/ts-review-v0.4.3-to-v0.6.0.zh.md) ·
-[7e0088d to 804662f (fix follow-up)](docs/code-review/ts-review-7e0088d-to-804662f.zh.md).
+[7e0088d to 804662f (fix follow-up)](docs/code-review/ts-review-7e0088d-to-804662f.zh.md) ·
+[feat/adapt-dsh-0.2.0-rc.2 (v0.7.0)](docs/code-review/review-feat-adapt-dsh-0.2.0-rc.2.zh.md).
 
 ## Installation (mount into a profile)
 
@@ -88,7 +90,7 @@ dsh plugin --profile web add dsh-project-mcp-manager@latest
 
 # Install a specific version (check available versions with
 # npm view dsh-project-mcp-manager versions)
-dsh plugin --profile web add dsh-project-mcp-manager@0.7.0
+dsh plugin --profile web add dsh-project-mcp-manager@0.7.1
 ```
 
 **Option 2: install directly with pnpm** (equivalent to option 1):
@@ -115,8 +117,8 @@ pnpm add link:<path-to-your-dsh-mcp-project-source>   # e.g. D:\dev\dsh-mcp-proj
 > trigger the bundle reconcile.
 
 **Upgrading / pinning versions**: re-run the `add` command from option 1 with
-the desired version suffix — `@latest` upgrades to the newest release, `@0.7.0`
-pins to a specific version. v0.7.0 needs dsh 0.2.0-rc.2 (the `0.2.0` line).
+the desired version suffix — `@latest` upgrades to the newest release, `@0.7.1`
+pins to a specific version. v0.7.x needs dsh 0.2.0-rc.2 (the `0.2.0` line).
 dsh 0.1.5 keeps working with plugin `@0.6.0`.
 
 ## Build & test
