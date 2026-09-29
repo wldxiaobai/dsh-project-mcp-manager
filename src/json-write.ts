@@ -131,7 +131,7 @@ function assignJsonTools(entry: Record<string, unknown>, input: McpServerInput):
 /**
  * 官方输入 → JSON 条目（Cursor/CC 方言 + DSH 透传键）。
  * 缺省值不落盘（`args: []`、空 `env`/`headers`、空或 "." 的 `cwd`、默认
- * `toolCallTimeoutMs`/`failOnStartupError`/`reconnect`），保持文件简洁可读。
+ * `toolCallTimeoutMs`/`failOnStartupError`/`maxInstructionBytes`/`reconnect`），保持文件简洁可读。
  * `${VAR}` 原样保留，装载时才展开——凭据不落盘。
  */
 export function toJsonEntry(input: McpServerInput): Record<string, unknown> {
@@ -139,6 +139,7 @@ export function toJsonEntry(input: McpServerInput): Record<string, unknown> {
   assignJsonTransportFields(entry, input);
   if (input.toolCallTimeoutMs !== DEFAULT_TOOL_CALL_TIMEOUT_MS) entry.toolCallTimeoutMs = input.toolCallTimeoutMs;
   if (input.failOnStartupError !== false) entry.failOnStartupError = input.failOnStartupError;
+  if (input.maxInstructionBytes !== undefined) entry.maxInstructionBytes = input.maxInstructionBytes;
   if (reconnectDiffersFromDefault(input.reconnect)) entry.reconnect = { ...input.reconnect };
   assignJsonTools(entry, input);
   return entry;

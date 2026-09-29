@@ -185,6 +185,12 @@ export function toolFilterFromConfig(config: Record<string, unknown> | undefined
 }
 
 export const DEFAULT_TOOL_CALL_TIMEOUT_MS = 60000;
+/**
+ * 官方 `@deepseek-ai/dsh-mcp-client` 0.2.0-rc.2 的 instructions 字节上限默认值
+ * （含归属头）。只用于文档与「用户没写就不落键」的对照；缺省不把该默认写进
+ * 官方配置，避免和上游默认漂移。
+ */
+export const DEFAULT_MAX_INSTRUCTION_BYTES = 32768;
 export const DEFAULT_RECONNECT = {
   enabled: true,
   initialDelayMs: 500,
@@ -203,7 +209,7 @@ const secretMapSchema = z.record(z.string(), z.string().nullable()).optional();
 export const MAX_TIMER_DELAY_MS = 2147483647;
 
 /**
- * 官方 `@deepseek-ai/dsh-mcp-client` 0.1.5-rc.1 支持的 MCP 传输集合
+ * 官方 `@deepseek-ai/dsh-mcp-client` 0.2.0-rc.2 支持的 MCP 传输集合
  * （config.transport 判别联合：`stdio` | `streamable-http`）。本插件不实现
  * 传输，只负责表达；schema / CLI / JSON 读取器 / 报错文案全部从这里派生。
  * 官方新增传输时：常量加值 + 一条 CLI/JSON 别名映射 + 文档 + 测试，不要再
@@ -282,6 +288,9 @@ export function parseCliTransport(value: string): { transport: "stdio" | "http" 
   return { error: `--transport 只支持 stdio|http（别名 streamable-http），收到：${value}` };
 }
 
+/** 官方可选字段：整数 ≥ 1。缺省不写，让上游默认 32768 生效。 */
+const maxInstructionBytesSchema = z.number().int().min(1).optional();
+
 const reconnectSchema = z.object({
   enabled: z.boolean().default(DEFAULT_RECONNECT.enabled),
   initialDelayMs: z.number().int().min(1).max(MAX_TIMER_DELAY_MS).default(DEFAULT_RECONNECT.initialDelayMs),
@@ -298,6 +307,7 @@ export const stdioServerSchema = z.object({
   cwd: z.string().default(""),
   toolCallTimeoutMs: z.number().int().min(1).default(DEFAULT_TOOL_CALL_TIMEOUT_MS),
   failOnStartupError: z.boolean().default(false),
+  maxInstructionBytes: maxInstructionBytesSchema,
   reconnect: reconnectSchema,
   tools: toolFilterSchema
 });
@@ -309,6 +319,7 @@ export const httpServerSchema = z.object({
   headers: secretMapSchema,
   toolCallTimeoutMs: z.number().int().min(1).default(DEFAULT_TOOL_CALL_TIMEOUT_MS),
   failOnStartupError: z.boolean().default(false),
+  maxInstructionBytes: maxInstructionBytesSchema,
   reconnect: reconnectSchema,
   tools: toolFilterSchema
 });
@@ -513,12 +524,18 @@ function normalizeReconnect(input: McpServerInput): ReconnectConfig {
   };
 }
 
+/** 用户显式给出才写入；缺省省略，由官方 schema 的 default 生效。 */
+function instructionBytesField(input: McpServerInput): { maxInstructionBytes?: number } {
+  return input.maxInstructionBytes === undefined ? {} : { maxInstructionBytes: input.maxInstructionBytes };
+}
+
 /** 面板输入 → 官方 @deepseek-ai/dsh-mcp-client 配置。 */
 export function toOfficialConfig(input: McpServerInput): Record<string, unknown> {
   const common = {
     serverName: input.serverName,
     toolCallTimeoutMs: input.toolCallTimeoutMs,
     failOnStartupError: input.failOnStartupError,
+    ...instructionBytesField(input),
     reconnect: normalizeReconnect(input)
   };
   if (input.transport === "stdio") {
@@ -578,6 +595,8 @@ export interface McpServerView {
   tools?: ToolFilter;
   toolCallTimeoutMs: number;
   failOnStartupError: boolean;
+  /** 仅当配置行显式写出时出现；缺省表示沿用官方 32768。 */
+  maxInstructionBytes?: number;
   reconnect: ReconnectConfig;
 }
 
@@ -662,6 +681,7 @@ export function patchRowToView(row: PatchRow, scope?: McpScopeInfo, effectiveSer
     ...(tools === undefined ? {} : { tools }),
     toolCallTimeoutMs: asNumber(config.toolCallTimeoutMs, DEFAULT_TOOL_CALL_TIMEOUT_MS),
     failOnStartupError: asBoolean(config.failOnStartupError, false),
+    ...(typeof config.maxInstructionBytes === "number" ? { maxInstructionBytes: config.maxInstructionBytes } : {}),
     reconnect: reconnectViewOf(config)
   };
 }
@@ -680,6 +700,7 @@ export function inputFromPatchRow(row: PatchRow): McpServerInput {
     serverName,
     toolCallTimeoutMs: asNumber(config.toolCallTimeoutMs, DEFAULT_TOOL_CALL_TIMEOUT_MS),
     failOnStartupError: asBoolean(config.failOnStartupError, false),
+    ...(typeof config.maxInstructionBytes === "number" ? { maxInstructionBytes: config.maxInstructionBytes } : {}),
     reconnect: {
       enabled: asBoolean((config.reconnect as any)?.enabled, DEFAULT_RECONNECT.enabled),
       initialDelayMs: asNumber((config.reconnect as any)?.initialDelayMs, DEFAULT_RECONNECT.initialDelayMs),
