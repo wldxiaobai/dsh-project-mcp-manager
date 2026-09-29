@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-30
+
+Host alignment for dsh **0.2.0-rc.2**. v0.6.0 remains the release for dsh
+0.1.5. Official dsh still does not discover per-project MCP files, isolate
+tools by session cwd, or ship an MCP-specific CLI — those stay here.
+
+### Changed
+
+- **`@deepseek-ai/dsh-mcp-client` floor is `^0.2.0-rc.2`.** npm semver will
+  not resolve a `0.2.0-rc.*` prerelease from `^0.1.5-rc.1`. Dev dependency
+  `@deepseek-ai/cordis` moves `^4.0.2` → `^4.0.4` to match the host peer.
+  pnpm 12 extended `minimumReleaseAgeExclude` for the new `0.2.0-rc.2` peers.
+- Drop the `agent/session-start` listener. dsh 0.2 removed that event;
+  `agent/created` now carries `source: startup|resume|clear|compact` and
+  covers the same edges. The constructor `liveAgents()` sweep is unchanged.
+- Document the support boundary against official profile patches, profile
+  HMR, `plugin_manager`, and `mcp-resources`.
+
+### Added
+
+- Optional `maxInstructionBytes` (integer ≥ 1) is passed through on both
+  transports, in the JSON dialect, and in `dsh-mcp` views. Omitting it does
+  not write the key, so the official default (32768) stays upstream.
+  Oversized server instructions fail that connection inside the official
+  client; this plugin does not add a CLI flag for the field.
+
+### Documentation
+
+- [dsh 0.2.0-rc.2 adaptation record](docs/design/adaptation-dsh-0.2.0-rc.2.md).
+- Format guides note the instruction limit and the official stdio env scrub
+  (ambient names matching `KEY|PASSWORD|SECRET|TOKEN` and ambient `DSH_*`
+  are dropped; values this plugin expands into `env` / `headers` are still
+  explicit config and are kept).
+
 ## [0.6.0] - 2026-09-13
 
 Runtime robustness and JSON interop. **On-demand project mounts (B1) are a

@@ -67,7 +67,12 @@ file fail with an explicit error (logged and written to `.dsh/.mcp-diag.json`)
 instead of silently mounting the expression text as a literal string. Values
 in `env`/`headers` are otherwise literal, except for `${VAR}` references
 which are interpolated at mount time (see [`${VAR}` expansion](env-expansion.md));
-`disabled` must be `true`/`false`. The project file is otherwise a superset
+`disabled` must be `true`/`false`. Optional `maxInstructionBytes` (integer ≥ 1)
+is the official cap on attributed server instructions, default 32768 when the
+key is omitted. An oversized instruction rejects that connection inside
+`dsh-mcp-client` (the row still activates when `failOnStartupError` is false,
+then follows the official reconnect loop). `dsh-mcp` has no flag for this
+field; write it in the file. The project file is otherwise a superset
 grammar: `env`/`headers` accept `KEY: null` to delete a key (stripped at
 mount), which the official mcp-client schema rejects — such lines would fail
 if moved back to `cordis.patch.yml`.
@@ -97,7 +102,7 @@ Follows the ecosystem (Cursor / Claude Code's `mcpServers` shape):
   already speaks Streamable HTTP, change `type` to `"http"`; or drop `type`
   and keep `url` (this plugin infers streamable-http). There is no implicit
   fallback. The DSH passthrough keys
-  `toolCallTimeoutMs`/`failOnStartupError`/`reconnect`, `enabled: false`
+  `toolCallTimeoutMs`/`failOnStartupError`/`maxInstructionBytes`/`reconnect`, `enabled: false`
   (silently skipped, claims no name) and `disabled: true` (claims its name but
   is not mounted).
 - Unknown keys are tolerated and ignored; names must match

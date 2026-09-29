@@ -62,7 +62,11 @@ process.env.GITHUB_TOKEN }`）在项目文件里**不支持**——受管块内�
 标签会使该文件整体报错跳过（写入 `.dsh/.mcp-diag.json` 并打日志），不会把
 表达式当字面量字符串静默装载。`env`/`headers` 的值其余情况下是字面量，仅
 `${VAR}` 引用会在装载时做串内插值（见 [`${VAR}` 展开](env-expansion.zh.md)）；
-`disabled` 只能是 `true`/`false`。反之项目文件是超集语法：`env`/`headers`
+`disabled` 只能是 `true`/`false`。可选 `maxInstructionBytes`（整数 ≥ 1）是官方对
+「带归属头的服务器 instructions」的字节上限；省略该键时用官方默认 32768。
+超限由 `dsh-mcp-client` 拒绝这一次连接（`failOnStartupError` 为 false 时本插件
+仍把 fiber 标成 active，随后走官方重连）。`dsh-mcp` 没有对应参数，直接写进文件。
+反之项目文件是超集语法：`env`/`headers`
 允许 `KEY: null` 表示删除该键（装载时被剔除），这在官方 mcp-client 校验里会被
 拒绝——把这类行原样挪回 `cordis.patch.yml` 会装载失败。
 
@@ -89,7 +93,7 @@ process.env.GITHUB_TOKEN }`）在项目文件里**不支持**——受管块内�
   （`dsh-mcp-client`）只支持 `stdio` 与 streamable-http——服务端已支持
   Streamable HTTP 时把 `type` 改为 `"http"`；或删除 `type` 只留 `url`
   （本插件按 streamable-http 推断）。没有隐式回退。DSH 透传键
-  `toolCallTimeoutMs`/`failOnStartupError`/`reconnect`、`enabled: false`
+  `toolCallTimeoutMs`/`failOnStartupError`/`maxInstructionBytes`/`reconnect`、`enabled: false`
   （静默跳过、不占名）与 `disabled: true`（占名但不装载）。
 - 未知键容忍忽略；名字须匹配 `[A-Za-z0-9_-]{1,32}`；坏条目逐条报错、不影响其余。
 - **JSON 文件由 `dsh-mcp` CLI 独占**：写入保留其他顶层键与键序，但 JSON 没有注释，

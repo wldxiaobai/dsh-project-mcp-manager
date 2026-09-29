@@ -18,3 +18,8 @@
 `plugin-throw`；其它如 `name-taken` / `idle` / `give-up` 见
 [配置来源与分层](layers.zh.md)）。插件任何写路径都不落盘展开后的值；
 CLI 写入时 `${VAR}` 原样保留——配置可以进 git，凭据留在环境里。
+
+dsh 0.2 起，官方 stdio 传输的子进程环境是「清洗后的父进程环境 + 配置里的
+`env`」。父进程里名字匹配 `/KEY|PASSWORD|SECRET|TOKEN/i` 的变量，以及环境中的
+`DSH_*`，不会继承给子进程。本插件把 `${VAR}` 展开进 `env` / `headers` 的值属于
+显式配置，会保留。只存在于环境、没有写进 `env` 的凭据，子进程再也拿不到。
