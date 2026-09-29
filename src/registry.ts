@@ -846,7 +846,7 @@ export class ProjectMcpRegistry {
 
   // ── 串行化与调度 ─────────────────────────────────────────────────────
 
-  private enqueue<T>(work: () => Promise<T>): Promise<T> {
+  private enqueue<T>(work: () => T | Promise<T>): Promise<T> {
     const run = this.chain.then(work, work);
     this.chain = run.then(() => undefined, () => undefined);
     return run;
@@ -857,6 +857,7 @@ export class ProjectMcpRegistry {
    * （`this.chain = run.then(...)`）本就替 `run` 挂了 rejection 处理器，所以丢弃
    * 返回值不会炸进程；但那样失败就完全不可见。这里保留返回值并记一条 warn，
    * 让「对账/巡检没跑成」这类问题留得下痕迹。
+   * 与 `enqueueDiag` 的分工：诊断落盘是最佳努力，失败只静默（见 enqueueDiag）。
    */
   private schedule(work: () => Promise<void>): void {
     void this.enqueue(work).catch((error) => {
@@ -1832,23 +1833,28 @@ export class ProjectMcpRegistry {
         if (!container.isCurrent(state)) return;
         state.phase = "active";
         state.error = undefined;
-        // 诊断写必须排进 reconcile 链：异步回调里裸写会与之交叉丢行（read-modify-write 竞态）。
-        this.enqueue(async () => {
-          await container.diag({ kind: "active", effectiveName });
-        }).catch(() => {});
+        this.enqueueDiag(container, { kind: "active", effectiveName });
         this.kickSweep();
       },
       (error: unknown) => {
         if (!container.isCurrent(state)) return;
         state.phase = "failed";
         state.error = error instanceof Error ? error.message : String(error);
-        this.enqueue(async () => {
-          await container.diag({ kind: "failed", effectiveName, error: state.error });
-        }).catch(() => {});
+        this.enqueueDiag(container, { kind: "failed", effectiveName, error: state.error });
         this.ctx.logger.error(`${container.label} "${effectiveName}" 装载失败：${state.error}`);
         this.kickSweep();
       }
     );
+  }
+
+  /**
+   * 诊断写排回 reconcile 链：fiber settle 的回调不在链上，裸写会与对账的
+   * read-modify-write 交叉丢行。诊断是最佳努力——失败静默，不升级成 warn。
+   */
+  private enqueueDiag(container: MountContainer, event: Record<string, unknown>): void {
+    void this.enqueue(async () => {
+      await container.diag(event);
+    }).catch(() => {});
   }
 
   private async unmountServer(container: MountContainer, rawName: string, health: "forget" | "generation" = "forget") {
@@ -2217,7 +2223,7 @@ export class ProjectMcpRegistry {
 
   /** 行级 view；未装载时 phase 按行状态推导。行查找按影子优先序走内存目录。 */
   async serverView(projectRoot: string, rawName: string): Promise<McpServerRuntimeView | undefined> {
-    return this.enqueue(async () => this.serverViewFromMemory(projectRoot, rawName));
+    return this.enqueue(() => this.serverViewFromMemory(projectRoot, rawName));
   }
 
   private serverViewFromMemory(projectRoot: string, rawName: string): McpServerRuntimeView | undefined {
@@ -2249,7 +2255,7 @@ export class ProjectMcpRegistry {
 
   /** 内存快照：进 enqueue 与对账互斥，不读盘、不触发对账。要收敛请走 `reload()` / `reconcileNow()`。 */
   async snapshot(): Promise<ProjectFileState[]> {
-    return this.enqueue(async () => this.buildSnapshotFromMemory());
+    return this.enqueue(() => this.buildSnapshotFromMemory());
   }
 
   private pushYmlSnapshot(
