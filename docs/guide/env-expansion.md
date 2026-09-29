@@ -24,3 +24,10 @@ the reason rides on a separate `skipReason` field (`env-missing` /
 [configuration sources and layers](layers.md)). Values are never
 persisted anywhere by the plugin; the CLI writes `${VAR}` through literally,
 so secrets can live in the environment while configs live in git.
+
+From dsh 0.2, the official stdio transport builds the child environment from a
+scrubbed parent (ambient names matching `/KEY|PASSWORD|SECRET|TOKEN/i` and
+ambient `DSH_*` are dropped) and then overlays the configured `env`. A secret
+this plugin interpolates into `env` or `headers` is explicit config and is
+kept. A secret that exists only as an ambient variable, and is not written
+into `env`, is no longer inherited by the child.

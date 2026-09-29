@@ -778,9 +778,10 @@ export class ProjectMcpRegistry {
     this.ctx = ctx;
     this.providers = providers;
 
+    // dsh 0.2 的 agent/created 带 source（startup|resume|clear|compact），覆盖原 session-start 的补扫。
     ctx.on("agent/created", ({ agent }: any) => {
       if (agent === undefined) return;
-      this.enqueue(async () => {
+      this.schedule(async () => {
         this.agentProjects.set(agent.id, await this.resolveProject(agent));
         await this.reconcileAll();
       });
@@ -788,21 +789,13 @@ export class ProjectMcpRegistry {
     ctx.on("agent/disposed", ({ agent }: any) => {
       if (agent === undefined) return;
       this.releaseAgent(agent);
-      this.enqueue(async () => {
-        await this.reconcileAll();
-      });
-    });
-    // 会话生命周期开始（含恢复/重挂的会话）也补扫一次，覆盖启动时序缺口。
-    ctx.on("agent/session-start", ({ agent }: any) => {
-      if (agent === undefined) return;
-      this.enqueue(async () => {
-        this.agentProjects.set(agent.id, await this.resolveProject(agent));
+      this.schedule(async () => {
         await this.reconcileAll();
       });
     });
 
     // 插件热更重载时已存在的会话也要覆盖。
-    this.enqueue(async () => {
+    this.schedule(async () => {
       for (const agent of this.liveAgents()) {
         this.agentProjects.set(agent.id, await this.resolveProject(agent));
       }
@@ -853,19 +846,32 @@ export class ProjectMcpRegistry {
 
   // ── 串行化与调度 ─────────────────────────────────────────────────────
 
-  private enqueue<T>(work: () => Promise<T>): Promise<T> {
+  private enqueue<T>(work: () => T | Promise<T>): Promise<T> {
     const run = this.chain.then(work, work);
     this.chain = run.then(() => undefined, () => undefined);
     return run;
+  }
+
+  /**
+   * 后台入队（fire-and-forget）：所有不 await 的入队都走这里。`enqueue` 的链尾
+   * （`this.chain = run.then(...)`）本就替 `run` 挂了 rejection 处理器，所以丢弃
+   * 返回值不会炸进程；但那样失败就完全不可见。这里保留返回值并记一条 warn，
+   * 让「对账/巡检没跑成」这类问题留得下痕迹。
+   * 与 `enqueueDiag` 的分工：诊断落盘是最佳努力，失败只静默（见 enqueueDiag）。
+   */
+  private schedule(work: () => Promise<void>): void {
+    void this.enqueue(work).catch((error) => {
+      this.ctx.logger.warn(`项目 MCP 后台任务失败：${error instanceof Error ? error.message : String(error)}`);
+    });
   }
 
   private kick() {
     if (this.timer !== undefined) return;
     this.timer = setTimeout(() => {
       this.timer = undefined;
-      this.enqueue(async () => {
+      this.schedule(async () => {
         await this.reconcileAll();
-      }).catch(() => {});
+      });
     }, 150);
     // 不挡住进程退出：短进程在 150ms 内结束时，已 kick 的对账会被丢掉（有意）。
     this.timer.unref();
@@ -1207,9 +1213,9 @@ export class ProjectMcpRegistry {
     if (delayMs === undefined) return;
     this.graceTimer = setTimeout(() => {
       this.graceTimer = undefined;
-      this.enqueue(async () => {
+      this.schedule(async () => {
         await this.reconcileAll();
-      }).catch(() => {});
+      });
     }, delayMs);
     // 宽限 timer 同样不挡住退出（与 kick 的 150ms 防抖同口径）。
     this.graceTimer.unref();
@@ -1254,8 +1260,11 @@ export class ProjectMcpRegistry {
       `profile=${profileName ?? ""}`,
       `host=${host.join(",")}`
     ];
-    for (const file of files) {
-      const fp = await this.statConfigFile(file);
+    // 纯只读 stat 且每轮对账都跑：并发发起，顺序仍按排序后的 paths（Promise.all 保序）。
+    const stats = await Promise.all(files.map((file) => this.statConfigFile(file)));
+    for (let index = 0; index < files.length; index++) {
+      const fp = stats[index];
+      const file = files[index];
       parts.push(fp === "missing" ? `${file}:missing` : `${file}:${Math.round(fp.mtimeMs)}:${fp.size}`);
     }
     return parts.join("\n");
@@ -1827,23 +1836,28 @@ export class ProjectMcpRegistry {
         if (!container.isCurrent(state)) return;
         state.phase = "active";
         state.error = undefined;
-        // 诊断写必须排进 reconcile 链：异步回调里裸写会与之交叉丢行（read-modify-write 竞态）。
-        this.enqueue(async () => {
-          await container.diag({ kind: "active", effectiveName });
-        }).catch(() => {});
+        this.enqueueDiag(container, { kind: "active", effectiveName });
         this.kickSweep();
       },
       (error: unknown) => {
         if (!container.isCurrent(state)) return;
         state.phase = "failed";
         state.error = error instanceof Error ? error.message : String(error);
-        this.enqueue(async () => {
-          await container.diag({ kind: "failed", effectiveName, error: state.error });
-        }).catch(() => {});
+        this.enqueueDiag(container, { kind: "failed", effectiveName, error: state.error });
         this.ctx.logger.error(`${container.label} "${effectiveName}" 装载失败：${state.error}`);
         this.kickSweep();
       }
     );
+  }
+
+  /**
+   * 诊断写排回 reconcile 链：fiber settle 的回调不在链上，裸写会与对账的
+   * read-modify-write 交叉丢行。诊断是最佳努力——失败静默，不升级成 warn。
+   */
+  private enqueueDiag(container: MountContainer, event: Record<string, unknown>): void {
+    void this.enqueue(async () => {
+      await container.diag(event);
+    }).catch(() => {});
   }
 
   private async unmountServer(container: MountContainer, rawName: string, health: "forget" | "generation" = "forget") {
@@ -1992,9 +2006,9 @@ export class ProjectMcpRegistry {
 
   private kickSweep() {
     if (this.disposed) return;
-    this.enqueue(async () => {
+    this.schedule(async () => {
       await this.sweepRestrictions();
-    }).catch(() => {});
+    });
   }
 
   private async sweepRestrictions() {
@@ -2212,7 +2226,7 @@ export class ProjectMcpRegistry {
 
   /** 行级 view；未装载时 phase 按行状态推导。行查找按影子优先序走内存目录。 */
   async serverView(projectRoot: string, rawName: string): Promise<McpServerRuntimeView | undefined> {
-    return this.enqueue(async () => this.serverViewFromMemory(projectRoot, rawName));
+    return this.enqueue(() => this.serverViewFromMemory(projectRoot, rawName));
   }
 
   private serverViewFromMemory(projectRoot: string, rawName: string): McpServerRuntimeView | undefined {
@@ -2244,7 +2258,7 @@ export class ProjectMcpRegistry {
 
   /** 内存快照：进 enqueue 与对账互斥，不读盘、不触发对账。要收敛请走 `reload()` / `reconcileNow()`。 */
   async snapshot(): Promise<ProjectFileState[]> {
-    return this.enqueue(async () => this.buildSnapshotFromMemory());
+    return this.enqueue(() => this.buildSnapshotFromMemory());
   }
 
   private pushYmlSnapshot(

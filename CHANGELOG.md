@@ -7,6 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-09-30
+
+Patch release: the findings of the
+[feat/adapt-dsh-0.2.0-rc.2 code review](docs/code-review/review-feat-adapt-dsh-0.2.0-rc.2.zh.md).
+The host range is unchanged (dsh `0.2.0` tuple, from `0.2.0-rc.2`).
+
+### Fixed
+
+- Background enqueues no longer swallow their failures silently. The
+  constructor's `agent/created` / `agent/disposed` / hot-reload sweeps, the
+  file-event `kick`, the grace unmount timer and `kickSweep` all go through a
+  new `schedule()`, which keeps the `enqueue()` result and logs
+  `项目 MCP 后台任务失败：…` instead of discarding it (Sonar S9383).
+
+### Changed
+
+- `enqueue()` accepts `() => T | Promise<T>`, so `serverView()` and `snapshot()`
+  drop the `async` that only existed to satisfy the old signature (Sonar S7503).
+- `trackMount`'s fiber-settle callbacks call a new `enqueueDiag()` helper: the
+  diagnostic write still queues on the reconcile chain, without a nested promise
+  (Sonar S9381).
+- Config-fingerprint `stat` calls are issued concurrently via `Promise.all`; the
+  signature still lists the sorted paths in order (Sonar S9382).
+
+### Removed
+
+- Dead export `DEFAULT_MAX_INSTRUCTION_BYTES`. Nothing referenced it, and a local
+  copy of the upstream default could drift from `dsh-mcp-client`.
+
+### Added
+
+- Regression tests: `agent/created` with `source: "resume"` mounts the session
+  project and applies the session deny; `planProjectChanges` remounts on a
+  connection-field change (`maxInstructionBytes`) while a `tools`-only edit keeps
+  the fiber.
+
+## [0.7.0] - 2026-09-30
+
+Host alignment for dsh **0.2.0-rc.2**. v0.6.0 remains the release for dsh
+0.1.5. Official dsh still does not discover per-project MCP files, isolate
+tools by session cwd, or ship an MCP-specific CLI — those stay here.
+
+### Changed
+
+- **`@deepseek-ai/dsh-mcp-client` floor is `^0.2.0-rc.2`.** npm semver will
+  not resolve a `0.2.0-rc.*` prerelease from `^0.1.5-rc.1`. Dev dependency
+  `@deepseek-ai/cordis` moves `^4.0.2` → `^4.0.4` to match the host peer.
+  pnpm 12 extended `minimumReleaseAgeExclude` for the new `0.2.0-rc.2` peers.
+- Drop the `agent/session-start` listener. dsh 0.2 removed that event;
+  `agent/created` now carries `source: startup|resume|clear|compact` and
+  covers the same edges. The constructor `liveAgents()` sweep is unchanged.
+- Document the support boundary against official profile patches, profile
+  HMR, `plugin_manager`, and `mcp-resources`.
+
+### Added
+
+- Optional `maxInstructionBytes` (integer ≥ 1) is passed through on both
+  transports, in the JSON dialect, and in `dsh-mcp` views. Omitting it does
+  not write the key, so the official default (32768) stays upstream.
+  Oversized server instructions fail that connection inside the official
+  client; this plugin does not add a CLI flag for the field.
+
+### Documentation
+
+- [dsh 0.2.0-rc.2 adaptation record](docs/design/adaptation-dsh-0.2.0-rc.2.md).
+- Format guides note the instruction limit and the official stdio env scrub
+  (ambient names matching `KEY|PASSWORD|SECRET|TOKEN` and ambient `DSH_*`
+  are dropped; values this plugin expands into `env` / `headers` are still
+  explicit config and are kept).
+
 ## [0.6.0] - 2026-09-13
 
 Runtime robustness and JSON interop. **On-demand project mounts (B1) are a
@@ -658,7 +728,9 @@ carry an explicit `type`.
 Security note: `stdio` lines in `.dsh/mcp.yml` spawn their `command` inside the dsh host
 process, so project files are executable-code carriers — add them only in trusted projects.
 
-[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.6.0...HEAD
+[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.3...v0.6.0
 [0.4.3]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.1...v0.4.2

@@ -105,7 +105,7 @@ try {
   // 4. DSH 自有 JSON 层：缺 mcpServers 视为空层；cwd 策略按来源分化；DSH 透传键生效
   const p4 = await write("dsh.json", JSON.stringify({
     mcpServers: {
-      proj: { command: "node", args: ["p.js"], toolCallTimeoutMs: 1234, failOnStartupError: true, reconnect: { maxAttempts: 3 } },
+      proj: { command: "node", args: ["p.js"], toolCallTimeoutMs: 1234, failOnStartupError: true, maxInstructionBytes: 65536, reconnect: { maxAttempts: 3 } },
       user: { command: "node", args: ["u.js"], cwd: "sub" }
     }
   }));
@@ -115,6 +115,7 @@ try {
   assert.equal(proj.row.config.cwd, "/work/proj");
   assert.equal(proj.row.config.toolCallTimeoutMs, 1234);
   assert.equal(proj.row.config.failOnStartupError, true);
+  assert.equal(proj.row.config.maxInstructionBytes, 65536);
   assert.equal(proj.row.config.reconnect.maxAttempts, 3);
   assert.equal(projRows.rows.find((row) => row.rawName === "user").row.config.cwd, "sub");
   const userRows = await readDshJsonFile(p4, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" });

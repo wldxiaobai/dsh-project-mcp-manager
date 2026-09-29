@@ -1,6 +1,6 @@
 {
   "name": "dsh-project-mcp-manager",
-  "version": "0.6.0",
+  "version": "0.7.1",
   "packageManager": "pnpm@12.3.4",
   "description": "dsh-project-mcp-manager: per-project and global MCP server loading for DSH. Reads <projectRoot>/.dsh/mcp.yml or .dsh/mcp.json (plus the read-only Claude Code project file .mcp.json), mounts project rows per project and user-layer rows (~/.dsh/mcp.yml, ~/.dsh/mcp.json, ~/.dsh/profiles/<name>/mcp.json) globally as @deepseek-ai/dsh-mcp-client instances with ${VAR} env expansion at mount time, hot-reloads on file change, scopes tool visibility per session, and ships a dsh-mcp CLI that writes either native yml or DSH JSON.",
   "type": "module",
@@ -36,7 +36,7 @@
     "cordis"
   ],
   "dependencies": {
-    "@deepseek-ai/dsh-mcp-client": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-mcp-client": "^0.2.0-rc.2",
     "chokidar": "^5.0.0",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
@@ -56,7 +56,7 @@
     "LICENSE"
   ],
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/cordis": "^4.0.4",
     "@types/node": "^26.2.0",
     "typescript": "^7.0.2"
   }
