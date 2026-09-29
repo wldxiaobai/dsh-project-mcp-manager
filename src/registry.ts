@@ -1260,8 +1260,11 @@ export class ProjectMcpRegistry {
       `profile=${profileName ?? ""}`,
       `host=${host.join(",")}`
     ];
-    for (const file of files) {
-      const fp = await this.statConfigFile(file);
+    // 纯只读 stat 且每轮对账都跑：并发发起，顺序仍按排序后的 paths（Promise.all 保序）。
+    const stats = await Promise.all(files.map((file) => this.statConfigFile(file)));
+    for (let index = 0; index < files.length; index++) {
+      const fp = stats[index];
+      const file = files[index];
       parts.push(fp === "missing" ? `${file}:missing` : `${file}:${Math.round(fp.mtimeMs)}:${fp.size}`);
     }
     return parts.join("\n");
