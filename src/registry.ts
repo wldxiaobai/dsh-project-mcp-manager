@@ -781,7 +781,7 @@ export class ProjectMcpRegistry {
     // dsh 0.2 的 agent/created 带 source（startup|resume|clear|compact），覆盖原 session-start 的补扫。
     ctx.on("agent/created", ({ agent }: any) => {
       if (agent === undefined) return;
-      this.enqueue(async () => {
+      this.schedule(async () => {
         this.agentProjects.set(agent.id, await this.resolveProject(agent));
         await this.reconcileAll();
       });
@@ -789,13 +789,13 @@ export class ProjectMcpRegistry {
     ctx.on("agent/disposed", ({ agent }: any) => {
       if (agent === undefined) return;
       this.releaseAgent(agent);
-      this.enqueue(async () => {
+      this.schedule(async () => {
         await this.reconcileAll();
       });
     });
 
     // 插件热更重载时已存在的会话也要覆盖。
-    this.enqueue(async () => {
+    this.schedule(async () => {
       for (const agent of this.liveAgents()) {
         this.agentProjects.set(agent.id, await this.resolveProject(agent));
       }
@@ -852,13 +852,25 @@ export class ProjectMcpRegistry {
     return run;
   }
 
+  /**
+   * 后台入队（fire-and-forget）：所有不 await 的入队都走这里。`enqueue` 的链尾
+   * （`this.chain = run.then(...)`）本就替 `run` 挂了 rejection 处理器，所以丢弃
+   * 返回值不会炸进程；但那样失败就完全不可见。这里保留返回值并记一条 warn，
+   * 让「对账/巡检没跑成」这类问题留得下痕迹。
+   */
+  private schedule(work: () => Promise<void>): void {
+    void this.enqueue(work).catch((error) => {
+      this.ctx.logger.warn(`项目 MCP 后台任务失败：${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
+
   private kick() {
     if (this.timer !== undefined) return;
     this.timer = setTimeout(() => {
       this.timer = undefined;
-      this.enqueue(async () => {
+      this.schedule(async () => {
         await this.reconcileAll();
-      }).catch(() => {});
+      });
     }, 150);
     // 不挡住进程退出：短进程在 150ms 内结束时，已 kick 的对账会被丢掉（有意）。
     this.timer.unref();
@@ -1200,9 +1212,9 @@ export class ProjectMcpRegistry {
     if (delayMs === undefined) return;
     this.graceTimer = setTimeout(() => {
       this.graceTimer = undefined;
-      this.enqueue(async () => {
+      this.schedule(async () => {
         await this.reconcileAll();
-      }).catch(() => {});
+      });
     }, delayMs);
     // 宽限 timer 同样不挡住退出（与 kick 的 150ms 防抖同口径）。
     this.graceTimer.unref();
@@ -1985,9 +1997,9 @@ export class ProjectMcpRegistry {
 
   private kickSweep() {
     if (this.disposed) return;
-    this.enqueue(async () => {
+    this.schedule(async () => {
       await this.sweepRestrictions();
-    }).catch(() => {});
+    });
   }
 
   private async sweepRestrictions() {
