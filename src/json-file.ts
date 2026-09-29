@@ -131,6 +131,7 @@ export const jsonServerEntrySchema = z.looseObject({
   disabled: z.boolean().optional(),
   toolCallTimeoutMs: z.number().int().min(1).optional(),
   failOnStartupError: z.boolean().optional(),
+  maxInstructionBytes: z.number().int().min(1).optional(),
   reconnect: jsonReconnectSchema,
   tools: z.object({
     allow: z.array(z.string()).optional(),
@@ -151,6 +152,7 @@ function passthroughKeys(entry: JsonServerEntry): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (entry.toolCallTimeoutMs !== undefined) out.toolCallTimeoutMs = entry.toolCallTimeoutMs;
   if (entry.failOnStartupError !== undefined) out.failOnStartupError = entry.failOnStartupError;
+  if (entry.maxInstructionBytes !== undefined) out.maxInstructionBytes = entry.maxInstructionBytes;
   if (entry.reconnect !== undefined) out.reconnect = entry.reconnect;
   return out;
 }

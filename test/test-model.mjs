@@ -56,10 +56,12 @@ assert.equal(stdio.args.length, 0);
 assert.equal(stdio.cwd, "");
 assert.equal(stdio.toolCallTimeoutMs, 60000);
 assert.equal(stdio.failOnStartupError, false);
+assert.equal(stdio.maxInstructionBytes, undefined);
 assert.deepEqual(stdio.reconnect, { enabled: true, initialDelayMs: 500, maxDelayMs: 30000, maxAttempts: 10 });
 const official = toOfficialConfig(stdio);
 assert.equal(official.transport, "stdio");
 assert.deepEqual(official.args, []);
+assert.equal(Object.hasOwn(official, "maxInstructionBytes"), false);
 pass("stdio input parses with defaults and maps to official config");
 
 // 2. http parse + headers
@@ -71,6 +73,13 @@ pass("streamable-http input parses and maps headers");
 expectThrow("bad serverName rejected", () => mcpServerInputSchema.parse({ serverName: "bad/name", transport: "stdio", command: "npx" }), /serverName/);
 expectThrow("missing command rejected", () => mcpServerInputSchema.parse({ serverName: "ok", transport: "stdio" }));
 expectThrow("bad url rejected", () => mcpServerInputSchema.parse({ serverName: "ok", transport: "streamable-http", url: "not-url" }));
+expectThrow("maxInstructionBytes must be a positive integer", () => mcpServerInputSchema.parse({ serverName: "ok", transport: "stdio", command: "npx", maxInstructionBytes: 0 }));
+const capped = mcpServerInputSchema.parse({ serverName: "ok", transport: "streamable-http", url: "http://127.0.0.1/mcp", maxInstructionBytes: 65536 });
+assert.equal(toOfficialConfig(capped).maxInstructionBytes, 65536);
+const cappedRow = toPatchRow(capped);
+assert.equal(inputFromPatchRow(cappedRow).maxInstructionBytes, 65536);
+assert.equal(patchRowToView(cappedRow)?.maxInstructionBytes, 65536);
+pass("maxInstructionBytes passes through when set and is omitted by default");
 
 // 4. row id mapping
 assert.equal(rowIdForServerName("github"), "panel-mcp-github");
@@ -230,6 +239,8 @@ assert.equal(jsonServerEntrySchema.safeParse({ command: "npx", env: { A: 1 } }).
 assert.equal(jsonServerEntrySchema.safeParse({}).success, true); // 空条目先容忍，缺 command/url 由归一层报错
 assert.equal(jsonServerEntrySchema.safeParse({ command: "npx", toolCallTimeoutMs: 1000, disabled: true }).success, true);
 assert.equal(jsonServerEntrySchema.safeParse({ command: "npx", toolCallTimeoutMs: 0 }).success, false);
+assert.equal(jsonServerEntrySchema.safeParse({ command: "npx", maxInstructionBytes: 4096 }).success, true);
+assert.equal(jsonServerEntrySchema.safeParse({ command: "npx", maxInstructionBytes: 0 }).success, false);
 pass("jsonServerEntrySchema tolerates unknown keys and DSH passthrough, rejects non-string secrets");
 
 // 16. dsh-paths：DSH_HOME 重定位与注入优先（用户层三文件都从这里派生）

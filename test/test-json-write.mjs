@@ -89,6 +89,7 @@ try {
     cwd: "sub/dir",
     toolCallTimeoutMs: 1234,
     failOnStartupError: true,
+    maxInstructionBytes: 65536,
     reconnect: { enabled: false, initialDelayMs: 10, maxDelayMs: 20, maxAttempts: 2 }
   });
   assert.deepEqual(toJsonEntry(tuned), {
@@ -97,6 +98,7 @@ try {
     cwd: "sub/dir",
     toolCallTimeoutMs: 1234,
     failOnStartupError: true,
+    maxInstructionBytes: 65536,
     reconnect: { enabled: false, initialDelayMs: 10, maxDelayMs: 20, maxAttempts: 2 }
   });
   pass("toJsonEntry omits defaults, keeps ${VAR} literal, writes non-default passthrough keys");

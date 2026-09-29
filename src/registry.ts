@@ -778,6 +778,7 @@ export class ProjectMcpRegistry {
     this.ctx = ctx;
     this.providers = providers;
 
+    // dsh 0.2 的 agent/created 带 source（startup|resume|clear|compact），覆盖原 session-start 的补扫。
     ctx.on("agent/created", ({ agent }: any) => {
       if (agent === undefined) return;
       this.enqueue(async () => {
@@ -789,14 +790,6 @@ export class ProjectMcpRegistry {
       if (agent === undefined) return;
       this.releaseAgent(agent);
       this.enqueue(async () => {
-        await this.reconcileAll();
-      });
-    });
-    // 会话生命周期开始（含恢复/重挂的会话）也补扫一次，覆盖启动时序缺口。
-    ctx.on("agent/session-start", ({ agent }: any) => {
-      if (agent === undefined) return;
-      this.enqueue(async () => {
-        this.agentProjects.set(agent.id, await this.resolveProject(agent));
         await this.reconcileAll();
       });
     });
