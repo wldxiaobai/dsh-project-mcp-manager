@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ProjectMcpRegistry, parseDiagDocument, projectMcpFile, mergeSourcedRows, profileNameFromConfigPath, UNMOUNT_GRACE_MS } from "../lib/registry.js";
+import { ProjectMcpRegistry, parseDiagDocument, planProjectChanges, projectMcpFile, mergeSourcedRows, profileNameFromConfigPath, UNMOUNT_GRACE_MS } from "../lib/registry.js";
 import { bindProjectMcpService, PROJECT_MCP_SERVICE } from "../lib/service.js";
 import { apply } from "../lib/index.js";
 import { MCP_BLOCK_BEGIN, MCP_BLOCK_END, writeManagedRows } from "../lib/mcp-file.js";
@@ -241,6 +241,46 @@ const dir = await mkdtemp(join(tmpdir(), "dsh-project-mcp-manager-registry-"));
     assert.equal(m.shadowedIdentity.length, 0, "exact-name shadow is not an identity shadow");
   }
   pass("mergeSourcedRows dedups same service across layers by normalized name and identity, disabled rows hold the name");
+}
+
+// ── 0.8 planProjectChanges：连接字段 vs 非连接字段（纯函数）──────────────────
+{
+  const rowOf = (config) => ({ id: "panel-mcp-alpha", name: "@deepseek-ai/dsh-mcp-client", config });
+  const baseConfig = {
+    serverName: "alpha",
+    transport: "stdio",
+    command: "node",
+    args: ["a.js"],
+    env: {},
+    cwd: "",
+    toolCallTimeoutMs: 60000,
+    failOnStartupError: false,
+    reconnect: { enabled: true, initialDelayMs: 500, maxDelayMs: 30000, maxAttempts: 10 }
+  };
+  const projectKey = "proj-key-for-plan";
+  const effective = new Map([[projectKey + "\u0000alpha", "alpha"]]);
+  const current = [{ rawName: "alpha", effectiveName: "alpha", row: rowOf(baseConfig) }];
+  const desired = (config) => [{ rawName: "alpha", source: "dsh-project", row: rowOf(config) }];
+  assert.deepEqual(
+    planProjectChanges(current, desired(baseConfig), effective, projectKey),
+    { toUnmount: [], toMount: [] },
+    "an unchanged row is left alone"
+  );
+  // tools.allow/deny 只影响 restrict（就地换 state.row），不是连接字段。
+  assert.deepEqual(
+    planProjectChanges(current, desired({ ...baseConfig, tools: { deny: ["echo_*"] } }), effective, projectKey),
+    { toUnmount: [], toMount: [] },
+    "tools-only edit keeps the fiber"
+  );
+  // maxInstructionBytes 只在连接时被官方读取：改它必须拆连接，顺序（先 unmount 再 mount）由 reconcileContainer 保证。
+  const plan = planProjectChanges(current, desired({ ...baseConfig, maxInstructionBytes: 4096 }), effective, projectKey);
+  assert.deepEqual(plan.toUnmount, ["alpha"], "connection-field change unmounts first");
+  assert.deepEqual(plan.toMount.map((item) => item.rawName), ["alpha"], "and mounts the same rawName back with the new row");
+  // 生效名变化同样拆连接（原名不变时全局冲突会让项目行改名）。
+  const renamed = planProjectChanges(current, desired(baseConfig), new Map([[projectKey + "\u0000alpha", "p123abc_alpha"]]), projectKey);
+  assert.deepEqual(renamed.toUnmount, ["alpha"]);
+  assert.deepEqual(renamed.toMount.map((item) => item.rawName), ["alpha"]);
+  pass("planProjectChanges remounts on connection-field and effective-name changes but not for tools-only edits");
 }
 
 const originalCwd = process.cwd();
