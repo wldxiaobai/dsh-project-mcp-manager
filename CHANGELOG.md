@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-09-30
+
+Patch release: the findings of the
+[feat/adapt-dsh-0.2.0-rc.2 code review](docs/code-review/review-feat-adapt-dsh-0.2.0-rc.2.zh.md).
+The host range is unchanged (dsh `0.2.0` tuple, from `0.2.0-rc.2`).
+
+### Fixed
+
+- Background enqueues no longer swallow their failures silently. The
+  constructor's `agent/created` / `agent/disposed` / hot-reload sweeps, the
+  file-event `kick`, the grace unmount timer and `kickSweep` all go through a
+  new `schedule()`, which keeps the `enqueue()` result and logs
+  `项目 MCP 后台任务失败：…` instead of discarding it (Sonar S9383).
+
+### Changed
+
+- `enqueue()` accepts `() => T | Promise<T>`, so `serverView()` and `snapshot()`
+  drop the `async` that only existed to satisfy the old signature (Sonar S7503).
+- `trackMount`'s fiber-settle callbacks call a new `enqueueDiag()` helper: the
+  diagnostic write still queues on the reconcile chain, without a nested promise
+  (Sonar S9381).
+- Config-fingerprint `stat` calls are issued concurrently via `Promise.all`; the
+  signature still lists the sorted paths in order (Sonar S9382).
+
+### Removed
+
+- Dead export `DEFAULT_MAX_INSTRUCTION_BYTES`. Nothing referenced it, and a local
+  copy of the upstream default could drift from `dsh-mcp-client`.
+
+### Added
+
+- Regression tests: `agent/created` with `source: "resume"` mounts the session
+  project and applies the session deny; `planProjectChanges` remounts on a
+  connection-field change (`maxInstructionBytes`) while a `tools`-only edit keeps
+  the fiber.
+
 ## [0.7.0] - 2026-09-30
 
 Host alignment for dsh **0.2.0-rc.2**. v0.6.0 remains the release for dsh
@@ -692,7 +728,9 @@ carry an explicit `type`.
 Security note: `stdio` lines in `.dsh/mcp.yml` spawn their `command` inside the dsh host
 process, so project files are executable-code carriers — add them only in trusted projects.
 
-[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.6.0...HEAD
+[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.3...v0.6.0
 [0.4.3]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.1...v0.4.2
