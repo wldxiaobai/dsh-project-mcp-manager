@@ -185,12 +185,6 @@ export function toolFilterFromConfig(config: Record<string, unknown> | undefined
 }
 
 export const DEFAULT_TOOL_CALL_TIMEOUT_MS = 60000;
-/**
- * 官方 `@deepseek-ai/dsh-mcp-client` 0.2.0-rc.2 的 instructions 字节上限默认值
- * （含归属头）。只用于文档与「用户没写就不落键」的对照；缺省不把该默认写进
- * 官方配置，避免和上游默认漂移。
- */
-export const DEFAULT_MAX_INSTRUCTION_BYTES = 32768;
 export const DEFAULT_RECONNECT = {
   enabled: true,
   initialDelayMs: 500,
