@@ -61,7 +61,7 @@ const stdioRow = (name, command = "node") => ({
   config: { serverName: name, transport: "stdio", command, args: ["srv-" + name + ".js"], env: {}, cwd: "sub", toolCallTimeoutMs: 60000, failOnStartupError: false, reconnect: { enabled: true, initialDelayMs: 500, maxDelayMs: 30000, maxAttempts: 10 } }
 });
 
-/** 最小假宿主 ctx：记录 plugin 装载与 restrict 调用；effect 收集清理器。 */
+/** 最小假宿主 ctx：记录 plugin 装载与 restrict 调用；effect 收集清理器；on 记录监听器供 emit 触发。 */
 function fakeCtx() {
   const mounts = [];
   const disposals = [];
@@ -69,6 +69,7 @@ function fakeCtx() {
   const agents = [];
   const disposers = [];
   const schemas = []; // 全局工具注册表（测试按需 push 工具名）
+  const handlers = new Map(); // 事件名 → 监听器数组（emit 用）
   const ctx = {
     mounts,
     disposals,
@@ -76,8 +77,21 @@ function fakeCtx() {
     agentsList: agents,
     disposers,
     schemas,
+    handlers,
     provided: {},
-    on() {},
+    on(name, callback) {
+      const list = handlers.get(name) ?? [];
+      list.push(callback);
+      handlers.set(name, list);
+      return () => {
+        const index = list.indexOf(callback);
+        if (index >= 0) list.splice(index, 1);
+      };
+    },
+    /** 触发已注册的宿主事件（mock 需要；真实宿主由 dsh 派发）。 */
+    emit(name, payload) {
+      for (const callback of handlers.get(name) ?? []) callback(payload);
+    },
     provide(name, value) {
       this.provided[name] = value;
       return () => {
@@ -1777,6 +1791,59 @@ try {
   } finally {
     process.chdir(savedCwdM1);
     await rmRetry(dirM1);
+  }
+}
+
+// ── agent/created 事件路径（dsh 0.2 用 source 覆盖原 session-start 的边沿）────
+{
+  const dirCreated = await mkdtemp(join(tmpdir(), "dsh-mcp-agent-created-"));
+  const homeCreated = join(dirCreated, "home");
+  const projCreated = join(dirCreated, "proj");
+  await mkdir(join(homeCreated, ".dsh"), { recursive: true });
+  await mkdir(projCreated, { recursive: true });
+  // 项目层与用户层同名 "shared"：项目行胜出（生效名带 p<hash>_ 前缀），全局实例
+  // 仍宿主级挂一条，只对该项目的会话 deny（项目侧压制）。
+  await writeManagedRows(projectMcpFile(projCreated), [stdioRow("shared")], { createIfMissing: true });
+  await writeManagedRows(join(homeCreated, ".dsh", "mcp.yml"), [stdioRow("shared")], { createIfMissing: true });
+  const savedCwdCreated = process.cwd();
+  try {
+    process.chdir(dirCreated);
+    const ctxCreated = fakeCtx();
+    const registryCreated = new ProjectMcpRegistry(ctxCreated, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(homeCreated, ".dsh", "mcp.yml"), mcpJson: join(homeCreated, ".dsh", "mcp.json"), profilesDir: join(homeCreated, ".dsh", "profiles") }
+    });
+    ctxCreated.schemas.push({ name: "mcp__shared__ping" });
+    // 构造时无在线会话：用户层常驻，项目层不挂。resume 边沿靠事件补扫，不靠 reconcileNow。
+    await registryCreated.reconcileNow();
+    assert.ok(registryCreated.globalState("shared")?.phase === "active", "user-layer row is mounted host-wide before any session");
+    assert.equal(ctxCreated.mounts.length, 1, "no project mount while no session is known: " + JSON.stringify(ctxCreated.mounts.map((config) => config.serverName)));
+
+    const agentResume = fakeAgent("session-resume", projCreated);
+    ctxCreated.agentsList.push(agentResume);
+    ctxCreated.emit("agent/created", { agent: agentResume, source: "resume" });
+    assert.ok(
+      await registryCreated.waitForState(projCreated, "shared", (state) => state?.phase === "active", 5000),
+      "agent/created (source: resume) mounts the session project without an explicit reconcileNow"
+    );
+    const projectMount = ctxCreated.mounts.find((config) => config.serverName !== "shared");
+    assert.ok(projectMount !== undefined, "the project row mounts: " + JSON.stringify(ctxCreated.mounts.map((config) => config.serverName)));
+    assert.match(projectMount.serverName, /^p[0-9a-f]{6}_shared$/, "project row keeps the namespaced effective name");
+    // deny 应用：本会话 deny 被自己项目行遮蔽的全局实例工具（展开成已注册的工具名）。
+    await registryCreated.reconcileNow();
+    assert.deepEqual(
+      agentResume.denies.at(-1),
+      ["mcp__shared__ping"],
+      "the resumed session denies the shadowed global server's tools: " + JSON.stringify(agentResume.denies)
+    );
+    for (const disposer of ctxCreated.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    pass("agent/created (source: resume) mounts the session project and applies the session deny");
+  } finally {
+    process.chdir(savedCwdCreated);
+    await rmRetry(dirCreated);
   }
 }
 
