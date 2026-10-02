@@ -822,6 +822,8 @@ try {
       await writeFile(join(home2, ".dsh", "profiles", "web", "mcp.json"), JSON.stringify({
         mcpServers: { jsonprofile: { command: "node", args: ["pr.js"] } }
       }), "utf8");
+      // profile 原生 yml（profiles/<name>/mcp.yml）：压过该 profile 的 mcp.json 与 ~/.dsh/mcp.yml。
+      await writeManagedRows(join(home2, ".dsh", "profiles", "web", "mcp.yml"), [stdioRow("ymlprofile"), stdioRow("jsonprofile"), stdioRow("jsonuser")], { createIfMissing: true });
       const userPaths = {
         mcpYml: join(home2, ".dsh", "mcp.yml"),
         mcpJson: join(home2, ".dsh", "mcp.json"),
@@ -835,19 +837,26 @@ try {
       ctx3.agentsList.push(fakeAgent("session-k", dir7), fakeAgent("session-k2", dir7b));
       await registry3.reconcileNow();
       const names29 = ctx3.mounts.map((config) => config.serverName);
-      for (const expected of ["jsonproj", "jsonprofile", "jsonuser"]) {
+      for (const expected of ["jsonproj", "jsonprofile", "jsonuser", "ymlprofile"]) {
         assert.ok(names29.includes(expected), `${expected} mounts from its DSH json layer: ${names29.join(",")}`);
       }
       assert.equal(names29.filter((name) => name === "jsonuser").length, 1, "user json row mounts once for the whole host");
       assert.equal(names29.filter((name) => name === "jsonprofile").length, 1, "profile json row mounts once for the whole host");
       const both29 = ctx3.mounts.findLast((config) => config.serverName === "both");
       assert.deepEqual(both29.args, ["srv-both.js"], "yml wins over .dsh/mcp.json for the same name");
+      const profileYmlWin = ctx3.mounts.findLast((config) => config.serverName === "jsonprofile");
+      assert.deepEqual(profileYmlWin.args, ["srv-jsonprofile.js"], "profile yml wins over profile mcp.json for the same name");
+      const userShadowed = ctx3.mounts.findLast((config) => config.serverName === "jsonuser");
+      assert.deepEqual(userShadowed.args, ["srv-jsonuser.js"], "profile yml wins over ~/.dsh/mcp.json for the same name");
       const snap29 = await registry3.snapshot();
       assert.ok(snap29.some((file) => file.source === "dsh-project-json" && file.project === dir7), "project json partition present");
       const userPart29 = snap29.find((file) => file.source === "dsh-user" && file.kind === "global");
       assert.ok(userPart29 !== undefined, "user json partition present");
-      assert.equal(userPart29.servers[0].fiberPhase, "active", "global partition carries the global fiber phase");
+      assert.equal(userPart29.servers[0].fiberPhase, null, "shadowed user json row is not active");
       assert.ok(snap29.some((file) => file.source === "dsh-profile-user" && file.kind === "global"), "profile json partition present");
+      const profileYmlPart = snap29.find((file) => file.source === "dsh-profile-user-yml" && file.kind === "global");
+      assert.ok(profileYmlPart !== undefined, "profile yml partition present");
+      assert.ok(profileYmlPart.servers.some((server) => server.serverName === "ymlprofile" && server.fiberPhase === "active"), "profile yml row is active");
       // 与宿主 patch 行全局服务器撞名 → 跳过（name-taken），不改名、不冲突。
       const ctxTaken = fakeCtx();
       const registryTaken = new ProjectMcpRegistry(ctxTaken, { globalNames: async () => ["jsonuser"], activeProfile: async () => "web", userLayerPaths: userPaths });

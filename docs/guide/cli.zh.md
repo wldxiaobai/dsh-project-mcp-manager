@@ -22,10 +22,10 @@ dsh-mcp import --from .cursor/mcp.json --dry-run   # 预演 mcpServers 导入，
 
 作用域：`--scope project`（缺省，写最近 `.git` 祖先下的 `.dsh/mcp.yml`）、
 `--scope user`（写 `~/.dsh/mcp.yml`）与 `--scope profile`（须配 `--profile <name>`，
-写 `~/.dsh/profiles/<name>/mcp.json`，只支持 JSON）。
+写 `~/.dsh/profiles/<name>/mcp.yml`）。
 **写入格式**：`--format yml|json` 优先于环境变量 `DSH_MCP_CLI_FORMAT`（`yml`|`json`，
-缺省 `yml`）；`--format json` 时 project/user 分别写 `.dsh/mcp.json` 与
-`~/.dsh/mcp.json`。`add` 的 `cwd` 缺省随作用域而变：project 为 `"."`（项目根），
+缺省 `yml`）；`--format json` 时 project/user/profile 分别写 `.dsh/mcp.json`、
+`~/.dsh/mcp.json` 与 `~/.dsh/profiles/<name>/mcp.json`。`add` 的 `cwd` 缺省随作用域而变：project 为 `"."`（项目根），
 user/profile 为 `""`（宿主目录）；`-c` 显式覆盖。
 
 `add` 没有 `--allow` / `--deny`。条目级 `tools.allow` / `tools.deny`（以及 JSON

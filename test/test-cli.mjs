@@ -312,7 +312,7 @@ try {
     assert.equal(JSON.parse(await readFile(jsonPath, "utf8")).mcpServers.envj, undefined, "json row removed from the json file");
     assert.ok(capRm.lines.join("\n").includes(jsonPath), "removal reports the json file");
 
-    // profile 作用域：缺 --profile 报错列出可用 profile；不存在的 profile 报错；yml 格式被拒。
+    // profile 作用域：缺 --profile 报错列出可用 profile；不存在的 profile 报错；yml 与 json 分别落到各自文件。
     const capNoProfile = io();
     assert.equal(await runCli(["add", "pp", "node", "p.js", "--scope", "profile"], capNoProfile.io, deps), 1);
     assert.ok(capNoProfile.errs.join("\n").includes("web"), "missing --profile lists available profiles: " + capNoProfile.errs.join("\n"));
@@ -320,12 +320,17 @@ try {
     assert.equal(await runCli(["add", "pp", "node", "p.js", "--scope", "profile", "--profile", "nope"], capBadProfile.io, deps), 1);
     assert.ok(capBadProfile.errs.join("\n").includes("不存在"), "unknown profile is rejected");
     const capYmlProfile = io();
-    assert.equal(await runCli(["add", "pp", "node", "p.js", "--scope", "profile", "--profile", "web", "--format", "yml"], capYmlProfile.io, deps), 1);
-    assert.ok(capYmlProfile.errs.join("\n").includes("只支持 json"), "profile scope rejects yml");
+    assert.equal(await runCli(["add", "ppy", "node", "py.js", "--scope", "profile", "--profile", "web", "--format", "yml"], capYmlProfile.io, deps), 0, capYmlProfile.errs.join("\n"));
+    const profileYml = await readFile(join(home, ".dsh", "profiles", "web", "mcp.yml"), "utf8");
+    assert.ok(profileYml.includes("serverName: ppy"), "profile yml row written to profiles/<name>/mcp.yml");
     const capProfile = io();
-    assert.equal(await runCli(["add", "pp", "node", "p.js", "--scope", "profile", "--profile", "web"], capProfile.io, deps), 0, capProfile.errs.join("\n"));
+    assert.equal(await runCli(["add", "pp", "node", "p.js", "--scope", "profile", "--profile", "web", "--format", "json"], capProfile.io, deps), 0, capProfile.errs.join("\n"));
     const profileDoc = JSON.parse(await readFile(join(home, ".dsh", "profiles", "web", "mcp.json"), "utf8"));
     assert.deepEqual(profileDoc.mcpServers.pp, { type: "stdio", command: "node", args: ["p.js"] }, "profile row written to profiles/<name>/mcp.json");
+    // remove --scope profile 不带 --format 时按优先序先查 yml 再查 json。
+    const capRmProfile = io();
+    assert.equal(await runCli(["remove", "ppy", "--scope", "profile", "--profile", "web"], capRmProfile.io, deps), 0, capRmProfile.errs.join("\n"));
+    assert.ok(capRmProfile.lines.join("\n").includes("mcp.yml"), "profile removal hits the yml file first");
     pass("cli --format / DSH_MCP_CLI_FORMAT / --scope profile write to the right file");
   }
 
@@ -427,7 +432,7 @@ try {
       assert.ok(missText.includes(join(relocated, "mcp.yml")), "miss message lists the relocated user yml path");
       const capProfile = io();
       assert.equal(await runCli(["add", "ph", "node", "ph.js", "--scope", "profile", "--profile", "web"], capProfile.io, envDeps), 0, capProfile.errs.join("\n"));
-      assert.ok(await pathExists(join(relocated, "profiles", "web", "mcp.json")), "profile scope write follows $DSH_HOME");
+      assert.ok(await pathExists(join(relocated, "profiles", "web", "mcp.yml")), "profile scope write follows $DSH_HOME");
       // deps.home 注入优先：同一环境下仍写进注入的 home。
       const capInjected = io();
       assert.equal(await runCli(["add", "injhome", "node", "ih.js", "--scope", "user", "--format", "json"], capInjected.io, deps), 0, capInjected.errs.join("\n"));

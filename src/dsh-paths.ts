@@ -59,9 +59,14 @@ export function userLayerPathsIn(dshHome: string): UserLayerPaths {
   };
 }
 
-/** profile 层配置文件路径（`<dshHome>/profiles/<name>/mcp.json`）。 */
+/** profile 层 JSON 配置文件路径（`<dshHome>/profiles/<name>/mcp.json`）。 */
 export function profileMcpJsonFile(profilesDir: string, profile: string): string {
   return join(profilesDir, profile, JSON_MCP_FILE);
+}
+
+/** profile 层原生受管块路径（`<dshHome>/profiles/<name>/mcp.yml`）；读取顺序高于该 profile 的 mcp.json。 */
+export function profileMcpYmlFile(profilesDir: string, profile: string): string {
+  return join(profilesDir, profile, MCP_YML_FILE);
 }
 
 /** 对方插件全局存储路径（`$DSH_HOME/dsh-mcp.json`）；本插件不读取内容，只在存在时诊断。 */

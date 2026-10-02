@@ -24,11 +24,11 @@ dsh-mcp import --from .cursor/mcp.json --dry-run   # preview mcpServers import; 
 Scopes: `--scope project` (default; writes `<projectRoot>/.dsh/mcp.yml` under
 the nearest `.git` ancestor), `--scope user` (writes `~/.dsh/mcp.yml`) and
 `--scope profile` (requires `--profile <name>`; writes
-`~/.dsh/profiles/<name>/mcp.json`, JSON only).
+`~/.dsh/profiles/<name>/mcp.yml`).
 **Write format**: `--format yml|json` takes precedence over the
 `DSH_MCP_CLI_FORMAT` environment variable (`yml`|`json`, default `yml`); with
-`--format json`, project and user scopes write `.dsh/mcp.json` and
-`~/.dsh/mcp.json` respectively. `add`'s default `cwd` follows the scope: `"."`
+`--format json`, project, user and profile scopes write `.dsh/mcp.json`,
+`~/.dsh/mcp.json` and `~/.dsh/profiles/<name>/mcp.json` respectively. `add`'s default `cwd` follows the scope: `"."`
 (the project root) for project, `""` (the host directory) for user/profile;
 `-c` overrides it explicitly.
 

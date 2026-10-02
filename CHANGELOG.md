@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Profile-layer native managed block `~/.dsh/profiles/<name>/mcp.yml`
+  (source `dsh-profile-user-yml`), read ahead of that profile's `mcp.json`.
+  Layer precedence is now `.dsh/mcp.yml` > `.dsh/mcp.json` > `.mcp.json` >
+  profile yml > profile json > `~/.dsh/mcp.yml` > `~/.dsh/mcp.json`.
+  `dsh-mcp --scope profile` writes the yml by default (`--format json` keeps
+  writing `mcp.json`); `remove --scope profile` without `--format` checks the
+  yml first, then the json.
+
 ## [0.7.2] - 2026-10-02
 
 The query surface becomes push-based for the companion UI. Mount behavior and

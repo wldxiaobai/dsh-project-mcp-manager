@@ -5,18 +5,19 @@
 [← 返回 README](../README.zh.md) ｜ 相关：[配置格式](format.zh.md) · [`${VAR}` 展开](env-expansion.zh.md) · [CLI `dsh-mcp`](cli.zh.md)
 
 插件读取六个来源，按**先到先得**合并。前三层属于**项目层**（按项目装载、按会话
-隔离），后三层属于**用户层**（宿主级**全局装载**）：
+隔离），后四层属于**用户层**（宿主级**全局装载**）：
 
 | 序 | 来源 | 路径 | 语义 |
 |---|---|---|---|
 | 1 | `dsh-project` | `<projectRoot>/.dsh/mcp.yml` | 项目层（原生受管块，CLI 默认写入） |
 | 2 | `dsh-project-json` | `<projectRoot>/.dsh/mcp.json` | 项目层（JSON 方言） |
 | 3 | `cc-project` | `<projectRoot>/.mcp.json` | 项目层，**遗留只读**（Claude Code 项目文件） |
-| 4 | `dsh-profile-user` | `~/.dsh/profiles/<当前 profile>/mcp.json` | **全局**（能解析出运行中的 profile 名时） |
-| 5 | `dsh-user-yml` | `~/.dsh/mcp.yml` | **全局**（原生用户层） |
-| 6 | `dsh-user` | `~/.dsh/mcp.json` | **全局**（JSON 用户层） |
+| 4 | `dsh-profile-user-yml` | `~/.dsh/profiles/<当前 profile>/mcp.yml` | **全局**（profile 原生受管块，能解析出运行中的 profile 名时） |
+| 5 | `dsh-profile-user` | `~/.dsh/profiles/<当前 profile>/mcp.json` | **全局**（能解析出运行中的 profile 名时） |
+| 6 | `dsh-user-yml` | `~/.dsh/mcp.yml` | **全局**（原生用户层） |
+| 7 | `dsh-user` | `~/.dsh/mcp.json` | **全局**（JSON 用户层） |
 
-第 4 层是动态层：profile 名在运行时解析，插件里不硬编码任何 profile 名。第
+第 4/5 层是动态层：profile 名在运行时解析，插件里不硬编码任何 profile 名。第
 1/2 层与 JSON 用户层的文件写法见 [配置格式](format.zh.md)。
 
 **全局装载 vs 项目装载**：

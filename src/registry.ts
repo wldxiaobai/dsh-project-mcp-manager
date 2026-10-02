@@ -27,9 +27,10 @@
  *   1. <projectRoot>/.dsh/mcp.yml —— 原生受管块（主格式，source dsh-project）
  *   2. <projectRoot>/.dsh/mcp.json —— DSH 自有 JSON 方言（dsh-project-json）
  *   3. <projectRoot>/.mcp.json    —— Claude Code project 层（遗留只读，cc-project）
- *   4. ~/.dsh/profiles/<p>/mcp.json —— profile 用户层（dsh-profile-user）
- *   5. ~/.dsh/mcp.yml             —— 用户层原生（dsh-user-yml）
- *   6. ~/.dsh/mcp.json            —— 通用用户层（dsh-user）
+ *   4. ~/.dsh/profiles/<p>/mcp.yml  —— profile 用户层原生受管块（dsh-profile-user-yml）
+ *   5. ~/.dsh/profiles/<p>/mcp.json —— profile 用户层（dsh-profile-user）
+ *   6. ~/.dsh/mcp.yml             —— 用户层原生（dsh-user-yml）
+ *   7. ~/.dsh/mcp.json            —— 通用用户层（dsh-user）
  * 用户层行由全局 MountContainer 宿主级只挂一条（与项目数无关、不参与按项目
  * deny）；被同名项目行遮蔽时只对该项目会话 deny 全局工具，不卸载全局实例。
  * ${VAR} 占位在 mount 时经 model.expandEnvRefs 用宿主进程环境运行时展开，
@@ -52,6 +53,7 @@ import {
   foreignUserMcpJsonFile,
   isValidProfileName,
   profileMcpJsonFile,
+  profileMcpYmlFile,
   userLayerPathsIn,
   type UserLayerPaths
 } from "./dsh-paths.js";
@@ -362,9 +364,10 @@ const SOURCE_RANK: Record<McpRowSource, number> = {
   "dsh-project": 0,
   "dsh-project-json": 1,
   "cc-project": 2,
-  "dsh-profile-user": 3,
-  "dsh-user-yml": 4,
-  "dsh-user": 5
+  "dsh-profile-user-yml": 3,
+  "dsh-profile-user": 4,
+  "dsh-user-yml": 5,
+  "dsh-user": 6
 };
 /** 项目层来源（按项目装载、按会话隔离）与用户层来源（宿主级全局装载）的分界。 */
 const PROJECT_LAYER_MAX_RANK = 2;
@@ -719,21 +722,27 @@ export class ProjectMcpRegistry {
   private userLayer: {
     mcpYml: string;
     mcpJson: string;
+    profileYml: string | null;
     profileJson: string | null;
     ymlRows: SourcedRow[];
     ymlError: string | null;
     jsonRows: SourcedRow[];
     jsonError: string | null;
+    profileYmlRows: SourcedRow[];
+    profileYmlError: string | null;
     profileRows: SourcedRow[];
     profileError: string | null;
   } = {
     mcpYml: "",
     mcpJson: "",
+    profileYml: null,
     profileJson: null,
     ymlRows: [],
     ymlError: null,
     jsonRows: [],
     jsonError: null,
+    profileYmlRows: [],
+    profileYmlError: null,
     profileRows: [],
     profileError: null
   };
@@ -1032,27 +1041,36 @@ export class ProjectMcpRegistry {
     const yml = await this.readNativeRows(paths.mcpYml, "dsh-user-yml", false);
     this.noteConfigRead();
     const json = await readDshJsonFile(paths.mcpJson, { source: "dsh-user", cwdPolicy: "host", projectRoot: "" });
+    const profileYmlPath = this.activeProfileName === undefined ? null : profileMcpYmlFile(paths.profilesDir, this.activeProfileName);
     const profileJson = this.activeProfileName === undefined ? null : profileMcpJsonFile(paths.profilesDir, this.activeProfileName);
+    const profileYml = profileYmlPath === null
+      ? { rows: [] as SourcedRow[], ok: true, error: null, missing: true }
+      : await this.readNativeRows(profileYmlPath, "dsh-profile-user-yml", false);
     const profile: JsonReadResult = profileJson === null
       ? { rows: [], entryErrors: [] }
       : (this.noteConfigRead(), await readDshJsonFile(profileJson, { source: "dsh-profile-user", cwdPolicy: "host", projectRoot: "" }));
     this.userLayer = {
       mcpYml: paths.mcpYml,
       mcpJson: paths.mcpJson,
+      profileYml: profileYmlPath,
       profileJson,
       ymlRows: yml.rows,
       ymlError: yml.error,
       jsonRows: json.rows,
       jsonError: json.fileError ?? null,
+      profileYmlRows: profileYml.rows,
+      profileYmlError: profileYml.error,
       profileRows: profile.rows,
       profileError: profile.fileError ?? null
     };
     // 告警按「文件 + 问题集合」门控：同一个坏条目不随每次文件事件重刷。
     this.warnFileIssues(paths.mcpYml, `用户层 MCP（${paths.mcpYml}）`, yml.error ?? undefined, []);
     this.warnFileIssues(paths.mcpJson, `用户层 MCP（${paths.mcpJson}）`, json.fileError, jsonIssueNotes(json));
+    if (profileYmlPath !== null) this.warnFileIssues(profileYmlPath, `用户层 MCP（${profileYmlPath}）`, profileYml.error ?? undefined, []);
     if (profileJson !== null) this.warnFileIssues(profileJson, `用户层 MCP（${profileJson}）`, profile.fileError, jsonIssueNotes(profile));
     this.warnInvalidToolGlobs(paths.mcpYml, `用户层 MCP（${paths.mcpYml}）`, yml.rows);
     this.warnInvalidToolGlobs(paths.mcpJson, `用户层 MCP（${paths.mcpJson}）`, json.rows);
+    if (profileYmlPath !== null) this.warnInvalidToolGlobs(profileYmlPath, `用户层 MCP（${profileYmlPath}）`, profileYml.rows);
     if (profileJson !== null) this.warnInvalidToolGlobs(profileJson, `用户层 MCP（${profileJson}）`, profile.rows);
     if (json.formatHint !== undefined) {
       await this.writeGlobalDiag({ kind: "foreign-format", path: paths.mcpJson, message: json.formatHint });
@@ -1103,6 +1121,7 @@ export class ProjectMcpRegistry {
     const targets = [
       paths.mcpYml,
       paths.mcpJson,
+      ...(this.userLayer.profileYml === null ? [] : [this.userLayer.profileYml]),
       ...(this.userLayer.profileJson === null ? [] : [this.userLayer.profileJson]),
       ...(isSameFilePath(foreignPath, paths.mcpJson) ? [] : [foreignPath])
     ];
@@ -1251,7 +1270,10 @@ export class ProjectMcpRegistry {
     // 每次现取 profile 名：缓存的 activeProfileName 在跳过重读时不会刷新，
     // 运行中改 DSH_MCP_PROFILE / 宿主 profile 必须让指纹失配从而重读 profile 层。
     const profileName = await this.resolveActiveProfileName();
-    if (profileName !== undefined) paths.add(normalizePathKey(profileMcpJsonFile(user.profilesDir, profileName)));
+    if (profileName !== undefined) {
+      paths.add(normalizePathKey(profileMcpYmlFile(user.profilesDir, profileName)));
+      paths.add(normalizePathKey(profileMcpJsonFile(user.profilesDir, profileName)));
+    }
     paths.add(normalizePathKey(foreignUserMcpJsonFile(dirname(user.mcpJson))));
     const files = [...paths];
     files.sort(byCodeUnit);
@@ -1303,7 +1325,7 @@ export class ProjectMcpRegistry {
     await this.syncWatcher();
     await this.syncUserWatcher();
 
-    const globalMerged = mergeSourcedRows([this.userLayer.profileRows, this.userLayer.ymlRows, this.userLayer.jsonRows]);
+    const globalMerged = mergeSourcedRows([this.userLayer.profileYmlRows, this.userLayer.profileRows, this.userLayer.ymlRows, this.userLayer.jsonRows]);
     this.lastGlobalDesired = globalMerged.rows;
     const hostTaken = new Set(hostGlobalNames);
     const globalMountable = new Set(globalMerged.rows.map((row) => row.rawName).filter((rawName) => !hostTaken.has(rawName)));
@@ -1386,8 +1408,8 @@ export class ProjectMcpRegistry {
     const cc: JsonReadResult = mcpJsonLayerEnabled()
       ? (this.noteConfigRead(), await readMcpJsonFile(projectMcpJsonFile(projectRoot), projectRoot))
       : { rows: [], entryErrors: [] };
-    // 影子优先级：.dsh/mcp.yml > .dsh/mcp.json > .mcp.json > profile json > 用户 yml > 用户 json。
-    const merged = mergeSourcedRows([yml.rows, projectJson.rows, cc.rows, this.userLayer.profileRows, this.userLayer.ymlRows, this.userLayer.jsonRows]);
+    // 影子优先级：.dsh/mcp.yml > .dsh/mcp.json > .mcp.json > profile yml > profile json > 用户 yml > 用户 json。
+    const merged = mergeSourcedRows([yml.rows, projectJson.rows, cc.rows, this.userLayer.profileYmlRows, this.userLayer.profileRows, this.userLayer.ymlRows, this.userLayer.jsonRows]);
     // 归因过滤：纯用户层之间的重复定义与本项目无关（否则零配置项目也会被写
     // .dsh/.mcp-diag.json、各刷一遍同样的告警），只保留至少一侧是项目层行的条目。
     const identityShadows = merged.shadowedIdentity.filter((shadow) => isProjectLayerSource(shadow.source) || isProjectLayerSource(shadow.winnerSource));
@@ -1752,9 +1774,10 @@ export class ProjectMcpRegistry {
       await this.writeDiagAt(path, undefined, summary);
     }
     const globalSummary = this.summarizeScope(GLOBAL_SCOPE_KEY, this.globalServers, this.lastGlobalDesired, at, this.projects.size);
-    const userHasContent = this.userLayer.ymlRows.length + this.userLayer.jsonRows.length + this.userLayer.profileRows.length > 0
+    const userHasContent = this.userLayer.ymlRows.length + this.userLayer.jsonRows.length + this.userLayer.profileRows.length + this.userLayer.profileYmlRows.length > 0
       || this.userLayer.ymlError !== null
       || this.userLayer.jsonError !== null
+      || this.userLayer.profileYmlError !== null
       || this.userLayer.profileError !== null;
     const globalPath = join(dirname(this.resolveUserLayerPaths().mcpYml), DIAG_FILE);
     if (globalSummary.rows === 0 && globalSummary.unhealthy.length === 0 && (globalSummary.idle?.length ?? 0) === 0 && !userHasContent) {
@@ -2214,7 +2237,7 @@ export class ProjectMcpRegistry {
     return false;
   }
 
-  /** 行级 view 的逐层影子优先查找：项目 yml > 项目 .dsh/mcp.json > .mcp.json > profile json > 用户 yml > 用户 json > 装载残留态。只读内存目录。 */
+  /** 行级 view 的逐层影子优先查找：项目 yml > 项目 .dsh/mcp.json > .mcp.json > profile yml > profile json > 用户 yml > 用户 json > 装载残留态。只读内存目录。 */
   private locateRowFromMemory(projectRoot: string, rawName: string, state?: ProjectServerState): { row?: PatchRow; source?: McpRowSource; path?: string } {
     const key = projectKeyOf(projectRoot);
     const files = this.lastScanFiles.get(key);
@@ -2231,6 +2254,8 @@ export class ProjectMcpRegistry {
       const found = files.cc.rows.find((candidate) => candidate.rawName === rawName);
       if (found !== undefined) return { row: found.row, source: "cc-project", path: files.ccPath };
     }
+    const profileYmlRow = this.userLayer.profileYmlRows.find((candidate) => candidate.rawName === rawName);
+    if (profileYmlRow !== undefined) return { row: profileYmlRow.row, source: "dsh-profile-user-yml", path: this.userLayer.profileYml ?? undefined };
     const profileRow = this.userLayer.profileRows.find((candidate) => candidate.rawName === rawName);
     if (profileRow !== undefined) return { row: profileRow.row, source: "dsh-profile-user", path: this.userLayer.profileJson ?? undefined };
     const uy = this.userLayer.ymlRows.find((candidate) => candidate.rawName === rawName);
@@ -2381,6 +2406,7 @@ export class ProjectMcpRegistry {
         );
       }
     }
+    this.pushGlobalSnapshot(out, this.userLayer.profileYml ?? "", "dsh-profile-user-yml", this.userLayer.profileYmlRows, this.userLayer.profileYmlError);
     this.pushGlobalSnapshot(out, this.userLayer.profileJson ?? "", "dsh-profile-user", this.userLayer.profileRows, this.userLayer.profileError);
     this.pushGlobalSnapshot(out, this.userLayer.mcpYml, "dsh-user-yml", this.userLayer.ymlRows, this.userLayer.ymlError);
     this.pushGlobalSnapshot(out, this.userLayer.mcpJson, "dsh-user", this.userLayer.jsonRows, this.userLayer.jsonError);

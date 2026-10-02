@@ -6,20 +6,21 @@ English | [中文](layers.zh.md)
 
 The plugin reads six sources and merges them **first-come-first-served**. The
 first three are **project layers** (mounted per project, isolated per session);
-the last three are **user layers** (host-level **global mounting**):
+the last four are **user layers** (host-level **global mounting**):
 
 | # | Source | Path | Semantics |
 |---|---|---|---|
 | 1 | `dsh-project` | `<projectRoot>/.dsh/mcp.yml` | project layer (native managed block, the CLI's default target) |
 | 2 | `dsh-project-json` | `<projectRoot>/.dsh/mcp.json` | project layer (JSON dialect) |
 | 3 | `cc-project` | `<projectRoot>/.mcp.json` | project layer, **legacy read-only** (Claude Code project file) |
-| 4 | `dsh-profile-user` | `~/.dsh/profiles/<active profile>/mcp.json` | **global** (when the running profile name can be resolved) |
-| 5 | `dsh-user-yml` | `~/.dsh/mcp.yml` | **global** (native user layer) |
-| 6 | `dsh-user` | `~/.dsh/mcp.json` | **global** (JSON user layer) |
+| 4 | `dsh-profile-user-yml` | `~/.dsh/profiles/<active profile>/mcp.yml` | **global** (profile native managed block, when the running profile name can be resolved) |
+| 5 | `dsh-profile-user` | `~/.dsh/profiles/<active profile>/mcp.json` | **global** (when the running profile name can be resolved) |
+| 6 | `dsh-user-yml` | `~/.dsh/mcp.yml` | **global** (native user layer) |
+| 7 | `dsh-user` | `~/.dsh/mcp.json` | **global** (JSON user layer) |
 
-Layer 4 is dynamic: the profile name is resolved at runtime, so no profile name
-is ever hardcoded. The file syntax of layers 1/2 and of the JSON user layers is
-described in [configuration format](format.md).
+Layers 4/5 are dynamic: the profile name is resolved at runtime, so no profile
+name is ever hardcoded. The file syntax of layers 1/2 and of the JSON user
+layers is described in [configuration format](format.md).
 
 **Global mounting vs project mounting**:
 
