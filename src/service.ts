@@ -41,6 +41,8 @@ export interface ProjectMcpService {
   toolStates(projectRoot: string, rawName: string): { name: string; enabled: boolean }[];
   /** 该来源对应作用域的受管 yml 路径（只读层/解析不出 profile 时为 undefined）。 */
   managedPathFor(source: McpRowSource, projectRoot: string): string | undefined;
+  /** 订阅对账结束事件（`projectMcp/updated`，无载荷）；返回退订函数。 */
+  subscribeUpdated(listener: () => void): () => void;
 }
 
 export function bindProjectMcpService(registry: ProjectMcpRegistry): ProjectMcpService {
@@ -54,7 +56,8 @@ export function bindProjectMcpService(registry: ProjectMcpRegistry): ProjectMcpS
     removeServer: (source, projectRoot, rawName) => registry.removeServer(source, projectRoot, rawName),
     setToolEnabled: (source, projectRoot, rawName, tool, enabled) => registry.setToolEnabled(source, projectRoot, rawName, tool, enabled),
     toolStates: (projectRoot, rawName) => registry.toolStates(projectRoot, rawName),
-    managedPathFor: (source, projectRoot) => registry.managedPathFor(source, projectRoot)
+    managedPathFor: (source, projectRoot) => registry.managedPathFor(source, projectRoot),
+    subscribeUpdated: (listener) => registry.subscribeUpdated(listener)
   };
 }
 

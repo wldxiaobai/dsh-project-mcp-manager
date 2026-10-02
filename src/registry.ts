@@ -1386,6 +1386,18 @@ export class ProjectMcpRegistry {
     }
   }
 
+  /** 订阅对账结束事件（供进程内 Remote 桥转发给浏览器）；返回退订函数。 */
+  subscribeUpdated(listener: () => void): () => void {
+    (this.ctx as Context).on(PROJECT_MCP_UPDATED_EVENT, listener);
+    return () => {
+      try {
+        (this.ctx as any).off?.(PROJECT_MCP_UPDATED_EVENT, listener);
+      } catch {
+        // 宿主 ctx 已销毁时退订可能失败；静默即可。
+      }
+    };
+  }
+
   /**
    * 单个项目的扫描：读三个项目层来源 → 与用户层行合并 → 记诊断/告警 → 返回该项目
    * 的期望行。项目侧压制集合（suppressedGlobals）在这里落库，只收「本轮真会全局
