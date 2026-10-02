@@ -1690,10 +1690,13 @@ try {
   rows = extractManagedRows(await readFile(ymlPath, "utf8"));
   assert.equal(rows.find((row) => row.id === "panel-mcp-fromjson")?.config?.tools, undefined, "re-enabling the last denied tool drops the tools key");
 
-  // 只读遗留层与未知行：明确报错，不写文件。
+  // 遗留 .mcp.json 不改原文件，停用落到同项目的受管 yml。
   await writeFile(join(projEdit, ".mcp.json"), JSON.stringify({ mcpServers: { ghost: { command: "node", args: ["g.js"] } } }), "utf8");
   await registryEdit.reconcileNow();
-  await assert.rejects(() => registryEdit.setServerEnabled("cc-project", projEdit, "ghost", false), /只读/);
+  await registryEdit.setServerEnabled("cc-project", projEdit, "ghost", false);
+  rows = extractManagedRows(await readFile(ymlPath, "utf8"));
+  assert.equal(rows.find((row) => row.id === "panel-mcp-ghost")?.disabled, true, "legacy .mcp.json disable lands in the project yml");
+  assert.equal(JSON.parse(await readFile(join(projEdit, ".mcp.json"), "utf8")).mcpServers.ghost.command, "node", "legacy .mcp.json is not rewritten");
   await assert.rejects(() => registryEdit.removeServer("dsh-project", projEdit, "nosuch"), /找不到服务器/);
 
   for (const disposer of ctxEdit.disposers) {

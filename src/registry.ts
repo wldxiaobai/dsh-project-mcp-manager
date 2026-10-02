@@ -2326,8 +2326,7 @@ export class ProjectMcpRegistry {
    * 其余用户层 → `~/.dsh/mcp.yml`。文件可以尚不存在（创建语义）。
    */
   private managedYmlPathFor(source: McpRowSource, projectRoot: string): string | undefined {
-    if (source === "cc-project") return undefined;
-    if (source === "dsh-project" || source === "dsh-project-json") return projectMcpFile(projectRoot);
+    if (source === "dsh-project" || source === "dsh-project-json" || source === "cc-project") return projectMcpFile(projectRoot);
     const paths = this.resolveUserLayerPaths();
     if (source === "dsh-profile-user" || source === "dsh-profile-user-yml") {
       if (this.activeProfileName === undefined) return undefined;
@@ -2336,7 +2335,7 @@ export class ProjectMcpRegistry {
     return paths.mcpYml;
   }
 
-  /** 该行的受管 yml 路径；遗留只读层与解析不出 profile 名时返回 undefined。 */
+  /** 该行的受管 yml 路径；解析不出 profile 名时返回 undefined。遗留 `.mcp.json` 指向同项目的 `.dsh/mcp.yml`。 */
   managedPathFor(source: McpRowSource, projectRoot: string): string | undefined {
     return this.managedYmlPathFor(source, projectRoot);
   }
@@ -2349,9 +2348,7 @@ export class ProjectMcpRegistry {
   ): Promise<string> {
     const path = this.managedYmlPathFor(source, projectRoot);
     if (path === undefined) {
-      throw new Error(source === "cc-project"
-        ? "该服务器来自只读的遗留 .mcp.json，不能写入受管 yml；请直接编辑该文件"
-        : "当前解析不出运行中的 profile 名，无法定位 profile 层 mcp.yml");
+      throw new Error("当前解析不出运行中的 profile 名，无法定位 profile 层 mcp.yml");
     }
     await updateManagedRows(path, (rows) => mutate(rows), { createIfMissing: true });
     this.configEpoch += 1;
@@ -2467,9 +2464,7 @@ export class ProjectMcpRegistry {
   async openConfigFile(source: McpRowSource, projectRoot: string): Promise<string> {
     const path = this.managedYmlPathFor(source, projectRoot);
     if (path === undefined) {
-      throw new Error(source === "cc-project"
-        ? "遗留 .mcp.json 没有对应的受管 yml；请打开该文件本身"
-        : "当前解析不出运行中的 profile 名，无法定位 profile 层 mcp.yml");
+      throw new Error("当前解析不出运行中的 profile 名，无法定位 profile 层 mcp.yml");
     }
     const opener = this.providers.openPath;
     if (opener === undefined) throw new Error("宿主未提供打开文件的能力（openPath 未注入）");
