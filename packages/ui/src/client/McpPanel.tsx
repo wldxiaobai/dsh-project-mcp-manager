@@ -18,6 +18,7 @@ import {
 } from "../wire.ts";
 import type { McpUiLocaleKey } from "./locales.ts";
 import { collapseServers, type LogicalServer } from "./collapse.ts";
+import { displayHomePath, isProfileSource, profileEndKind, profileNameFromFile } from "./display.ts";
 import { parsePastedConfig, type PasteConfigFailure } from "./paste-config.ts";
 import { PANEL_CSS } from "./style.ts";
 
@@ -439,30 +440,57 @@ export function McpPanel({ t }: McpPanelProps) {
     }
   };
 
+  const homeDir = state?.homeDir;
+  const showUserPath = (path: string) => displayHomePath(path, homeDir);
   const projectRows: McpUiServer[] = [];
   const userRows: McpUiServer[] = [];
+  const profileBuckets: Array<[string, McpUiServer[]]> = [];
   for (const row of state?.servers ?? []) {
-    if (row.layer === "user") userRows.push(row);
+    if (row.layer === "user" && isProfileSource(row.source)) {
+      const name = profileNameFromFile(row.filePath) ?? "";
+      const bucket = profileBuckets.find((item) => item[0] === name);
+      if (bucket === undefined) profileBuckets.push([name, [row]]);
+      else bucket[1].push(row);
+    } else if (row.layer === "user") userRows.push(row);
     else projectRows.push(row);
   }
   const projectGroups = groupedLogical(projectRows, (server) => server.winner.projectRoot);
-  const userGroups = groupedLogical(userRows, (server) => server.winner.filePath);
+  const userGroups = groupedLogical(userRows, (server) => showUserPath(server.winner.filePath));
+  const profileTitle = (name: string) => {
+    if (name === "") return t("profileLayerPlain");
+    const kind = profileEndKind(name);
+    const end = kind === "desktop" ? t("profileDesktop") : kind === "web" ? t("profileWeb") : t("profileNamed", { name });
+    return t("profileLayer", { end });
+  };
+  const openLabel = (target: McpUiState["openTargets"][number]) => {
+    if (target.source === "dsh-user-yml") return t("userFile");
+    if (target.source === "dsh-profile-user-yml") {
+      const name = profileNameFromFile(target.path);
+      return name === undefined ? t("profileFile") : profileTitle(name);
+    }
+    if (target.source === "dsh-project") return t("projectFile");
+    return target.label;
+  };
 
   const addTarget = addTargets.find((item) => item.id === draft.scope);
   const scopeReady = (id: AddScope) => addTargets.some((item) => item.id === id);
+  const addPath = addTarget === undefined ? "" : addTarget.id === "project" ? addTarget.path : showUserPath(addTarget.path);
 
+  const pendingRemoves = pending?.kind === "server" && pending.action === "remove";
+  const pendingFile = pending === null ? "" : pending.row.layer === "user" ? showUserPath(pending.row.filePath) : pending.row.filePath;
+  const pendingYml = pending === null ? "" : pending.row.layer === "user" ? showUserPath(pending.row.managedPath ?? "") : (pending.row.managedPath ?? "");
   const pendingWill = pending === null ? "" : pending.kind === "server" && pending.action === "remove" && !pending.row.needsYmlTakeover
     ? t("removeWill", { name: pending.row.serverName })
     : t("takeoverWill");
   const pendingWont = pending === null ? "" : pending.kind === "server" && pending.action === "remove" && !pending.row.needsYmlTakeover
     ? t("removeWont")
-    : t("takeoverWont", { file: pending.row.filePath, yml: pending.row.managedPath ?? "" });
+    : t("takeoverWont", { file: pendingFile, yml: pendingYml });
 
   return (
     <div className="dsh-mcp-ui">
       <div className="intro">
         <p>{t("intro")}</p>
-        <Tooltip label={t("introHelp")} side="right" portal maxWidth={280} openOnClick>
+        <Tooltip label={t("introHelp")} side="right" portal maxWidth={420} openOnClick>
           <button type="button" className="intro-help" aria-label={t("introHelp")}>
             <IconInfoOutlineRegular size={14} />
           </button>
@@ -483,7 +511,7 @@ export function McpPanel({ t }: McpPanelProps) {
           items={state !== null && state.openTargets.length > 0
             ? state.openTargets.map((target) => ({
               id: target.id,
-              label: target.source === "dsh-user-yml" ? t("userFile") : target.source === "dsh-profile-user-yml" ? t("profileFile") : target.source === "dsh-project" ? t("projectFile") : target.label
+              label: openLabel(target)
             }))
             : [{ id: "unavailable", label: error ?? t("loading"), disabled: true }]}
           anchor={(
@@ -503,8 +531,11 @@ export function McpPanel({ t }: McpPanelProps) {
       {state === null && error === null && <p className="empty">{t("loading")}</p>}
       {state !== null && state.servers.length === 0 && <p className="empty">{t("empty")}</p>}
 
-      <ServerGroups title={t("projectLayer")} groups={projectGroups} busy={busy} t={t} onToggle={(row, enabled) => askOrRun({ kind: "server", action: enabled ? "enable" : "disable", row })} onRemove={(row) => askOrRun({ kind: "server", action: "remove", row })} onTools={(row) => void openTools(row)} />
-      <ServerGroups title={t("userLayer")} groups={userGroups} busy={busy} t={t} onToggle={(row, enabled) => askOrRun({ kind: "server", action: enabled ? "enable" : "disable", row })} onRemove={(row) => askOrRun({ kind: "server", action: "remove", row })} onTools={(row) => void openTools(row)} />
+      <ServerGroups title={t("projectLayer")} groups={projectGroups} busy={busy} t={t} homeDir={homeDir} onToggle={(row, enabled) => askOrRun({ kind: "server", action: enabled ? "enable" : "disable", row })} onRemove={(row) => askOrRun({ kind: "server", action: "remove", row })} onTools={(row) => void openTools(row)} />
+      {profileBuckets.map(([name, rows]) => (
+        <ServerGroups key={name === "" ? "profile" : name} title={profileTitle(name)} groups={groupedLogical(rows, (server) => showUserPath(server.winner.filePath))} busy={busy} t={t} homeDir={homeDir} onToggle={(row, enabled) => askOrRun({ kind: "server", action: enabled ? "enable" : "disable", row })} onRemove={(row) => askOrRun({ kind: "server", action: "remove", row })} onTools={(row) => void openTools(row)} />
+      ))}
+      <ServerGroups title={t("userLayer")} groups={userGroups} busy={busy} t={t} homeDir={homeDir} onToggle={(row, enabled) => askOrRun({ kind: "server", action: enabled ? "enable" : "disable", row })} onRemove={(row) => askOrRun({ kind: "server", action: "remove", row })} onTools={(row) => void openTools(row)} />
 
       <Modal
         open={pending !== null}
@@ -515,7 +546,7 @@ export function McpPanel({ t }: McpPanelProps) {
         footer={(
           <>
             <Button variant="ghost" size="sm" onClick={() => setPending(null)}>{t("cancel")}</Button>
-            <Button variant="primary" size="sm" disabled={busy} onClick={() => pending !== null && void commit(pending, true)}>{t("continueWrite")}</Button>
+            <Button variant="primary" size="sm" disabled={busy} onClick={() => pending !== null && void commit(pending, true)}>{pendingRemoves ? t("remove") : t("continueWrite")}</Button>
           </>
         )}
       >
@@ -561,7 +592,7 @@ export function McpPanel({ t }: McpPanelProps) {
                 { value: "profile", label: t("addScopeProfile"), disabled: !scopeReady("profile"), title: scopeReady("profile") ? undefined : t("addNoProfile") }
               ]}
             />
-            {addTarget !== undefined && <p className="dsh-mcp-add-path">{t("addWhere", { path: addTarget.path })}</p>}
+            {addTarget !== undefined && <p className="dsh-mcp-add-path">{t("addWhere", { path: addPath })}</p>}
           </div>
           <div className="dsh-mcp-add-field">
             <label className="dsh-mcp-add-label" htmlFor="dsh-mcp-add-name">{t("addName")}</label>
@@ -652,11 +683,12 @@ export function McpPanel({ t }: McpPanelProps) {
   );
 }
 
-function ServerGroups({ title, groups, busy, t, onToggle, onRemove, onTools }: {
+function ServerGroups({ title, groups, busy, t, homeDir, onToggle, onRemove, onTools }: {
   title: string;
   groups: Array<[string, LogicalServer<McpUiServer>[]]>;
   busy: boolean;
   t: McpPanelProps["t"];
+  homeDir: string | undefined;
   onToggle: (row: McpUiServer, enabled: boolean) => void;
   onRemove: (row: McpUiServer) => void;
   onTools: (row: McpUiServer) => void;
@@ -674,7 +706,7 @@ function ServerGroups({ title, groups, busy, t, onToggle, onRemove, onTools }: {
               <span className="group-count">{t("serverCount", { count: servers.length })}</span>
             </div>
             {servers.map((server) => (
-              <ServerCard key={server.winner.source + server.winner.filePath + server.winner.serverName} server={server} busy={busy} t={t} onToggle={(enabled) => onToggle(server.winner, enabled)} onRemove={() => onRemove(server.winner)} onTools={() => onTools(server.winner)} />
+              <ServerCard key={server.winner.source + server.winner.filePath + server.winner.serverName} server={server} busy={busy} t={t} homeDir={homeDir} onToggle={(enabled) => onToggle(server.winner, enabled)} onRemove={() => onRemove(server.winner)} onTools={() => onTools(server.winner)} />
             ))}
           </div>
         ))}
@@ -683,10 +715,11 @@ function ServerGroups({ title, groups, busy, t, onToggle, onRemove, onTools }: {
   );
 }
 
-function ServerCard({ server, busy, t, onToggle, onRemove, onTools }: {
+function ServerCard({ server, busy, t, homeDir, onToggle, onRemove, onTools }: {
   server: LogicalServer<McpUiServer>;
   busy: boolean;
   t: McpPanelProps["t"];
+  homeDir: string | undefined;
   onToggle: (enabled: boolean) => void;
   onRemove: () => void;
   onTools: () => void;
@@ -694,6 +727,7 @@ function ServerCard({ server, busy, t, onToggle, onRemove, onTools }: {
   const row = server.winner;
   const status = runtimeStatus(row, t);
   const source = sourceFileLabel(row);
+  const fileLabel = row.layer === "user" ? displayHomePath(row.filePath, homeDir) : row.filePath;
   const endpointKind = row.endpoint.startsWith("http://") || row.endpoint.startsWith("https://") ? t("endpointUrl") : t("endpointCmd");
   const badgeTone = row.needsYmlTakeover ? "warning" : row.active ? "success" : "neutral";
   const shadowedFiles = [...new Set(server.shadowed.map((item) => sourceFileLabel(item)))].join(", ");
@@ -702,11 +736,11 @@ function ServerCard({ server, busy, t, onToggle, onRemove, onTools }: {
       <div className="head">
         <div className="identity">
           <span className="name">{row.serverName}</span>
-          <span className="badge" title={row.needsYmlTakeover ? `${t("badgeTakeoverHint")} ${row.filePath}` : row.filePath}>
+          <span className="badge" title={row.needsYmlTakeover ? `${t("badgeTakeoverHint")} ${fileLabel}` : fileLabel}>
             <Tag tone={badgeTone}>{row.needsYmlTakeover ? t("badgeTakeover", { file: source }) : source}</Tag>
           </span>
         </div>
-        <Switch className="dsh-mcp-switch" checked={row.enabled} disabled={busy} label={t("enableLabel")} onChange={onToggle} />
+        <Switch className={status.tone === "waiting" ? "dsh-mcp-switch dsh-mcp-switch-waiting" : "dsh-mcp-switch"} checked={row.enabled} disabled={busy} label={t("enableLabel")} onChange={onToggle} />
       </div>
       <div className="meta">
         <p className={`status status-${status.tone}`}>

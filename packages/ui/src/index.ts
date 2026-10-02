@@ -4,6 +4,7 @@
  * 本插件不注册路由，装载器照常工作。
  */
 import { spawn } from "node:child_process";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import { openNativeTextFile } from "@deepseek-ai/dsh-native-command";
@@ -163,7 +164,8 @@ export function apply(ctx: Context) {
       revision,
       servers: serversFrom(snapshot, mcp),
       openTargets: openTargetsFrom(snapshot, mcp),
-      writeTargets: mcp.writeTargets()
+      writeTargets: mcp.writeTargets(),
+      homeDir: homedir()
     };
   };
 

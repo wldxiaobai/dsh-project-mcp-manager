@@ -50,6 +50,8 @@ export interface McpUiState {
   servers: McpUiServer[];
   openTargets: McpUiOpenTarget[];
   writeTargets: McpUiWriteTarget[];
+  /** OS user home. The page uses it to show `~` for user and profile paths. */
+  homeDir: string;
 }
 
 export interface McpUiTool {

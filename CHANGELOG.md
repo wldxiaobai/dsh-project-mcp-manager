@@ -24,6 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that directory's MCP config without a restart. Session creation is observed
   even when the event is scoped, and live session directories are rescanned
   every two seconds. A file-watch update can no longer block that load.
+- Deleting an MCP confirmed with "Write yml". The confirm button now says
+  Remove. Enabling or disabling a non-yml row still confirms with Write yml.
+- Profile servers were listed under User. They have their own section,
+  "profile层：桌面端" for the `desktop` profile and "profile层：web端" for
+  `web`. Other profile names use that name.
+- User and profile file paths are shown from `~` instead of the drive letter.
+  Project paths stay absolute. The command line on a card is unchanged.
+- A card that says it is on and waiting for a session shows a white switch.
+  A card that is actually running keeps the green switch.
 
 ### Added
 

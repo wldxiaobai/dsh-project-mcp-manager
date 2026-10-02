@@ -209,9 +209,16 @@ export const PANEL_CSS = `
 }
 
 /* 开关的官方 on 轨走 brand。暗色主题里这个 brand 是浅色，看起来像关掉。
-   这里只改轨道颜色，拇指仍用组件自己的前景色。弹窗 portal 到 body，所以选择器不套面板。 */
+   这里只改轨道颜色，拇指仍用组件自己的前景色。弹窗 portal 到 body，所以选择器不套面板。
+   已开但还在等会话时轨道改白，和正在运行的绿色分开。 */
 button.dsh-mcp-switch[aria-checked="true"] {
   background: var(--dsw-alias-state-success-primary);
+}
+button.dsh-mcp-switch.dsh-mcp-switch-waiting[aria-checked="true"] {
+  background: #fff;
+}
+button.dsh-mcp-switch.dsh-mcp-switch-waiting[aria-checked="true"] > span {
+  background: #2c2c2c;
 }
 
 /* 错误条在面板里，也在 portal 出去的添加弹窗里。 */
