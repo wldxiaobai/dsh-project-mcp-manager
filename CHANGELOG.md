@@ -27,8 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Deleting an MCP confirmed with "Write yml". The confirm button now says
   Remove. Enabling or disabling a non-yml row still confirms with Write yml.
 - Profile servers were listed under User. They have their own section,
-  "profile层：桌面端" for the `desktop` profile and "profile层：web端" for
+  "profile 层：桌面端" for the `desktop` profile and "profile 层：web 端" for
   `web`. Other profile names use that name.
+- Settings page copy uses one term per concept. The project section and the
+  save location are both called Workspace (工作区), switch states read
+  Enabled / Disabled (已启用 / 已禁用), the confirm button says Write mcp.yml,
+  and Chinese text puts a space around Latin words. The English tab title is
+  "Plugin: MCP Manager", matching the Chinese one.
 - User and profile file paths are shown from `~` instead of the drive letter.
   Project paths stay absolute. The command line on a card is unchanged.
 - A card that says it is on and waiting for a session shows a white switch.

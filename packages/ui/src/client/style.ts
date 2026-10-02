@@ -210,7 +210,7 @@ export const PANEL_CSS = `
 
 /* 开关的官方 on 轨走 brand。暗色主题里这个 brand 是浅色，看起来像关掉。
    这里只改轨道颜色，拇指仍用组件自己的前景色。弹窗 portal 到 body，所以选择器不套面板。
-   已开但还在等会话时轨道改白，和正在运行的绿色分开。 */
+   已启用但还在等会话时轨道改白，和正在运行的绿色分开。 */
 button.dsh-mcp-switch[aria-checked="true"] {
   background: var(--dsw-alias-state-success-primary);
 }

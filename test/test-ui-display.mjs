@@ -55,17 +55,30 @@ const home = "C:\\Users\\haima";
 
 {
   assert.deepEqual(Object.keys(en).sort(), Object.keys(zh).sort());
-  assert.equal(zh.profileLayer, "profile层：{end}");
+  assert.equal(zh.projectLayer, "工作区层");
+  assert.equal(zh.addScopeProject, "工作区");
+  assert.equal(zh.profileLayer, "profile 层：{end}");
   assert.equal(zh.profileDesktop, "桌面端");
-  assert.equal(zh.profileWeb, "web端");
-  assert.equal(zh.profileNamed, "{name}端");
+  assert.equal(zh.profileWeb, "web 端");
+  assert.equal(zh.profileNamed, "{name} 端");
   assert.equal(zh.remove, "删除");
-  assert.equal(zh.continueWrite, "写入 yml");
+  assert.equal(zh.continueWrite, "写入 mcp.yml");
+  assert.equal(zh.enableLabel, "启用");
+  assert.equal(zh.statusIdle, "已启用 · 等待会话启动");
+  assert.equal(zh.statusOff, "已禁用");
   for (const value of [zh.introHelp, zh.addDescription, zh.takeoverTitle, zh.removeWill, zh.badgeTakeoverHint]) {
-    assert.equal(value.includes("受mcp-manager插件管理的mcp.yml"), true);
+    assert.equal(value.includes("受 mcp-manager 插件管理的 mcp.yml"), true);
   }
-  assert.equal(zh.takeoverWill.includes("受管 yml"), true);
-  pass("locale keys match and the first managed-yml phrase is expanded");
+  assert.equal(zh.takeoverWill.includes("受管 mcp.yml"), true);
+  for (const [key, value] of Object.entries(zh)) {
+    assert.equal(/受管 yml|这份 yml|已开|已关闭/.test(value), false, `zh.${key} uses a retired term: ${value}`);
+    assert.equal(/[\u4e00-\u9fff][A-Za-z]|[A-Za-z][\u4e00-\u9fff]/.test(value), false, `zh.${key} needs a space between Chinese and Latin text: ${value}`);
+  }
+  for (const [key, value] of Object.entries(en)) {
+    assert.equal(/\byml\b/.test(value.replace(/mcp\.yml|\{\w+\}/g, "")), false, `en.${key} uses bare "yml": ${value}`);
+    assert.equal(/\bOn\b|\bOff\b/.test(value), false, `en.${key} should say Enabled/Disabled: ${value}`);
+  }
+  pass("locale keys match and terms stay consistent");
 }
 
 console.log(passed + " passed");

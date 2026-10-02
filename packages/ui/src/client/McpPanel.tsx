@@ -456,17 +456,16 @@ export function McpPanel({ t }: McpPanelProps) {
   }
   const projectGroups = groupedLogical(projectRows, (server) => server.winner.projectRoot);
   const userGroups = groupedLogical(userRows, (server) => showUserPath(server.winner.filePath));
-  const profileTitle = (name: string) => {
-    if (name === "") return t("profileLayerPlain");
+  const profileEnd = (name: string) => {
     const kind = profileEndKind(name);
-    const end = kind === "desktop" ? t("profileDesktop") : kind === "web" ? t("profileWeb") : t("profileNamed", { name });
-    return t("profileLayer", { end });
+    return kind === "desktop" ? t("profileDesktop") : kind === "web" ? t("profileWeb") : t("profileNamed", { name });
   };
+  const profileTitle = (name: string) => name === "" ? t("profileLayerPlain") : t("profileLayer", { end: profileEnd(name) });
   const openLabel = (target: McpUiState["openTargets"][number]) => {
     if (target.source === "dsh-user-yml") return t("userFile");
     if (target.source === "dsh-profile-user-yml") {
       const name = profileNameFromFile(target.path);
-      return name === undefined ? t("profileFile") : profileTitle(name);
+      return name === undefined ? t("profileFile") : t("profileFileNamed", { end: profileEnd(name) });
     }
     if (target.source === "dsh-project") return t("projectFile");
     return target.label;
