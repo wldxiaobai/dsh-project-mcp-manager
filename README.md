@@ -43,6 +43,9 @@ Feature documentation lives in `docs/`, English and Chinese side by side:
 - [`${VAR}` expansion](docs/guide/env-expansion.md) — mount-time interpolation and
   its diagnostics.
 - [CLI `dsh-mcp`](docs/guide/cli.md) — scopes, write formats, ownership contract.
+- [Query surface](docs/guide/service.md) — `ctx.projectMcp`, the
+  `projectMcp/updated` event, exported view types, and the semver contract for
+  the companion UI.
 
 Design and release records (Chinese): [dsh 0.2.0-rc.2 adaptation](docs/design/adaptation-dsh-0.2.0-rc.2.md) ·
 [dsh 0.1.6-alpha.2 adaptation plan](docs/design/adaptation-dsh-0.1.6-alpha.2.md) ·
@@ -178,6 +181,21 @@ pnpm test          # node test/test-model.mjs / test-mcp-file / test-json-file /
   global servers suppressed by the project's own rows; a session without a cwd
   falls back to the owner project (subagents), then to the project containing
   the dsh process cwd. Released when the session is destroyed.
+
+## Query surface
+
+Other plugins and the companion UI read mount state from `ctx.projectMcp`
+(`snapshot`, `serverView`, `globalState`, `reload`). Queries are the previous
+reconcile's memory; they do not read disk. A successful reconcile emits
+`projectMcp/updated` with no payload. The listener calls `snapshot()` and
+diffs. This package does not open a browser SSE channel.
+
+That surface — the methods, the event, and the view types re-exported from the
+package entry (`ProjectFileState`, `McpServerRuntimeView`, `McpServerView`,
+`McpRowSource`, and the types those views name) — follows semantic versioning
+for the companion UI. The UI package peer-depends on
+`dsh-project-mcp-manager` at the **same exact version** (no `^` or `~`).
+Details: [query surface](docs/guide/service.md).
 
 ## Security boundary
 

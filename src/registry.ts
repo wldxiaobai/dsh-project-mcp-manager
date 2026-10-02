@@ -39,7 +39,9 @@ import chokidar from "chokidar";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import type { Context } from "@deepseek-ai/cordis";
 import * as mcpClient from "@deepseek-ai/dsh-mcp-client";
+import { PROJECT_MCP_UPDATED_EVENT } from "./service.js";
 import { extractManagedRows, readPatchFile, withPatchLock, type PatchRow } from "./mcp-file.js";
 import {
   DIAG_FILE,
@@ -162,7 +164,7 @@ export interface ProjectServerState {
 
 export type FiberPhaseView = "loading" | "active" | "failed" | "unloading" | "pending" | null;
 
-/** snapshot / serverView 的行级脱敏 view（不承诺稳定）。 */
+/** snapshot / serverView 的行级脱敏 view（随 `projectMcp` 查询面按语义化版本演进）。 */
 export interface McpServerRuntimeView extends McpServerView {
   source?: McpRowSource;
   fiberPhase: FiberPhaseView;
@@ -1287,6 +1289,7 @@ export class ProjectMcpRegistry {
   /**
    * 全量对账：重算项目集合 → 读全部项目文件 → 计算生效名 → 逐项目装载/
    * 卸载 → 重扫各会话 deny。文件事件、新 agent、插件热更都汇到这里。
+   * 成功结束时 emit `projectMcp/updated`（无载荷）；中途退出或抛错不发。
    */
   async reconcileAll(): Promise<void> {
     if (this.disposed) return;
@@ -1342,6 +1345,20 @@ export class ProjectMcpRegistry {
     this.inspectToolBudgets();
     await this.writeSummaries();
     this.scheduleGraceUnmount();
+    this.emitUpdated();
+  }
+
+  /**
+   * 对账成功结束的推送：宿主监听后再读 `snapshot()`。无载荷、不带 diff。
+   * 浏览器 SSE 仍由配套 UI 自建。监听方抛错只记一条 warn，不让对账失败。
+   */
+  private emitUpdated(): void {
+    if (this.disposed) return;
+    try {
+      (this.ctx as Context).emit(PROJECT_MCP_UPDATED_EVENT);
+    } catch (error) {
+      this.ctx.logger?.warn?.(`项目 MCP 变更事件投递失败：${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /**

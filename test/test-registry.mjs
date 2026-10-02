@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ProjectMcpRegistry, parseDiagDocument, planProjectChanges, projectMcpFile, mergeSourcedRows, profileNameFromConfigPath, UNMOUNT_GRACE_MS } from "../lib/registry.js";
 import { bindProjectMcpService, PROJECT_MCP_SERVICE } from "../lib/service.js";
-import { apply } from "../lib/index.js";
+import { apply, PROJECT_MCP_UPDATED_EVENT } from "../lib/index.js";
 import { MCP_BLOCK_BEGIN, MCP_BLOCK_END, writeManagedRows } from "../lib/mcp-file.js";
 import { byCodeUnit } from "../lib/model.js";
 
@@ -1538,6 +1539,10 @@ try {
   await mkdir(projSvc, { recursive: true });
   await writeManagedRows(projectMcpFile(projSvc), [stdioRow("query")], { createIfMissing: true });
   const ctxSvc = fakeCtx();
+  const updates = [];
+  const warnsSvc = [];
+  ctxSvc.logger.warn = (message) => warnsSvc.push(String(message));
+  ctxSvc.on(PROJECT_MCP_UPDATED_EVENT, () => updates.push(1));
   const registrySvc = new ProjectMcpRegistry(ctxSvc, {
     globalNames: async () => [],
     userLayerPaths: { mcpYml: join(homeSvc, ".dsh", "mcp.yml"), mcpJson: join(homeSvc, ".dsh", "mcp.json"), profilesDir: join(homeSvc, ".dsh", "profiles") }
@@ -1555,8 +1560,26 @@ try {
   assert.equal(service.globalState("query"), registrySvc.globalState("query"));
   assert.equal(service.globalState("query"), undefined, "project rows are not global state");
   const before = registrySvc.debugReconcileCount;
+  const updatesBeforeReload = updates.length;
   await service.reload();
   assert.ok(registrySvc.debugReconcileCount > before, "reload runs reconcileNow");
+  assert.equal(updates.length, updatesBeforeReload + 1, "each successful reconcile emits projectMcp/updated");
+  assert.ok(updatesBeforeReload >= 1, "constructor reconcile emits before the explicit reload");
+  const updatesAfterReconcile = updates.length;
+  await service.snapshot();
+  await service.serverView(projSvc, "query");
+  assert.equal(service.globalState("query"), undefined);
+  assert.equal(updates.length, updatesAfterReconcile, "snapshot/serverView/globalState do not emit");
+  ctxSvc.on(PROJECT_MCP_UPDATED_EVENT, () => {
+    throw new Error("listener boom");
+  });
+  await service.reload();
+  assert.equal(updates.length, updatesAfterReconcile + 1, "a throwing listener does not drop the reconcile");
+  assert.ok(warnsSvc.some((message) => message.includes("变更事件投递失败")), "throwing listener is warned: " + warnsSvc.join("|"));
+  const dts = readFileSync(new URL("../lib/index.d.ts", import.meta.url), "utf8");
+  for (const name of ["ProjectFileState", "McpServerRuntimeView", "McpServerView", "McpRowSource", "ProjectServerState", "FiberPhaseView", "PROJECT_MCP_UPDATED_EVENT"]) {
+    assert.ok(dts.includes(name), "package entry exports " + name);
+  }
   for (const disposer of ctxSvc.disposers) {
     const cleanup = disposer();
     if (typeof cleanup === "function") cleanup();
