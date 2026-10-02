@@ -15,6 +15,8 @@
 | `serverView(projectRoot, rawName)` | 一行的内存 view。排队规则与 `snapshot()` 相同。 |
 | `globalState(rawName)` | 该原名的全局层运行态；项目行返回 `undefined`。 |
 | `reload()` | 一次全量对账（`reconcileNow`）。 |
+| `writeTargets()` | 添加对话框当前能写的受管 yml：当前工作区、用户层、当前 profile。 |
+| `addServer(source, projectRoot, draft)` | 按表单追加一条受管 yml 行（没有文件就创建）并排一次对账。同名已在该文件里则拒绝，文件不动。 |
 
 `snapshot()` / `serverView()` / `globalState()` 不发事件。
 

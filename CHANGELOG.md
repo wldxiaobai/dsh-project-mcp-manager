@@ -33,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or a project, and toggles or removes servers and individual tools. A non-yml
   source asks before a higher-priority yml row is written. Disable the
   `mcp-project-ui` bundle row to hide the page.
+- The settings page adds a server from a form. Confirm writes one managed
+  `mcp.yml` row for the current workspace, the user layer, or the active
+  profile. Edit managed yml stays beside that button.
 
 ## [0.7.2] - 2026-10-02
 

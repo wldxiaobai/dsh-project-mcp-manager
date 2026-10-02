@@ -87,6 +87,7 @@ import {
   rowIdForServerName,
   rowNameOf,
   toOfficialConfig,
+  toPatchRow,
   toolFilterFromConfig,
   type McpScopeInfo,
   type McpServerView
@@ -710,6 +711,64 @@ function parseDiagSummary(raw: unknown): DiagSummary | undefined {
   };
 }
 
+/** 添加对话框的三个写入位置。项目层的 projectRoot 是当前工作区，其余为空串。 */
+export interface McpWriteTarget {
+  id: "project" | "user" | "profile";
+  source: "dsh-project" | "dsh-user-yml" | "dsh-profile-user-yml";
+  projectRoot: string;
+  path: string;
+}
+
+/** 添加对话框收集的字段。cwd 由写入位置决定：项目层 "."，用户层与 profile 层空串。 */
+export interface McpAddDraft {
+  serverName: string;
+  transport: "stdio" | "streamable-http";
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+}
+
+function stringMapOrUndefined(map: Record<string, string> | undefined): Record<string, string> | undefined {
+  if (map === undefined) return undefined;
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(map)) {
+    if (typeof value !== "string") continue;
+    const name = key.trim();
+    if (name === "") continue;
+    out[name] = value;
+  }
+  return Object.keys(out).length === 0 ? undefined : out;
+}
+
+/** 表单草稿 → schema 入参。缺字段留空，交给 mcpServerInputSchema 报出具体哪一项。 */
+function inputFromAddDraft(source: McpRowSource, draft: McpAddDraft): unknown {
+  const serverName = typeof draft.serverName === "string" ? draft.serverName.trim() : draft.serverName;
+  if (draft.transport === "stdio") {
+    const args = Array.isArray(draft.args) ? draft.args.map((item) => item.trim()).filter((item) => item !== "") : [];
+    const env = stringMapOrUndefined(draft.env);
+    return {
+      serverName,
+      transport: "stdio",
+      command: typeof draft.command === "string" ? draft.command.trim() : "",
+      args,
+      ...(env === undefined ? {} : { env }),
+      cwd: source === "dsh-project" ? "." : ""
+    };
+  }
+  if (draft.transport === "streamable-http") {
+    const headers = stringMapOrUndefined(draft.headers);
+    return {
+      serverName,
+      transport: "streamable-http",
+      url: typeof draft.url === "string" ? draft.url.trim() : "",
+      ...(headers === undefined ? {} : { headers })
+    };
+  }
+  return { serverName, transport: draft.transport };
+}
+
 /**
  * 项目级 MCP 注册表：文件监听、装载/卸载、按会话 deny 重扫、状态快照。
  */
@@ -813,6 +872,8 @@ export class ProjectMcpRegistry {
   private foregroundKey: string | undefined;
   /** 已解析过的 cwd / 项目根 → projectKey。session/event 上同步切焦点，不等再次走盘。 */
   private readonly cwdKey = new Map<string, string>();
+  /** projectKey → 解析时的项目根。焦点可以落在还没有配置文件的工作区上。 */
+  private readonly projectRoots = new Map<string, string>();
   /** 上一轮 sweep 见到的工具 id。切焦点时先按这份名单补 deny，再卸掉其它项目。 */
   private lastToolIds: string[] = [];
   /** 上一轮对账结束时的在线目录签名；补扫发现变化才再对账。 */
@@ -1023,9 +1084,22 @@ export class ProjectMcpRegistry {
   /** 记下 cwd 与项目根对应的 projectKey，供 session/event 同步切焦点。 */
   private rememberCwdKey(cwd: string, root: string): string {
     const key = projectKeyOf(root);
+    this.projectRoots.set(key, root);
     this.cwdKey.set(projectKeyOf(resolve(cwd)), key);
     this.cwdKey.set(key, key);
     return key;
+  }
+
+  /**
+   * 添加对话框要写到的工作区。有焦点时用焦点；还没有焦点、但只见过一个工作区时用那一个
+   * （热重载后、下一条用户消息到来前）。多个工作区又没有焦点时不猜测。
+   */
+  focusedProjectRoot(): string | undefined {
+    if (this.foregroundKey !== undefined) {
+      return this.projectRoots.get(this.foregroundKey) ?? this.projects.get(this.foregroundKey)?.projectRoot;
+    }
+    if (this.projectRoots.size === 1) return [...this.projectRoots.values()][0];
+    return undefined;
   }
 
   /**
@@ -2642,6 +2716,53 @@ export class ProjectMcpRegistry {
       if (name === undefined) return false;
       return serviceIdentityKey({ rawName: name, row, source: "dsh-project" }) === identity;
     });
+  }
+
+  /**
+   * 添加对话框能写的受管 yml。项目层只给出当前工作区（没有配置文件也给出）；
+   * 用户层始终给出；profile 层仅在解析得出当前 profile 名时给出。
+   */
+  writeTargets(): McpWriteTarget[] {
+    const targets: McpWriteTarget[] = [];
+    const project = this.focusedProjectRoot();
+    if (project !== undefined) {
+      targets.push({ id: "project", source: "dsh-project", projectRoot: project, path: projectMcpFile(project) });
+    }
+    const user = this.managedYmlPathFor("dsh-user-yml", "");
+    if (user !== undefined) targets.push({ id: "user", source: "dsh-user-yml", projectRoot: "", path: user });
+    const profile = this.managedYmlPathFor("dsh-profile-user-yml", "");
+    if (profile !== undefined) targets.push({ id: "profile", source: "dsh-profile-user-yml", projectRoot: "", path: profile });
+    return targets;
+  }
+
+  /** 表单确认后追加一条受管 yml 行（没有文件就创建）。同名已存在则拒绝，不改文件。 */
+  async addServer(source: McpRowSource, projectRoot: string, draft: McpAddDraft): Promise<string> {
+    return this.enqueue(async () => {
+      this.assertWritableTarget(source, projectRoot);
+      const validated = mcpServerInputSchema.safeParse(inputFromAddDraft(source, draft));
+      if (!validated.success) {
+        const first = validated.error.issues[0];
+        const detail = first === undefined ? "" : `（${first.path.join(".")}：${first.message}）`;
+        throw new Error(`配置无效${detail}`);
+      }
+      const name = validated.data.serverName;
+      return this.editManagedYml(source, projectRoot, (rows) => {
+        if (rows.some((row) => rowNameOf(row) === name)) {
+          throw new Error(`"${name}" 已经写在这份 mcp.yml 里`);
+        }
+        return [...rows, toPatchRow(validated.data)];
+      });
+    });
+  }
+
+  /** 只接受当前 writeTargets() 里的位置，避免把行写到一个已经不是焦点的工作区。 */
+  private assertWritableTarget(source: McpRowSource, projectRoot: string): void {
+    const ok = this.writeTargets().some((target) => {
+      if (target.source !== source) return false;
+      if (source !== "dsh-project") return true;
+      return projectRoot.trim() !== "" && projectKeyOf(target.projectRoot) === projectKeyOf(projectRoot);
+    });
+    if (!ok) throw new Error("这个写入位置当前不可用，请重新打开添加窗口");
   }
 
   /** 启用/停用：yml 行就地翻 disabled；其它来源在受管 yml 里落一条同身份行（启用=完整拷贝，停用=disabled 占位）。 */

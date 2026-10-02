@@ -4,7 +4,37 @@ export type McpUiLocaleKey =
   | "tab"
   | "intro"
   | "open"
-  | "addHint"
+  | "add"
+  | "addTitle"
+  | "addDescription"
+  | "addScope"
+  | "addScopeProject"
+  | "addScopeUser"
+  | "addScopeProfile"
+  | "addNoWorkspace"
+  | "addNoProfile"
+  | "addWhere"
+  | "addTransport"
+  | "addTransportStdio"
+  | "addTransportHttp"
+  | "addName"
+  | "addNamePlaceholder"
+  | "addCommand"
+  | "addCommandPlaceholder"
+  | "addArgs"
+  | "addArgsPlaceholder"
+  | "addUrl"
+  | "addUrlPlaceholder"
+  | "addEnv"
+  | "addEnvPlaceholder"
+  | "addHeaders"
+  | "addHeadersPlaceholder"
+  | "addSubmit"
+  | "addNameInvalid"
+  | "addCommandRequired"
+  | "addUrlRequired"
+  | "addPairInvalid"
+  | "addNoTarget"
   | "projectLayer"
   | "userLayer"
   | "empty"
@@ -52,12 +82,42 @@ export type McpUiLocaleKey =
 
 export const en: Record<McpUiLocaleKey, string> = {
   tab: "MCP",
-  intro: "Servers available to this profile. The switch and Remove only write the managed mcp.yml. A server read from another file asks before that yml is updated.",
+  intro: "Servers available to this profile. Add, the switch, and Remove write the managed mcp.yml. A server read from another file asks before that yml is updated.",
   open: "Edit managed yml",
-  addHint: "To add a server, choose Edit managed yml and write a row, or run dsh-mcp add.",
+  add: "Add MCP",
+  addTitle: "Add MCP",
+  addDescription: "Confirm writes a row into the managed mcp.yml. A running session loads it on its own.",
+  addScope: "Save to",
+  addScopeProject: "Workspace",
+  addScopeUser: "User",
+  addScopeProfile: "Profile",
+  addNoWorkspace: "No workspace is open. Open a session first.",
+  addNoProfile: "No active profile was found.",
+  addWhere: "Writes {path}",
+  addTransport: "Type",
+  addTransportStdio: "Local command",
+  addTransportHttp: "Remote URL",
+  addName: "Name",
+  addNamePlaceholder: "gitlab",
+  addCommand: "Command",
+  addCommandPlaceholder: "npx",
+  addArgs: "Arguments (optional, one per line)",
+  addArgsPlaceholder: "-y\n@modelcontextprotocol/server-gitlab",
+  addUrl: "URL",
+  addUrlPlaceholder: "https://mcp.example.com/mcp",
+  addEnv: "Environment (optional, KEY=value)",
+  addEnvPlaceholder: "GITLAB_TOKEN=${GITLAB_TOKEN}",
+  addHeaders: "Headers (optional, Name: value)",
+  addHeadersPlaceholder: "Authorization: Bearer ${TOKEN}",
+  addSubmit: "Add",
+  addNameInvalid: "Use 1–32 letters, digits, underscores, or hyphens.",
+  addCommandRequired: "Enter the command to run.",
+  addUrlRequired: "Enter the server URL.",
+  addPairInvalid: "Cannot read this line: {line}",
+  addNoTarget: "That save location is not available. Close this and open Add MCP again.",
   projectLayer: "Project",
   userLayer: "User",
-  empty: "No MCP servers yet. Open a workspace to load its config, or add one with Edit managed yml / dsh-mcp add.",
+  empty: "No MCP servers yet. Choose Add MCP and fill in a name and command or URL.",
   loading: "Loading…",
   error: "Could not read MCP state.",
   statusRunning: "Running",
@@ -103,12 +163,42 @@ export const en: Record<McpUiLocaleKey, string> = {
 
 export const zh: Record<McpUiLocaleKey, string> = {
   tab: "MCP",
-  intro: "这里列出当前能用的 MCP。开关和删除只写入受管的 mcp.yml。从别的文件读到的服务器，改动前会先确认，再写入这份 yml。",
+  intro: "这里列出当前能用的 MCP。添加、开关和删除都写入受管的 mcp.yml。从别的文件读到的服务器，改动前会先确认，再写入这份 yml。",
   open: "编辑受管 yml",
-  addHint: "要添加服务器，点「编辑受管 yml」写一条，或使用命令 dsh-mcp add。",
+  add: "添加 MCP",
+  addTitle: "添加 MCP",
+  addDescription: "确认后写入受管 mcp.yml。正在运行的会话会自己装载。",
+  addScope: "保存到",
+  addScopeProject: "工作区",
+  addScopeUser: "用户",
+  addScopeProfile: "Profile",
+  addNoWorkspace: "还没有打开工作区。先打开一个会话。",
+  addNoProfile: "没有解析到当前 profile。",
+  addWhere: "将写入 {path}",
+  addTransport: "类型",
+  addTransportStdio: "本地命令",
+  addTransportHttp: "远程地址",
+  addName: "名称",
+  addNamePlaceholder: "gitlab",
+  addCommand: "命令",
+  addCommandPlaceholder: "npx",
+  addArgs: "参数（可选，每行一个）",
+  addArgsPlaceholder: "-y\n@modelcontextprotocol/server-gitlab",
+  addUrl: "地址",
+  addUrlPlaceholder: "https://mcp.example.com/mcp",
+  addEnv: "环境变量（可选，每行 KEY=值）",
+  addEnvPlaceholder: "GITLAB_TOKEN=${GITLAB_TOKEN}",
+  addHeaders: "请求头（可选，每行 名称: 值）",
+  addHeadersPlaceholder: "Authorization: Bearer ${TOKEN}",
+  addSubmit: "添加",
+  addNameInvalid: "名称只能是 1–32 位字母、数字、下划线或连字符。",
+  addCommandRequired: "填写要运行的命令。",
+  addUrlRequired: "填写服务器地址。",
+  addPairInvalid: "这一行无法识别：{line}",
+  addNoTarget: "这个保存位置现在不可用。关掉窗口后重新点「添加 MCP」。",
   projectLayer: "项目层",
   userLayer: "用户层",
-  empty: "还没有 MCP 服务器。打开工作区会装载该目录的配置；也可以用「编辑受管 yml」或命令 dsh-mcp add 添加。",
+  empty: "还没有 MCP 服务器。点「添加 MCP」，填写名称和命令或地址。",
   loading: "正在读取…",
   error: "读取 MCP 状态失败。",
   statusRunning: "运行中",

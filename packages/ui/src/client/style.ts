@@ -194,4 +194,82 @@ export const PANEL_CSS = `
   line-height: 22px;
   color: var(--dsw-alias-label-tertiary);
 }
+.dsh-mcp-add-dialog {
+  width: min(440px, 100%);
+  max-height: 100%;
+  font-family: var(--dsw-font-family);
+  color: var(--dsw-alias-label-primary);
+}
+.dsh-mcp-add-content {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: 100%;
+  overflow: visible;
+}
+.dsh-mcp-add-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  max-height: min(480px, calc(100vh - 240px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+@supports (height: 100dvh) {
+  .dsh-mcp-add-form {
+    max-height: min(480px, calc(100dvh - 240px));
+  }
+}
+.dsh-mcp-add-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.dsh-mcp-add-label {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-secondary);
+}
+.dsh-mcp-add-input {
+  width: 100%;
+  box-sizing: border-box;
+}
+.dsh-mcp-add-area {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-1);
+  padding: 8px;
+  font-family: var(--ds-font-family-code);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-primary);
+}
+.dsh-mcp-add-area:focus {
+  outline: none;
+  border-color: var(--dsw-alias-state-business-primary);
+}
+.dsh-mcp-add-area::placeholder {
+  color: var(--dsw-alias-label-dimmed);
+}
+.dsh-mcp-add-path {
+  margin: 0;
+  font-family: var(--ds-font-family-code);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+  overflow-wrap: anywhere;
+}
+.dsh-mcp-add-error {
+  margin: 10px 0 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-state-error-primary);
+}
 `;

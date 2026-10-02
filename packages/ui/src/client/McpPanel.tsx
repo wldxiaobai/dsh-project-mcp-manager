@@ -1,9 +1,9 @@
 /** MCP settings tab: layers, activation, delete, and per-tool switches. */
 
 import { useEffect, useState, type CSSProperties } from "react";
-import { Button, Menu, Modal, StateDot, Switch, Tooltip } from "@deepseek-ai/dsh-client-ui-primitives";
-import { IconChevronDownOutlineRegular, IconFolderOpenOutlineRegular, IconTrashOutlineRegular } from "@deepseek-ai/dsh-client-ui-primitives";
+import { Button, IconChevronDownOutlineRegular, IconFolderOpenOutlineRegular, IconPlusOutlineRegular, IconTrashOutlineRegular, Input, Menu, Modal, SegmentedControl, StateDot, Switch, Tooltip } from "@deepseek-ai/dsh-client-ui-primitives";
 import {
+  MCP_UI_ADD_PATH,
   MCP_UI_EVENTS_PATH,
   MCP_UI_OPEN_PATH,
   MCP_UI_SERVER_PATH,
@@ -13,7 +13,8 @@ import {
   type McpUiResult,
   type McpUiServer,
   type McpUiState,
-  type McpUiTool
+  type McpUiTool,
+  type McpUiWriteTarget
 } from "../wire.ts";
 import type { McpUiLocaleKey } from "./locales.ts";
 import { PANEL_CSS } from "./style.ts";
@@ -25,6 +26,51 @@ export interface McpPanelProps {
 type Pending =
   | { kind: "server"; action: "enable" | "disable" | "remove"; row: McpUiServer }
   | { kind: "tool"; row: McpUiServer; tool: string; enabled: boolean };
+
+type AddScope = McpUiWriteTarget["id"];
+type AddKind = "stdio" | "http";
+
+interface AddDraft {
+  scope: AddScope;
+  name: string;
+  transport: AddKind;
+  command: string;
+  args: string;
+  url: string;
+  env: string;
+  headers: string;
+}
+
+const NAME_RE = /^[A-Za-z0-9_-]{1,32}$/;
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function linesOf(text: string): string[] {
+  return text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "");
+}
+
+function defaultScope(targets: McpUiWriteTarget[]): AddScope {
+  if (targets.some((item) => item.id === "project")) return "project";
+  if (targets.some((item) => item.id === "user")) return "user";
+  return "profile";
+}
+
+function emptyDraft(targets: McpUiWriteTarget[]): AddDraft {
+  return { scope: defaultScope(targets), name: "", transport: "stdio", command: "", args: "", url: "", env: "", headers: "" };
+}
+
+/** 每行 KEY=值，或请求头的「名称: 值」。失败时带回原行，方便指出是哪一行。 */
+function pairsOf(text: string, kind: "env" | "header"): { map: Record<string, string> } | { line: string } {
+  const map: Record<string, string> = {};
+  for (const line of linesOf(text)) {
+    const index = kind === "header" && line.includes(":") ? line.indexOf(":") : line.indexOf("=");
+    if (index <= 0) return { line };
+    const key = line.slice(0, index).trim();
+    const value = line.slice(index + 1).trim();
+    if (key === "" || (kind === "env" && !ENV_KEY_RE.test(key))) return { line };
+    map[key] = value;
+  }
+  return { map };
+}
 
 const SOURCE_LABEL: Record<string, string> = {
   "dsh-project": "mcp.yml",
@@ -125,6 +171,10 @@ export function McpPanel({ t }: McpPanelProps) {
   const [pending, setPending] = useState<Pending | null>(null);
   const [toolsFor, setToolsFor] = useState<McpUiServer | null>(null);
   const [tools, setTools] = useState<McpUiTool[] | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [addTargets, setAddTargets] = useState<McpUiWriteTarget[]>([]);
+  const [draft, setDraft] = useState<AddDraft>(emptyDraft([]));
+  const [formError, setFormError] = useState<string | null>(null);
 
   const load = () => {
     fetch(MCP_UI_STATE_PATH, { credentials: "same-origin", headers: { accept: "application/json" } })
@@ -137,8 +187,8 @@ export function McpPanel({ t }: McpPanelProps) {
         } catch {
           throw new Error(`响应不是 JSON：${text.slice(0, 400) || "空"}（${MCP_UI_STATE_PATH}）`);
         }
-        if (!Array.isArray(payload.servers) || !Array.isArray(payload.openTargets)) {
-          throw new Error(`响应缺少 servers/openTargets：${text.slice(0, 400)}`);
+        if (!Array.isArray(payload.servers) || !Array.isArray(payload.openTargets) || !Array.isArray(payload.writeTargets)) {
+          throw new Error(`响应缺少 servers/openTargets/writeTargets：${text.slice(0, 400)}`);
         }
         setState(payload);
         setError(null);
@@ -225,6 +275,79 @@ export function McpPanel({ t }: McpPanelProps) {
     setTools(result.ok ? result.tools ?? [] : []);
   };
 
+  const updateDraft = (patch: Partial<AddDraft>) => {
+    setDraft((current) => ({ ...current, ...patch }));
+    setFormError(null);
+  };
+
+  const openAdd = () => {
+    const targets = state?.writeTargets ?? [];
+    setAddTargets(targets);
+    setDraft(emptyDraft(targets));
+    setFormError(null);
+    setAddOpen(true);
+  };
+
+  const submitAdd = async () => {
+    const target = addTargets.find((item) => item.id === draft.scope);
+    if (target === undefined) {
+      setFormError(t("addNoTarget"));
+      return;
+    }
+    const name = draft.name.trim();
+    if (!NAME_RE.test(name)) {
+      setFormError(t("addNameInvalid"));
+      return;
+    }
+    const body: Record<string, unknown> = {
+      source: target.source,
+      projectRoot: target.projectRoot,
+      serverName: name,
+      transport: draft.transport === "http" ? "streamable-http" : "stdio"
+    };
+    if (draft.transport === "stdio") {
+      const command = draft.command.trim();
+      if (command === "") {
+        setFormError(t("addCommandRequired"));
+        return;
+      }
+      const env = pairsOf(draft.env, "env");
+      if ("line" in env) {
+        setFormError(t("addPairInvalid", { line: env.line }));
+        return;
+      }
+      body.command = command;
+      body.args = linesOf(draft.args);
+      if (Object.keys(env.map).length > 0) body.env = env.map;
+    } else {
+      const url = draft.url.trim();
+      if (url === "") {
+        setFormError(t("addUrlRequired"));
+        return;
+      }
+      const headers = pairsOf(draft.headers, "header");
+      if ("line" in headers) {
+        setFormError(t("addPairInvalid", { line: headers.line }));
+        return;
+      }
+      body.url = url;
+      if (Object.keys(headers.map).length > 0) body.headers = headers.map;
+    }
+    setBusy(true);
+    try {
+      const result = await post(MCP_UI_ADD_PATH, body);
+      if (!result.ok) {
+        setFormError("message" in result ? result.message : t("error"));
+        return;
+      }
+      setAddOpen(false);
+      setError(null);
+      load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const openFile = async (target: McpUiState["openTargets"][number]) => {
     setMenuOpen(false);
     setBusy(true);
@@ -247,6 +370,9 @@ export function McpPanel({ t }: McpPanelProps) {
     }
   }
 
+  const addTarget = addTargets.find((item) => item.id === draft.scope);
+  const scopeReady = (id: AddScope) => addTargets.some((item) => item.id === id);
+
   const pendingWill = pending === null ? "" : pending.kind === "server" && pending.action === "remove" && !pending.row.needsYmlTakeover
     ? t("removeWill", { name: pending.row.serverName })
     : t("takeoverWill");
@@ -258,6 +384,9 @@ export function McpPanel({ t }: McpPanelProps) {
     <div className="dsh-mcp-ui">
       <p className="intro">{t("intro")}</p>
       <div className="toolbar">
+        <Button variant="primary" size="sm" icon={<IconPlusOutlineRegular size={16} />} disabled={busy || state === null || state.writeTargets.length === 0} onClick={openAdd}>
+          {t("add")}
+        </Button>
         <Menu
           open={menuOpen}
           onClose={() => setMenuOpen(false)}
@@ -283,7 +412,6 @@ export function McpPanel({ t }: McpPanelProps) {
       {error !== null && <p className="banner">{error}</p>}
       {state === null && error === null && <p className="empty">{t("loading")}</p>}
       {state !== null && state.servers.length === 0 && <p className="empty">{t("empty")}</p>}
-      {state !== null && state.servers.length > 0 && <p className="hint">{t("addHint")}</p>}
 
       {[...projects.entries()].length > 0 && (
         <section className="section">
@@ -322,6 +450,90 @@ export function McpPanel({ t }: McpPanelProps) {
         )}
       >
         {pendingWont !== "" && <p className="dsh-mcp-confirm-note">{pendingWont}</p>}
+      </Modal>
+
+      <Modal
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        title={t("addTitle")}
+        closeLabel={t("cancel")}
+        description={t("addDescription")}
+        className="dsh-mcp-add-dialog"
+        contentClassName="dsh-mcp-add-content"
+        footer={(
+          <>
+            <Button variant="ghost" size="sm" type="button" onClick={() => setAddOpen(false)}>{t("cancel")}</Button>
+            <Button variant="primary" size="sm" type="submit" form="dsh-mcp-add-form" disabled={busy}>{t("addSubmit")}</Button>
+          </>
+        )}
+      >
+        <form id="dsh-mcp-add-form" style={ADD_FORM_STYLE} onSubmit={(event) => {
+          event.preventDefault();
+          void submitAdd();
+        }}>
+          <div className="dsh-mcp-add-field">
+            <span className="dsh-mcp-add-label" aria-hidden="true">{t("addScope")}</span>
+            <SegmentedControl
+              id="dsh-mcp-add-scope"
+              label={t("addScope")}
+              value={draft.scope}
+              disabled={busy}
+              onChange={(scope) => updateDraft({ scope })}
+              options={[
+                { value: "project", label: t("addScopeProject"), disabled: !scopeReady("project"), title: scopeReady("project") ? undefined : t("addNoWorkspace") },
+                { value: "user", label: t("addScopeUser"), disabled: !scopeReady("user") },
+                { value: "profile", label: t("addScopeProfile"), disabled: !scopeReady("profile"), title: scopeReady("profile") ? undefined : t("addNoProfile") }
+              ]}
+            />
+            {addTarget !== undefined && <p className="dsh-mcp-add-path">{t("addWhere", { path: addTarget.path })}</p>}
+          </div>
+          <div className="dsh-mcp-add-field">
+            <label className="dsh-mcp-add-label" htmlFor="dsh-mcp-add-name">{t("addName")}</label>
+            <Input id="dsh-mcp-add-name" className="dsh-mcp-add-input" value={draft.name} placeholder={t("addNamePlaceholder")} disabled={busy} autoComplete="off" spellCheck={false} data-modal-autofocus onChange={(event) => updateDraft({ name: event.target.value })} />
+          </div>
+          <div className="dsh-mcp-add-field">
+            <span className="dsh-mcp-add-label" aria-hidden="true">{t("addTransport")}</span>
+            <SegmentedControl
+              id="dsh-mcp-add-transport"
+              label={t("addTransport")}
+              value={draft.transport}
+              disabled={busy}
+              onChange={(transport) => updateDraft({ transport })}
+              options={[
+                { value: "stdio", label: t("addTransportStdio") },
+                { value: "http", label: t("addTransportHttp") }
+              ]}
+            />
+          </div>
+          {draft.transport === "stdio" ? (
+            <>
+              <div className="dsh-mcp-add-field">
+                <label className="dsh-mcp-add-label" htmlFor="dsh-mcp-add-command">{t("addCommand")}</label>
+                <Input id="dsh-mcp-add-command" className="dsh-mcp-add-input" value={draft.command} placeholder={t("addCommandPlaceholder")} disabled={busy} autoComplete="off" spellCheck={false} onChange={(event) => updateDraft({ command: event.target.value })} />
+              </div>
+              <div className="dsh-mcp-add-field">
+                <label className="dsh-mcp-add-label" htmlFor="dsh-mcp-add-args">{t("addArgs")}</label>
+                <textarea id="dsh-mcp-add-args" className="dsh-mcp-add-area" value={draft.args} placeholder={t("addArgsPlaceholder")} disabled={busy} autoComplete="off" spellCheck={false} onChange={(event) => updateDraft({ args: event.target.value })} />
+              </div>
+              <div className="dsh-mcp-add-field">
+                <label className="dsh-mcp-add-label" htmlFor="dsh-mcp-add-env">{t("addEnv")}</label>
+                <textarea id="dsh-mcp-add-env" className="dsh-mcp-add-area" value={draft.env} placeholder={t("addEnvPlaceholder")} disabled={busy} autoComplete="off" spellCheck={false} onChange={(event) => updateDraft({ env: event.target.value })} />
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="dsh-mcp-add-field">
+                <label className="dsh-mcp-add-label" htmlFor="dsh-mcp-add-url">{t("addUrl")}</label>
+                <Input id="dsh-mcp-add-url" className="dsh-mcp-add-input" value={draft.url} placeholder={t("addUrlPlaceholder")} disabled={busy} autoComplete="off" spellCheck={false} onChange={(event) => updateDraft({ url: event.target.value })} />
+              </div>
+              <div className="dsh-mcp-add-field">
+                <label className="dsh-mcp-add-label" htmlFor="dsh-mcp-add-headers">{t("addHeaders")}</label>
+                <textarea id="dsh-mcp-add-headers" className="dsh-mcp-add-area" value={draft.headers} placeholder={t("addHeadersPlaceholder")} disabled={busy} autoComplete="off" spellCheck={false} onChange={(event) => updateDraft({ headers: event.target.value })} />
+              </div>
+            </>
+          )}
+        </form>
+        {formError !== null && <p className="dsh-mcp-add-error">{formError}</p>}
       </Modal>
 
       <Modal
@@ -408,6 +620,18 @@ export function installPanelStyle(): void {
 
 /** Layout is inline because the dialog is portaled and its flex column shrinks children.
  *  A stale injected stylesheet must not be able to put the switch back beside the name. */
+const ADD_FORM_STYLE: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 14,
+  boxSizing: "border-box",
+  width: "100%",
+  maxHeight: "min(480px, calc(100vh - 240px))",
+  overflowX: "hidden",
+  overflowY: "auto",
+  overscrollBehavior: "contain"
+};
+
 const TOOL_LIST_STYLE: CSSProperties = {
   display: "block",
   alignSelf: "stretch",

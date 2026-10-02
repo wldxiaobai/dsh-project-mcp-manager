@@ -9,7 +9,7 @@
  * `ctx.emit(PROJECT_MCP_UPDATED_EVENT)`，无载荷。插件原有导出（`inject`、
  * `globalNames()`、`activeProfile()`）不变。
  */
-import type { McpServerRuntimeView, ProjectFileState, ProjectMcpRegistry, ProjectServerState } from "./registry.js";
+import type { McpAddDraft, McpServerRuntimeView, McpWriteTarget, ProjectFileState, ProjectMcpRegistry, ProjectServerState } from "./registry.js";
 import type { McpRowSource } from "./json-file.js";
 
 /** cordis 服务名；经 `ctx.provide` / `ctx.get` / `ctx.projectMcp` 取用。 */
@@ -43,6 +43,10 @@ export interface ProjectMcpService {
   managedPathFor(source: McpRowSource, projectRoot: string): string | undefined;
   /** 确保受管 yml 存在（没有则创建空受管块）并返回其路径。 */
   prepareManagedYml(source: McpRowSource, projectRoot: string): Promise<string>;
+  /** 添加对话框当前能写的位置：当前工作区、用户层、当前 profile。 */
+  writeTargets(): McpWriteTarget[];
+  /** 按表单追加一条受管 yml 行（没有文件就创建），然后排一次对账。 */
+  addServer(source: McpRowSource, projectRoot: string, draft: McpAddDraft): Promise<string>;
   /** 订阅对账结束事件（`projectMcp/updated`，无载荷）；返回退订函数。 */
   subscribeUpdated(listener: () => void): () => void;
 }
@@ -60,6 +64,8 @@ export function bindProjectMcpService(registry: ProjectMcpRegistry): ProjectMcpS
     toolStates: (projectRoot, rawName) => registry.toolStates(projectRoot, rawName),
     managedPathFor: (source, projectRoot) => registry.managedPathFor(source, projectRoot),
     prepareManagedYml: (source, projectRoot) => registry.prepareManagedYml(source, projectRoot),
+    writeTargets: () => registry.writeTargets(),
+    addServer: (source, projectRoot, draft) => registry.addServer(source, projectRoot, draft),
     subscribeUpdated: (listener) => registry.subscribeUpdated(listener)
   };
 }

@@ -4,6 +4,7 @@ export const MCP_UI_STATE_PATH = "/api/project-mcp/state";
 export const MCP_UI_EVENTS_PATH = "/api/project-mcp/events";
 export const MCP_UI_OPEN_PATH = "/api/project-mcp/open";
 export const MCP_UI_SERVER_PATH = "/api/project-mcp/server";
+export const MCP_UI_ADD_PATH = "/api/project-mcp/add";
 export const MCP_UI_TOOL_PATH = "/api/project-mcp/tool";
 export const MCP_UI_TOOLS_PATH = "/api/project-mcp/tools";
 
@@ -34,10 +35,19 @@ export interface McpUiOpenTarget {
   projectRoot: string;
 }
 
+/** 添加对话框的写入位置。id 是 project | user | profile。 */
+export interface McpUiWriteTarget {
+  id: "project" | "user" | "profile";
+  source: string;
+  projectRoot: string;
+  path: string;
+}
+
 export interface McpUiState {
   revision: number;
   servers: McpUiServer[];
   openTargets: McpUiOpenTarget[];
+  writeTargets: McpUiWriteTarget[];
 }
 
 export interface McpUiTool {

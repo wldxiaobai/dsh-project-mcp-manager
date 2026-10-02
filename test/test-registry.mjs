@@ -1596,7 +1596,7 @@ try {
   assert.equal(updates.length, updatesAfterReconcile + 1, "a throwing listener does not drop the reconcile");
   assert.ok(warnsSvc.some((message) => message.includes("变更事件投递失败")), "throwing listener is warned: " + warnsSvc.join("|"));
   const dts = readFileSync(new URL("../lib/index.d.ts", import.meta.url), "utf8");
-  for (const name of ["ProjectFileState", "McpServerRuntimeView", "McpServerView", "McpRowSource", "ProjectServerState", "FiberPhaseView", "PROJECT_MCP_UPDATED_EVENT"]) {
+  for (const name of ["ProjectFileState", "McpServerRuntimeView", "McpServerView", "McpRowSource", "ProjectServerState", "FiberPhaseView", "PROJECT_MCP_UPDATED_EVENT", "McpAddDraft", "McpWriteTarget"]) {
     assert.ok(dts.includes(name), "package entry exports " + name);
   }
   for (const disposer of ctxSvc.disposers) {
@@ -2097,6 +2097,119 @@ try {
   } finally {
     process.chdir(savedCwdPrep);
     await rmRetry(dirPrep);
+  }
+}
+
+{
+  const dirAdd = await mkdtemp(join(tmpdir(), "dsh-mcp-add-"));
+  const homeAdd = join(dirAdd, "home");
+  const projAdd = join(dirAdd, "proj");
+  const projOther = join(dirAdd, "other");
+  const profiles = join(homeAdd, ".dsh", "profiles");
+  await mkdir(join(homeAdd, ".dsh"), { recursive: true });
+  await mkdir(projAdd, { recursive: true });
+  await mkdir(projOther, { recursive: true });
+  const savedCwdAdd = process.cwd();
+  try {
+    process.chdir(dirAdd);
+    const ctxAdd = fakeCtx();
+    const agentAdd = fakeAgent("session-add", projAdd);
+    const agentOther = fakeAgent("session-other", projOther);
+    ctxAdd.agentsList.push(agentAdd);
+    const registryAdd = new ProjectMcpRegistry(ctxAdd, {
+      globalNames: async () => [],
+      activeProfile: async () => "web",
+      userLayerPaths: { mcpYml: join(homeAdd, ".dsh", "mcp.yml"), mcpJson: join(homeAdd, ".dsh", "mcp.json"), profilesDir: profiles }
+    });
+    const serviceAdd = bindProjectMcpService(registryAdd);
+    await registryAdd.reconcileNow();
+    assert.equal(registryAdd.focusedProjectRoot(), projAdd, "a single known workspace is the add target before an explicit focus event");
+    const targets = serviceAdd.writeTargets();
+    assert.deepEqual(targets.map((item) => item.id), ["project", "user", "profile"]);
+    assert.equal(targets[0].projectRoot, projAdd);
+    assert.equal(targets[0].path, projectMcpFile(projAdd));
+
+    const written = await serviceAdd.addServer("dsh-project", projAdd, {
+      serverName: "gitlab",
+      transport: "stdio",
+      command: "npx",
+      args: ["-y", "@modelcontextprotocol/server-gitlab"],
+      env: { GITLAB_TOKEN: "${GITLAB_TOKEN}" }
+    });
+    assert.equal(written, projectMcpFile(projAdd));
+    let rows = extractManagedRows(await readFile(written, "utf8"));
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].id, "panel-mcp-gitlab");
+    assert.equal(rows[0].config.serverName, "gitlab");
+    assert.equal(rows[0].config.transport, "stdio");
+    assert.equal(rows[0].config.command, "npx");
+    assert.deepEqual(rows[0].config.args, ["-y", "@modelcontextprotocol/server-gitlab"]);
+    assert.equal(rows[0].config.cwd, ".");
+    assert.deepEqual(rows[0].config.env, { GITLAB_TOKEN: "${GITLAB_TOKEN}" });
+    assert.equal(rows[0].disabled, undefined);
+
+    await assert.rejects(
+      () => registryAdd.addServer("dsh-project", projAdd, { serverName: "gitlab", transport: "stdio", command: "node" }),
+      /已经写在这份 mcp\.yml 里/
+    );
+    rows = extractManagedRows(await readFile(written, "utf8"));
+    assert.equal(rows.length, 1, "a duplicate name does not append a second row");
+
+    await assert.rejects(
+      () => registryAdd.addServer("dsh-project", projAdd, { serverName: "bad name", transport: "stdio", command: "node" }),
+      /配置无效/
+    );
+
+    await registryAdd.addServer("dsh-project", projAdd, {
+      serverName: "sentry",
+      transport: "streamable-http",
+      url: "https://mcp.sentry.dev/mcp",
+      headers: { Authorization: "Bearer ${TOKEN}" }
+    });
+    rows = extractManagedRows(await readFile(written, "utf8"));
+    const http = rows.find((row) => row.config?.serverName === "sentry");
+    assert.equal(http?.config?.transport, "streamable-http");
+    assert.equal(http?.config?.url, "https://mcp.sentry.dev/mcp");
+    assert.deepEqual(http?.config?.headers, { Authorization: "Bearer ${TOKEN}" });
+
+    const userPath = await registryAdd.addServer("dsh-user-yml", "", {
+      serverName: "shared",
+      transport: "stdio",
+      command: "node",
+      args: ["shared.js"]
+    });
+    const userRows = extractManagedRows(await readFile(userPath, "utf8"));
+    assert.equal(userRows[0].config.cwd, "", "user-layer add leaves cwd empty so it inherits the host");
+    assert.equal(userRows[0].config.command, "node");
+
+    const profilePath = await registryAdd.addServer("dsh-profile-user-yml", "", {
+      serverName: "webtool",
+      transport: "stdio",
+      command: "node"
+    });
+    assert.equal(profilePath, join(profiles, "web", "mcp.yml"));
+    const profileRows = extractManagedRows(await readFile(profilePath, "utf8"));
+    assert.equal(profileRows[0].config.serverName, "webtool");
+    assert.equal(profileRows[0].config.cwd, "");
+
+    ctxAdd.agentsList.push(agentOther);
+    ctxAdd.emit("agent/created", { agent: agentOther, source: "resume" });
+    await registryAdd.reconcileNow();
+    assert.equal(registryAdd.focusedProjectRoot(), projOther, "agent/created moves the add target to that workspace");
+    await assert.rejects(
+      () => registryAdd.addServer("dsh-project", projAdd, { serverName: "late", transport: "stdio", command: "node" }),
+      /写入位置当前不可用/
+    );
+    assert.equal(extractManagedRows(await readFile(written, "utf8")).some((row) => row.config?.serverName === "late"), false);
+
+    for (const disposer of ctxAdd.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    pass("addServer writes a managed yml row for the workspace, user, and profile");
+  } finally {
+    process.chdir(savedCwdAdd);
+    await rmRetry(dirAdd);
   }
 }
 

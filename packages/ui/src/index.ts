@@ -9,6 +9,7 @@ import type { Context } from "@deepseek-ai/cordis";
 import { openNativeTextFile } from "@deepseek-ai/dsh-native-command";
 import type { McpRowSource, ProjectFileState } from "dsh-project-mcp-manager";
 import {
+  MCP_UI_ADD_PATH,
   MCP_UI_OPEN_PATH,
   MCP_UI_SERVER_PATH,
   MCP_UI_EVENTS_PATH,
@@ -114,6 +115,34 @@ function asString(value: unknown, label: string): string {
   return value;
 }
 
+function asTransport(value: unknown): "stdio" | "streamable-http" {
+  if (value === "stdio" || value === "streamable-http") return value;
+  throw new Error("传输只支持本地命令或远程地址");
+}
+
+function optionalString(value: unknown, label: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") throw new Error(`${label} 必须是字符串`);
+  return value;
+}
+
+function optionalStringList(value: unknown, label: string): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) throw new Error(`${label} 必须是字符串数组`);
+  return value;
+}
+
+function optionalStringMap(value: unknown, label: string): Record<string, string> | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} 必须是字符串表`);
+  const out: Record<string, string> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item !== "string") throw new Error(`${label} 的值必须是字符串`);
+    out[key] = item;
+  }
+  return out;
+}
+
 export function apply(ctx: Context) {
   const mcp = ctx.projectMcp;
   let revision = 0;
@@ -132,7 +161,8 @@ export function apply(ctx: Context) {
     return {
       revision,
       servers: serversFrom(snapshot, mcp),
-      openTargets: openTargetsFrom(snapshot, mcp)
+      openTargets: openTargetsFrom(snapshot, mcp),
+      writeTargets: mcp.writeTargets()
     };
   };
 
@@ -160,6 +190,25 @@ export function apply(ctx: Context) {
         const projectRoot = asString(body.projectRoot, "projectRoot");
         const path = await mcp.prepareManagedYml(source, projectRoot);
         await openExactPath(path, request.signal);
+        return Response.json({ ok: true, path });
+      }
+    },
+    {
+      path: MCP_UI_ADD_PATH,
+      methods: ["POST"],
+      fetch: async (request) => {
+        const body = await readJson(request);
+        const source = asSource(body.source);
+        const projectRoot = asString(body.projectRoot, "projectRoot");
+        const path = await mcp.addServer(source, projectRoot, {
+          serverName: asString(body.serverName, "serverName"),
+          transport: asTransport(body.transport),
+          command: optionalString(body.command, "command"),
+          args: optionalStringList(body.args, "args"),
+          env: optionalStringMap(body.env, "env"),
+          url: optionalString(body.url, "url"),
+          headers: optionalStringMap(body.headers, "headers")
+        });
         return Response.json({ ok: true, path });
       }
     },

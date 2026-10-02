@@ -17,6 +17,8 @@ builds itself.
 | `serverView(projectRoot, rawName)` | One row's in-memory view. Same queue rules as `snapshot()`. |
 | `globalState(rawName)` | Live global-layer state for that raw name, or `undefined` for a project row. |
 | `reload()` | One full reconcile (`reconcileNow`). |
+| `writeTargets()` | Managed yml locations the add dialog can write: the current workspace, the user layer, and the active profile. |
+| `addServer(source, projectRoot, draft)` | Appends one managed yml row from the form (creating the file when it is missing) and schedules a reconcile. Rejects a name already in that file and leaves the file unchanged. |
 
 `snapshot()` / `serverView()` / `globalState()` do not emit.
 
