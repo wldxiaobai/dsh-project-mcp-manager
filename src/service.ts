@@ -1,15 +1,24 @@
 /**
- * 其它插件 / 宿主 UI 经 cordis 服务面查询本插件状态。
+ * 其它插件 / 配套 UI 经 cordis 服务面查询本插件状态。
  *
- * 服务名 `projectMcp` 与方法集**不承诺稳定 API**（提案 B3）：`snapshot` /
- * `serverView` / `globalState` 只读上一轮对账的内存态（查询进 enqueue 与对账
- * 互斥，不读盘、不跑 reconcileAll）；`reload` 才跑一次 reconcileAll。
- * 插件原有导出（`inject`、`globalNames()`、`activeProfile()`）不变。
+ * 服务名 `projectMcp`、方法集、`projectMcp/updated` 事件，以及包入口导出的
+ * 视图类型，对配套 UI **按语义化版本承诺**（提案 B3 的「不承诺稳定」自该消费方
+ * 独立成包起不再作为现行口径）。`snapshot` / `serverView` / `globalState`
+ * 只读上一轮对账的内存态（查询进 enqueue 与对账互斥，不读盘、不跑
+ * reconcileAll）；`reload` 才跑一次 reconcileAll。对账成功结束由 registry
+ * `ctx.emit(PROJECT_MCP_UPDATED_EVENT)`，无载荷。插件原有导出（`inject`、
+ * `globalNames()`、`activeProfile()`）不变。
  */
 import type { McpServerRuntimeView, ProjectFileState, ProjectMcpRegistry, ProjectServerState } from "./registry.js";
 
 /** cordis 服务名；经 `ctx.provide` / `ctx.get` / `ctx.projectMcp` 取用。 */
 export const PROJECT_MCP_SERVICE = "projectMcp";
+
+/**
+ * 一次全量对账成功结束后发出的 cordis 事件名。无载荷。
+ * 监听方再读 `snapshot()`；本包不打开浏览器 SSE。
+ */
+export const PROJECT_MCP_UPDATED_EVENT = "projectMcp/updated";
 
 export interface ProjectMcpService {
   /** 只读上一轮对账的内存快照；进 enqueue 与对账互斥，不读盘、不触发对账。 */
@@ -33,5 +42,13 @@ export function bindProjectMcpService(registry: ProjectMcpRegistry): ProjectMcpS
 declare module "@deepseek-ai/cordis" {
   interface Context {
     projectMcp: ProjectMcpService;
+  }
+
+  interface Events {
+    /**
+     * 一次全量对账成功结束。无载荷。
+     * 监听方再读 `projectMcp.snapshot()`；本事件不带 diff，也不打开浏览器 SSE。
+     */
+    "projectMcp/updated"(): void;
   }
 }

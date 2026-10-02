@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- After each successful reconcile, emit the cordis event `projectMcp/updated`
+  (no payload). Listeners read `snapshot()` and diff themselves; this package
+  does not open a browser SSE channel. A listener that throws is logged and
+  does not fail the reconcile.
+- Re-export the query-surface view types from the package entry
+  (`ProjectFileState`, `McpServerRuntimeView`, `McpServerView`, `McpRowSource`,
+  and the types those views name). The build now emits `.d.ts` (`declaration`
+  was off, so `lib/*.d.ts` did not exist), and `package.json` points `types`
+  at `lib/index.d.ts`. The exports map still blocks deep imports of `lib/`.
+
+### Changed
+
+- `projectMcp` methods, the `projectMcp/updated` event, and those exported view
+  types are a semantic-version contract for the companion UI. That package
+  should list `dsh-project-mcp-manager` as an exact `peerDependency` (same
+  version, no range). See [query surface](docs/guide/service.md).
+
 ## [0.7.1] - 2026-09-30
 
 Patch release: the findings of the

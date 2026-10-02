@@ -36,6 +36,8 @@ client 决定。** v0.7.x 面向 dsh `0.2.0` 线（从 0.2.0-rc.2 起）。仍�
   全局装载 vs 项目装载，以及只读的遗留 Claude Code 层。
 - [`${VAR}` 展开](guide/env-expansion.zh.md)——装载时插值与对应诊断。
 - [CLI `dsh-mcp`](guide/cli.zh.md)——作用域、写入格式与独占契约。
+- [查询面](guide/service.zh.md)——`ctx.projectMcp`、`projectMcp/updated` 事件、
+  包入口导出的视图类型，以及对配套 UI 的语义化版本承诺。
 
 设计与发布记录（中文）：[dsh 0.2.0-rc.2 适配记录](design/adaptation-dsh-0.2.0-rc.2.md) ·
 [dsh 0.1.6-alpha.2 适配方案](design/adaptation-dsh-0.1.6-alpha.2.md) ·
@@ -147,6 +149,19 @@ pnpm test          # node 直跑 test/ 下六个 .mjs（model / mcp-file / json-
   `tools.restrict({ deny })`，deny 掉除本会话项目外的全部项目服务器，以及本项目
   自身行压制过的全局服务器；会话无 cwd 时回退 owner 项目（子代理），再回退 dsh
   进程 cwd 所在项目。会话销毁时释放。
+
+## 查询面
+
+其它插件和配套 UI 从 `ctx.projectMcp`（`snapshot`、`serverView`、`globalState`、
+`reload`）读装载状态。查询看到的是上一轮对账的内存，不读盘。对账成功结束时 emit
+`projectMcp/updated`，无载荷。监听方再调 `snapshot()` 自己 diff。本包不打开浏览器
+SSE。
+
+这个面——方法、事件，以及从包入口再导出的视图类型（`ProjectFileState`、
+`McpServerRuntimeView`、`McpServerView`、`McpRowSource`，以及这些视图点名的类型）
+——对配套 UI 按语义化版本承诺。UI 包把 `dsh-project-mcp-manager` 写成
+peer dependency，并锁定到**同一精确版本**（不要写 `^` 或 `~`）。详见
+[查询面](guide/service.zh.md)。
 
 ## 安全边界
 

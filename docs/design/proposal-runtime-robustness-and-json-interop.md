@@ -238,6 +238,8 @@
 **提案**：以官方 storageDomain/service 模式 `ctx.provide("projectMcp", { snapshot, serverView, globalState, reload })`，并补类型声明合并。插件现有导出面（`inject = ["tools","agents"]`、`globalNames()`、`activeProfile()`）保持不变。
 
 > **落地口径（v0.6.0）**：`snapshot` / `serverView` / `globalState` 进 enqueue 与对账互斥，按上一轮 `lastScanFiles` / `userLayer` 内存拼装，不读盘、不跑 `reconcileAll`；`reload` 才对账一次。
+>
+> **后续口径**：配套 UI 独立成包后即为稳定消费方。方法、`projectMcp/updated`（对账成功结束、无载荷）与包入口导出的视图类型按语义化版本承诺；UI 包以精确版本 peer-depend 本包。浏览器 SSE 仍由 UI 自建。见 [查询面](../guide/service.zh.md)。上面「不承诺稳定 API」只保留为 v0.6.0 当时的裁决。
 
 **风险**：服务名与稳定性承诺需评审；`reload` 的语义限定为"触发一次 reconcileAll"。
 
@@ -375,6 +377,6 @@ C3 本轮跳过。
 2. **A4 键名与语法**：`tools.allow`/`tools.deny`，同时读取 `includeTools`/`excludeTools`；**完整 glob**（`*`、`**`、`?`、`[…]`）。
 3. **A5 作用域**：允许 `--scope project|user|profile`；缺省 **project**（与 `add` 一致）。
 4. **B1 卸载策略**：无会话且非进程 cwd 后 **5 分钟宽限**再卸载。
-5. **B3 服务名与稳定性**：服务名 `projectMcp`；**不承诺稳定 API**。
+5. **B3 服务名与稳定性**：服务名 `projectMcp`。v0.6.0 落地时不承诺稳定 API；配套 UI 独立成包后改为对它按语义化版本承诺，见 [查询面](../guide/service.zh.md)。
 6. **C1 opt-in**：**只报错**，无 `sseAsStreamableHttp`，无环境开关。
 7. **C3 默认值与层序**：**本轮不做**（不读 `.vscode/mcp.json`）。
