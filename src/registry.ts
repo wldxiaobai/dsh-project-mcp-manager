@@ -41,7 +41,7 @@
 import chokidar from "chokidar";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import type { Context } from "@deepseek-ai/cordis";
 import * as mcpClient from "@deepseek-ai/dsh-mcp-client";
 import { PROJECT_MCP_UPDATED_EVENT } from "./service.js";
@@ -2591,6 +2591,26 @@ export class ProjectMcpRegistry {
   /** 该行的受管 yml 路径；解析不出 profile 名时返回 undefined。遗留 `.mcp.json` 指向同项目的 `.dsh/mcp.yml`。 */
   managedPathFor(source: McpRowSource, projectRoot: string): string | undefined {
     return this.managedYmlPathFor(source, projectRoot);
+  }
+
+  /**
+   * 返回受管 yml 的绝对路径。文件尚不存在时按空受管块创建，这样资源管理器
+   * 才能选中它，而不是打开一个对不上的默认窗口。
+   */
+  async prepareManagedYml(source: McpRowSource, projectRoot: string): Promise<string> {
+    const path = this.managedYmlPathFor(source, projectRoot);
+    if (path === undefined) {
+      throw new Error("当前解析不出运行中的 profile 名，无法定位 profile 层 mcp.yml");
+    }
+    try {
+      await access(path);
+    } catch (error) {
+      const code = error instanceof Error && "code" in error ? String(error.code) : "";
+      if (code !== "ENOENT") throw error;
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, "[]\n", "utf8");
+    }
+    return resolve(path);
   }
 
   /** 锁内读-改-写该作用域的受管 yml；写完排一次对账（不等待对账结束）。 */

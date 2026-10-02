@@ -2067,6 +2067,39 @@ try {
   }
 }
 
+{
+  const dirPrep = await mkdtemp(join(tmpdir(), "dsh-mcp-prepare-yml-"));
+  const homePrep = join(dirPrep, "home");
+  const projPrep = join(dirPrep, "proj");
+  await mkdir(join(homePrep, ".dsh"), { recursive: true });
+  await mkdir(projPrep, { recursive: true });
+  await writeFile(join(projPrep, ".mcp.json"), JSON.stringify({ mcpServers: { godot: { command: "node" } } }), "utf8");
+  const savedCwdPrep = process.cwd();
+  try {
+    process.chdir(dirPrep);
+    const ctxPrep = fakeCtx();
+    const registryPrep = new ProjectMcpRegistry(ctxPrep, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(homePrep, ".dsh", "mcp.yml"), mcpJson: join(homePrep, ".dsh", "mcp.json"), profilesDir: join(homePrep, ".dsh", "profiles") }
+    });
+    const created = await registryPrep.prepareManagedYml("cc-project", projPrep);
+    assert.equal(created, projectMcpFile(projPrep), "legacy project source prepares the managed yml, not the json file");
+    const text = await readFile(created, "utf8");
+    assert.match(text, /^\[\]\s*$/, "a missing yml is created as an empty patch array");
+    await writeFile(created, text + "# keep-me\n", "utf8");
+    const again = await registryPrep.prepareManagedYml("cc-project", projPrep);
+    assert.match(await readFile(again, "utf8"), /# keep-me/, "an existing yml is not rewritten");
+    for (const disposer of ctxPrep.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    pass("prepareManagedYml creates a missing managed yml and leaves an existing one untouched");
+  } finally {
+    process.chdir(savedCwdPrep);
+    await rmRetry(dirPrep);
+  }
+}
+
 console.log("\n" + passed + " passed, 0 failed");
 console.log("ALL PROJECT REGISTRY TESTS PASSED");
 // chokidar close() is fire-and-forget in registry dispose; on Windows a

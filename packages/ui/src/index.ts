@@ -3,6 +3,8 @@
  * 页面本身由 ./client 挂进设置里的 Plugins 标签。headless 没有 connection 时
  * 本插件不注册路由，装载器照常工作。
  */
+import { spawn } from "node:child_process";
+import { resolve } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import { openNativeTextFile } from "@deepseek-ai/dsh-native-command";
 import type { McpRowSource, ProjectFileState } from "dsh-project-mcp-manager";
@@ -156,9 +158,8 @@ export function apply(ctx: Context) {
         const body = await readJson(request);
         const source = asSource(body.source);
         const projectRoot = asString(body.projectRoot, "projectRoot");
-        const path = mcp.managedPathFor(source, projectRoot);
-        if (path === undefined) return Response.json({ ok: false, message: "无法定位受管 yml" }, { status: 400 });
-        await openNativeTextFile(path, request.signal);
+        const path = await mcp.prepareManagedYml(source, projectRoot);
+        await openExactPath(path, request.signal);
         return Response.json({ ok: true, path });
       }
     },
@@ -228,6 +229,58 @@ export function apply(ctx: Context) {
     requestBody: "buffered",
     fetch: (request) => Promise.resolve(eventStream(request, mcp))
   }), "dsh-project-mcp-ui: events");
+}
+
+/**
+ * 打开受管 yml 本身。
+ * Windows 上官方 openNativeTextFile 把 file URI 交给 explorer.exe，文件不存在
+ * 或路径含中文时只会弹出一个对不上的资源管理器窗口。这里先保证文件存在，
+ * 再用 `/select,` 加原始路径让资源管理器选中它，并交给默认程序打开。
+ */
+async function openExactPath(path: string, signal: AbortSignal): Promise<void> {
+  const absolute = resolve(path);
+  if (process.platform !== "win32") {
+    await openNativeTextFile(absolute, signal);
+    return;
+  }
+  await runWindows("explorer.exe", ["/select," + absolute], signal, { acceptExit1: true, hidden: false });
+  try {
+    await runWindows("powershell.exe", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Start-Process -LiteralPath $env:DSH_MCP_OPEN_FILE"
+    ], signal, { acceptExit1: false, hidden: true, env: { DSH_MCP_OPEN_FILE: absolute } });
+  } catch {
+    // 没有关联的编辑器时，资源管理器已经选中了这份文件。
+  }
+}
+
+function runWindows(
+  command: string,
+  args: string[],
+  signal: AbortSignal,
+  options: { acceptExit1: boolean; hidden: boolean; env?: Record<string, string> }
+): Promise<void> {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(command, args, {
+      windowsHide: options.hidden,
+      signal,
+      env: options.env === undefined ? process.env : { ...process.env, ...options.env }
+    });
+    child.once("error", reject);
+    child.once("exit", (code) => {
+      if (signal.aborted) {
+        reject(signal.reason instanceof Error ? signal.reason : new Error("已取消打开文件"));
+        return;
+      }
+      if (code === 0 || code === null || (options.acceptExit1 && code === 1)) {
+        resolvePromise();
+        return;
+      }
+      reject(new Error(`${command} 退出码 ${String(code)}`));
+    });
+  });
 }
 
 /** 对账结束推一条 SSE。浏览器关页时 abort 退订。 */
