@@ -54,6 +54,7 @@ Design and release records (Chinese): [dsh 0.2.0-rc.2 adaptation](docs/design/ad
 [dsh 0.1.2-rc.1 adaptation](docs/design/adaptation-dsh-0.1.2-rc1.md) ·
 [JSON config layer proposal](docs/design/proposal-json-mcp-config.md) ·
 [Runtime robustness & JSON interop proposal](docs/design/proposal-runtime-robustness-and-json-interop.md) ·
+[v0.7.2 release notes](docs/releases/v0.7.2.md) ·
 [v0.7.1 release notes](docs/releases/v0.7.1.md) ·
 [v0.7.0 release notes](docs/releases/v0.7.0.md) ·
 [v0.6.0 release notes](docs/releases/v0.6.0.md) ·
@@ -93,7 +94,7 @@ dsh plugin --profile web add dsh-project-mcp-manager@latest
 
 # Install a specific version (check available versions with
 # npm view dsh-project-mcp-manager versions)
-dsh plugin --profile web add dsh-project-mcp-manager@0.7.1
+dsh plugin --profile web add dsh-project-mcp-manager@0.7.2
 ```
 
 **Option 2: install directly with pnpm** (equivalent to option 1):
@@ -120,7 +121,7 @@ pnpm add link:<path-to-your-dsh-mcp-project-source>   # e.g. D:\dev\dsh-mcp-proj
 > trigger the bundle reconcile.
 
 **Upgrading / pinning versions**: re-run the `add` command from option 1 with
-the desired version suffix — `@latest` upgrades to the newest release, `@0.7.1`
+the desired version suffix — `@latest` upgrades to the newest release, `@0.7.2`
 pins to a specific version. v0.7.x needs dsh 0.2.0-rc.2 (the `0.2.0` line).
 dsh 0.1.5 keeps working with plugin `@0.6.0`.
 

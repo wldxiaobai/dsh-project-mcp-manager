@@ -46,6 +46,7 @@ client 决定。** v0.7.x 面向 dsh `0.2.0` 线（从 0.2.0-rc.2 起）。仍�
 [dsh 0.1.2-rc.1 适配记录](design/adaptation-dsh-0.1.2-rc1.md) ·
 [JSON 配置层设计提案](design/proposal-json-mcp-config.md) ·
 [运行时稳健性与 JSON 互通提案](design/proposal-runtime-robustness-and-json-interop.md) ·
+[v0.7.2 发布说明](releases/v0.7.2.md) ·
 [v0.7.1 发布说明](releases/v0.7.1.md) ·
 [v0.7.0 发布说明](releases/v0.7.0.md) ·
 [v0.6.0 发布说明](releases/v0.6.0.md) ·
@@ -81,7 +82,7 @@ npm install -g deepseek-ai/dsh         # 或从 GitHub 源码安装
 dsh plugin --profile web add dsh-project-mcp-manager@latest
 
 # 安装指定版本（版本号可先 npm view dsh-project-mcp-manager versions 查看）
-dsh plugin --profile web add dsh-project-mcp-manager@0.7.1
+dsh plugin --profile web add dsh-project-mcp-manager@0.7.2
 ```
 
 **方式二：直接 pnpm 安装**（与方式一等价）：
@@ -106,7 +107,7 @@ pnpm add link:<你的 dsh-mcp-project 源码目录>   # 例如 D:\dev\dsh-mcp-pr
 > `dsh-project-mcp-manager` 行）触发 bundle reconcile。
 
 **升级/锁定版本**：重跑方式一的 `add` 命令并带上目标版本后缀——`@latest`
-升级到最新，`@0.7.1` 锁定到指定版本。v0.7.x 需要 dsh 0.2.0-rc.2（`0.2.0` 线）。
+升级到最新，`@0.7.2` 锁定到指定版本。v0.7.x 需要 dsh 0.2.0-rc.2（`0.2.0` 线）。
 dsh 0.1.5 继续用插件 `@0.6.0`。
 
 ## 构建与测试

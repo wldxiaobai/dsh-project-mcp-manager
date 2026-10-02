@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-10-02
+
+The query surface becomes push-based for the companion UI. Mount behavior and
+the host range are unchanged (dsh `0.2.0` tuple, from `0.2.0-rc.2`).
+
 ### Added
 
 - After each successful reconcile, emit the cordis event `projectMcp/updated`
@@ -747,7 +752,8 @@ carry an explicit `type`.
 Security note: `stdio` lines in `.dsh/mcp.yml` spawn their `command` inside the dsh host
 process, so project files are executable-code carriers — add them only in trusted projects.
 
-[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.7.1...HEAD
+[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.4.3...v0.6.0
