@@ -1,6 +1,6 @@
 /** MCP settings tab: layers, activation, delete, and per-tool switches. */
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { Button, Menu, Modal, StateDot, Switch, Tag } from "@deepseek-ai/dsh-client-ui-primitives";
 import { IconFolderOpenOutlineRegular, IconTrashOutlineRegular } from "@deepseek-ai/dsh-client-ui-primitives";
 import {
@@ -266,11 +266,12 @@ export function McpPanel({ t }: McpPanelProps) {
         {tools === null && <p className="dsh-mcp-tools-status">{t("loading")}</p>}
         {tools !== null && tools.length === 0 && <p className="dsh-mcp-tools-status">{t("toolsEmpty")}</p>}
         {tools !== null && tools.length > 0 && (
-          <div className="dsh-mcp-tools-list">
+          <div className="dsh-mcp-tools-list" style={TOOL_LIST_STYLE}>
             {tools.map((tool) => (
-              <div className="dsh-mcp-tools-row" key={tool.name}>
-                <span className="dsh-mcp-tools-name" title={tool.name}>{tool.name}</span>
+              <div className="dsh-mcp-tools-row" key={tool.name} style={TOOL_ROW_STYLE}>
+                <span className="dsh-mcp-tools-name" title={tool.name} style={TOOL_NAME_STYLE}>{tool.name}</span>
                 <Switch
+                  className="dsh-mcp-tools-switch"
                   checked={tool.enabled}
                   disabled={busy || toolsFor === null}
                   label={t("toolEnableLabel", { name: tool.name })}
@@ -322,9 +323,45 @@ function ServerCard({ row, busy, t, onToggle, onRemove, onTools }: {
 }
 
 export function installPanelStyle(): void {
-  if (typeof document === "undefined" || document.getElementById("dsh-project-mcp-ui") !== null) return;
-  const tag = document.createElement("style");
-  tag.id = "dsh-project-mcp-ui";
-  tag.textContent = PANEL_CSS;
-  document.head.appendChild(tag);
+  if (typeof document === "undefined") return;
+  let tag = document.getElementById("dsh-project-mcp-ui");
+  if (tag === null) {
+    tag = document.createElement("style");
+    tag.id = "dsh-project-mcp-ui";
+    document.head.appendChild(tag);
+  }
+  if (tag.textContent !== PANEL_CSS) tag.textContent = PANEL_CSS;
 }
+
+/** Layout is inline because the dialog is portaled and its flex column shrinks children.
+ *  A stale injected stylesheet must not be able to put the switch back beside the name. */
+const TOOL_LIST_STYLE: CSSProperties = {
+  display: "block",
+  alignSelf: "stretch",
+  boxSizing: "border-box",
+  width: "100%",
+  maxHeight: "min(420px, calc(100vh - 230px))",
+  overflowX: "hidden",
+  overflowY: "auto",
+  overscrollBehavior: "contain",
+  scrollbarGutter: "stable",
+  flex: "0 0 auto"
+};
+
+const TOOL_ROW_STYLE: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "minmax(0, 1fr) auto",
+  alignItems: "center",
+  columnGap: 16,
+  boxSizing: "border-box",
+  width: "100%",
+  minHeight: 44,
+  padding: "10px 0"
+};
+
+const TOOL_NAME_STYLE: CSSProperties = {
+  minWidth: 0,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap"
+};

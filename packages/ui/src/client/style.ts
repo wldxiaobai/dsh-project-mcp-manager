@@ -98,27 +98,46 @@ export const PANEL_CSS = `
   color: var(--dsw-alias-state-error-primary);
 }
 
-/* Modal 挂到 document.body，选择器不能套在 .dsh-mcp-ui 下。尺寸和滚动沿用官方弹层：
-   卡片用 max-height: 100% 顶住遮罩内边距，内容区 min-height: 0 才能在卡片里滚动。 */
+/* Modal 挂到 document.body，选择器不能套在 .dsh-mcp-ui 下。
+   官方 .dialog / .content / .body 是嵌套的纵向 flex，子项默认 flex-shrink: 1，
+   工具一多就会把行高压扁而不是出滚动条。滚动口必须是列表自己（block + max-height），
+   每一行用两列网格把开关钉在右列，避免行宽被内容撑死时开关贴在文字右侧。 */
 .dsh-mcp-tools-dialog {
-  width: min(480px, 100%);
-  max-height: min(640px, 100%);
+  width: min(440px, 100%);
   font-family: var(--dsw-font-family);
   color: var(--dsw-alias-label-primary);
 }
 .dsh-mcp-tools-content {
-  min-height: 0;
-  overflow-y: auto;
-}
-.dsh-mcp-tools-list {
   display: flex;
   flex-direction: column;
+  align-items: stretch;
+  width: 100%;
+  overflow: visible;
+}
+.dsh-mcp-tools-list {
+  display: block;
+  align-self: stretch;
+  box-sizing: border-box;
+  width: 100%;
+  max-height: min(420px, calc(100vh - 230px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  flex: 0 0 auto;
+}
+@supports (height: 100dvh) {
+  .dsh-mcp-tools-list {
+    max-height: min(420px, calc(100dvh - 230px));
+  }
 }
 .dsh-mcp-tools-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
+  column-gap: 16px;
+  box-sizing: border-box;
+  width: 100%;
   min-height: 44px;
   padding: 10px 0;
   border-bottom: 0.5px solid var(--dsw-alias-border-l2);
@@ -136,6 +155,9 @@ export const PANEL_CSS = `
   line-height: 22px;
   font-weight: 400;
   color: var(--dsw-alias-label-primary);
+}
+.dsh-mcp-tools-switch {
+  justify-self: end;
 }
 .dsh-mcp-tools-status {
   margin: 0;
