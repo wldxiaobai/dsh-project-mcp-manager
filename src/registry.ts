@@ -210,6 +210,11 @@ export interface ProjectMcpRegistryOptions {
   unmountGraceMs?: number;
   /** 打开配置文件的宿主动作（配套 UI 的「打开配置文件」按钮）；缺省时该按钮不可用。 */
   openPath?: (path: string) => void | Promise<void>;
+  /**
+   * 在线会话目录的补扫间隔（毫秒）。`agent/created` 若被作用域过滤掉，
+   * 靠它在运行中发现新工作区。`0` 或未设置则不启定时器（测试缺省关闭）。
+   */
+  liveWatchMs?: number;
 }
 
 interface ProjectEntry {
@@ -787,26 +792,49 @@ export class ProjectMcpRegistry {
   private readonly toolBudgetHits = new Map<string, { name: string; tools: number; bytes: number }[]>();
   /** 项目离开活跃挂载集的时刻（宽限内仍保持装载）。 */
   private readonly idleSince = new Map<string, number>();
+  /** session id → 该会话 cwd 解析出的项目根。session/created 先于 agent 入列时也要能装载。 */
+  private readonly sessionRoots = new Map<string, string>();
+  /** 上一轮对账结束时的在线目录签名；补扫发现变化才再对账。 */
+  private liveWatchSig = "";
+  private liveWatchTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(ctx: any, providers: ProjectMcpRegistryOptions) {
     this.ctx = ctx;
     this.providers = providers;
 
     // dsh 0.2 的 agent/created 带 source（startup|resume|clear|compact），覆盖原 session-start 的补扫。
-    ctx.on("agent/created", ({ agent }: any) => {
-      if (agent === undefined) return;
+    // global：事件经会话作用域 carrier 派发，非 global 的监听可能被过滤掉，运行中新开的工作区就永远不会对账。
+    const watchOpts = { global: true };
+    ctx.on("agent/created", (payload: any) => {
+      const agent = payload?.agent ?? payload;
+      if (agent?.session === undefined && agent?.id === undefined) return;
       this.schedule(async () => {
-        this.agentProjects.set(agent.id, await this.resolveProject(agent));
+        await this.rememberAgent(agent);
         await this.reconcileAll();
       });
-    });
-    ctx.on("agent/disposed", ({ agent }: any) => {
+    }, watchOpts);
+    ctx.on("agent/disposed", (payload: any) => {
+      const agent = payload?.agent ?? payload;
       if (agent === undefined) return;
       this.releaseAgent(agent);
       this.schedule(async () => {
         await this.reconcileAll();
       });
-    });
+    }, watchOpts);
+    ctx.on("session/created", (session: any) => {
+      this.schedule(async () => {
+        await this.rememberSession(session);
+        await this.reconcileAll();
+      });
+    }, watchOpts);
+    ctx.on("session/disposed", (session: any) => {
+      const id = this.sessionIdOf(session);
+      if (id !== undefined) this.sessionRoots.delete(id);
+      this.schedule(async () => {
+        await this.reconcileAll();
+      });
+    }, watchOpts);
+    this.armLiveWatch();
 
     // 插件热更重载时已存在的会话也要覆盖。
     this.schedule(async () => {
@@ -822,6 +850,7 @@ export class ProjectMcpRegistry {
   private disposeRuntime(): void {
     this.disposed = true;
     if (this.timer !== undefined) clearTimeout(this.timer);
+    if (this.liveWatchTimer !== undefined) clearInterval(this.liveWatchTimer);
     if (this.graceTimer !== undefined) clearTimeout(this.graceTimer);
     if (this.watcher !== undefined) void this.watcher.close().catch(() => {});
     if (this.userWatcher !== undefined) void this.userWatcher.close().catch(() => {});
@@ -911,6 +940,65 @@ export class ProjectMcpRegistry {
     }
   }
 
+  /** 运行中补扫在线目录。测试不传 `liveWatchMs`，避免定时器改写对账次数。 */
+  private armLiveWatch(): void {
+    const interval = this.providers.liveWatchMs;
+    if (interval === undefined || interval <= 0) return;
+    this.liveWatchTimer = setInterval(() => {
+      if (this.disposed) return;
+      this.schedule(async () => {
+        const signature = await this.liveDirectorySignature();
+        if (signature === this.liveWatchSig) return;
+        await this.reconcileAll();
+      });
+    }, interval);
+    this.liveWatchTimer.unref?.();
+  }
+
+  private sessionIdOf(session: any): string | undefined {
+    const id = session?.id ?? session?.header?.id;
+    return typeof id === "string" && id !== "" ? id : undefined;
+  }
+
+  private async rememberSession(session: any): Promise<void> {
+    const id = this.sessionIdOf(session);
+    const cwd = session?.header?.cwd;
+    if (id === undefined || typeof cwd !== "string" || cwd === "") return;
+    try {
+      this.sessionRoots.set(id, await findProjectRoot(cwd));
+    } catch {
+      // 目录不可解析：不占挂载集
+    }
+  }
+
+  private async rememberAgent(agent: any): Promise<void> {
+    if (agent?.id === undefined) return;
+    const cwd = agent?.session?.header?.cwd;
+    if (typeof cwd !== "string" || cwd === "") return;
+    try {
+      this.agentProjects.set(agent.id, projectKeyOf(await findProjectRoot(cwd)));
+    } catch {
+      // 留给 resolveProject 的进程 cwd 兜底
+    }
+  }
+
+  /** 在线 agent cwd、session/created 记下的根、进程 cwd。排序后比较，发现新工作区。 */
+  private async liveDirectorySignature(): Promise<string> {
+    const parts: string[] = [];
+    for (const agent of this.liveAgents()) {
+      const cwd = agent?.session?.header?.cwd;
+      if (typeof cwd === "string" && cwd !== "") parts.push(cwd);
+    }
+    for (const root of this.sessionRoots.values()) parts.push(root);
+    try {
+      parts.push(await findProjectRoot(process.cwd()));
+    } catch {
+      // 启动目录不可解析
+    }
+    parts.sort(byCodeUnit);
+    return parts.join("\n");
+  }
+
   // ── 项目发现与文件监听 ──────────────────────────────────────────────
 
   private async knownProjects(): Promise<string[]> {
@@ -929,6 +1017,7 @@ export class ProjectMcpRegistry {
       const cwd = agent?.session?.header?.cwd;
       if (typeof cwd === "string" && cwd !== "") await add(cwd);
     }
+    for (const root of this.sessionRoots.values()) await add(root);
     try {
       await add(process.cwd());
     } catch {
@@ -946,7 +1035,7 @@ export class ProjectMcpRegistry {
     if (same) return;
     const old = this.watcher;
     this.watcher = undefined;
-    if (old !== undefined) await old.close().catch(() => {});
+    if (old !== undefined) await this.closeWatcher(old);
     this.watchedFiles = keys;
     if (keys.length === 0 || this.disposed) return;
     // chokidar 不会监听尚不存在的嵌套文件：改为监听项目根（depth 2 覆盖
@@ -1137,7 +1226,7 @@ export class ProjectMcpRegistry {
     if (same) return;
     const old = this.userWatcher;
     this.userWatcher = undefined;
-    if (old !== undefined) await old.close().catch(() => {});
+    if (old !== undefined) await this.closeWatcher(old);
     this.userWatchedPaths = keys;
     if (keys.length === 0 || this.disposed) return;
     const watcher = chokidar.watch(targets, {
@@ -1158,6 +1247,17 @@ export class ProjectMcpRegistry {
       // 保持监听；错误不炸宿主
     });
     this.userWatcher = watcher;
+  }
+
+  /** close 卡住时不能堵死对账链：新工作区的装载已经在前面完成。 */
+  private async closeWatcher(watcher: { close: () => Promise<void> }): Promise<void> {
+    await Promise.race([
+      watcher.close().catch(() => {}),
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 3000);
+        timer.unref?.();
+      })
+    ]);
   }
 
   private noteConfigRead(): void {
@@ -1184,12 +1284,14 @@ export class ProjectMcpRegistry {
   private async liveMountKeys(): Promise<Set<string>> {
     const keys = new Set<string>();
     for (const agent of this.liveAgents()) {
+      await this.rememberAgent(agent);
       const project = this.agentProjects.get(agent.id) ?? await this.resolveProject(agent);
       if (project !== undefined) {
         this.agentProjects.set(agent.id, project);
         keys.add(project);
       }
     }
+    for (const root of this.sessionRoots.values()) keys.add(projectKeyOf(root));
     try {
       keys.add(projectKeyOf(await findProjectRoot(process.cwd())));
     } catch {
@@ -1325,8 +1427,6 @@ export class ProjectMcpRegistry {
     if (!skipReread) {
       await this.readUserLayer();
     }
-    await this.syncWatcher();
-    await this.syncUserWatcher();
 
     const globalMerged = mergeSourcedRows([this.userLayer.profileYmlRows, this.userLayer.profileRows, this.userLayer.ymlRows, this.userLayer.jsonRows]);
     this.lastGlobalDesired = globalMerged.rows;
@@ -1370,6 +1470,17 @@ export class ProjectMcpRegistry {
     this.inspectToolBudgets();
     await this.writeSummaries();
     this.scheduleGraceUnmount();
+    try {
+      this.liveWatchSig = await this.liveDirectorySignature();
+    } catch {
+      // 签名失败不影响本轮已完成的装载；下次补扫会再比
+    }
+    try {
+      await this.syncWatcher();
+      await this.syncUserWatcher();
+    } catch (error) {
+      this.ctx.logger.warn(`项目 MCP 文件监听更新失败：${error instanceof Error ? error.message : String(error)}（本轮装载不受影响）`);
+    }
     this.emitUpdated();
   }
 
@@ -1571,6 +1682,10 @@ export class ProjectMcpRegistry {
       if (entry.rows.length === 0) return;
       project = { projectRoot: entry.projectRoot, servers: new Map() };
       this.projects.set(key, project);
+      if (keepMounts) {
+        const names = entry.rows.map((row) => row.rawName).join("、");
+        this.ctx.logger.info?.(`项目 MCP：开始装载 ${entry.projectRoot}（${names}）`);
+      }
     }
     const catalog = entry.rows;
     const desired = keepMounts ? catalog : [];

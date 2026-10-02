@@ -60,6 +60,7 @@ export function apply(ctx: Context) {
     /** 当前 profile 名：`DSH_MCP_PROFILE` 优先；否则从 loader 根 include 的
      *  config.path（`<dshHome>/profiles/<name>/cordis.yml`）解析，再退回
      *  `ctx.baseUrl`（同目录）。解析不出返回 undefined → 不读 profile 用户层。 */
+    liveWatchMs: 2000,
     activeProfile: async () => {
       const override = process.env[PROFILE_ENV];
       if (typeof override === "string" && override !== "") return override;

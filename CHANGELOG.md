@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Opening a workspace for the first time in a running dsh process now loads
+  that directory's MCP config without a restart. Session creation is observed
+  even when the event is scoped, and live session directories are rescanned
+  every two seconds. A file-watch update can no longer block that load.
+
 ### Added
 
 - Profile-layer native managed block `~/.dsh/profiles/<name>/mcp.yml`

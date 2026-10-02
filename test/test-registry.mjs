@@ -1955,6 +1955,46 @@ try {
   }
 }
 
+// session/created 单独就能装上项目，不依赖 agent/created（作用域过滤漏掉后者时的路径）。
+{
+  const dirSession = await mkdtemp(join(tmpdir(), "dsh-mcp-session-created-"));
+  const homeSession = join(dirSession, "home");
+  const projSession = join(dirSession, "proj");
+  await mkdir(join(homeSession, ".dsh"), { recursive: true });
+  await mkdir(projSession, { recursive: true });
+  await writeManagedRows(projectMcpFile(projSession), [stdioRow("from-session")], { createIfMissing: true });
+  const savedCwdSession = process.cwd();
+  try {
+    process.chdir(dirSession);
+    const ctxSession = fakeCtx();
+    const registrySession = new ProjectMcpRegistry(ctxSession, {
+      globalNames: async () => [],
+      unmountGraceMs: 0,
+      userLayerPaths: { mcpYml: join(homeSession, ".dsh", "mcp.yml"), mcpJson: join(homeSession, ".dsh", "mcp.json"), profilesDir: join(homeSession, ".dsh", "profiles") }
+    });
+    await registrySession.reconcileNow();
+    assert.equal(ctxSession.mounts.length, 0, "no project mount before any session");
+    ctxSession.emit("session/created", { id: "session-direct", header: { cwd: projSession } });
+    assert.ok(
+      await registrySession.waitForState(projSession, "from-session", (state) => state?.phase === "active", 5000),
+      "session/created mounts the workspace project without agent/created"
+    );
+    ctxSession.emit("session/disposed", { id: "session-direct", header: { cwd: projSession } });
+    assert.ok(
+      await registrySession.waitForState(projSession, "from-session", (state) => state === undefined || state.phase === null, 5000),
+      "session/disposed drops the project once the grace is zero"
+    );
+    for (const disposer of ctxSession.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    pass("session/created mounts a newly opened workspace without waiting for agent/created");
+  } finally {
+    process.chdir(savedCwdSession);
+    await rmRetry(dirSession);
+  }
+}
+
 console.log("\n" + passed + " passed, 0 failed");
 console.log("ALL PROJECT REGISTRY TESTS PASSED");
 // chokidar close() is fire-and-forget in registry dispose; on Windows a
