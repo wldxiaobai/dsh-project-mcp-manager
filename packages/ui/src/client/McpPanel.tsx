@@ -259,15 +259,17 @@ export function McpPanel({ t }: McpPanelProps) {
         onClose={() => setToolsFor(null)}
         title={t("toolsTitle", { name: toolsFor?.serverName ?? "" })}
         closeLabel={t("toolsClose")}
+        className="dsh-mcp-tools-dialog"
+        contentClassName="dsh-mcp-tools-content"
         footer={<Button variant="ghost" size="sm" onClick={() => setToolsFor(null)}>{t("toolsClose")}</Button>}
       >
-        {tools === null && <p className="hint">{t("loading")}</p>}
-        {tools !== null && tools.length === 0 && <p className="hint">{t("toolsEmpty")}</p>}
+        {tools === null && <p className="dsh-mcp-tools-status">{t("loading")}</p>}
+        {tools !== null && tools.length === 0 && <p className="dsh-mcp-tools-status">{t("toolsEmpty")}</p>}
         {tools !== null && tools.length > 0 && (
-          <div className="tools">
+          <div className="dsh-mcp-tools-list">
             {tools.map((tool) => (
-              <div className="tool" key={tool.name}>
-                <code>{tool.name}</code>
+              <div className="dsh-mcp-tools-row" key={tool.name}>
+                <span className="dsh-mcp-tools-name" title={tool.name}>{tool.name}</span>
                 <Switch
                   checked={tool.enabled}
                   disabled={busy || toolsFor === null}
