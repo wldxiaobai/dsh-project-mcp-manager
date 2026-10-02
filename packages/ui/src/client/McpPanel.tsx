@@ -1,9 +1,10 @@
 /** MCP settings tab: layers, activation, delete, and per-tool switches. */
 
 import { useEffect, useState, type CSSProperties } from "react";
-import { Button, Menu, Modal, StateDot, Switch, Tag } from "@deepseek-ai/dsh-client-ui-primitives";
-import { IconFolderOpenOutlineRegular, IconTrashOutlineRegular } from "@deepseek-ai/dsh-client-ui-primitives";
+import { Button, Menu, Modal, StateDot, Switch, Tooltip } from "@deepseek-ai/dsh-client-ui-primitives";
+import { IconChevronDownOutlineRegular, IconFolderOpenOutlineRegular, IconTrashOutlineRegular } from "@deepseek-ai/dsh-client-ui-primitives";
 import {
+  MCP_UI_EVENTS_PATH,
   MCP_UI_OPEN_PATH,
   MCP_UI_SERVER_PATH,
   MCP_UI_STATE_PATH,
@@ -71,6 +72,51 @@ function fileName(path: string): string {
   return parts[parts.length - 1] ?? path;
 }
 
+function skipDetail(reason: string | null, t: McpPanelProps["t"]): string {
+  switch (reason) {
+    case null:
+    case "":
+    case "idle":
+      return t("statusIdleDetail");
+    case "name-taken":
+      return t("skipNameTaken");
+    case "env-missing":
+      return t("skipEnvMissing");
+    case "env-invalid":
+      return t("skipEnvInvalid");
+    case "give-up":
+      return t("skipGiveUp");
+    case "config-invalid":
+      return t("skipConfigInvalid");
+    default:
+      return t("skipOther", { reason: reason ?? "" });
+  }
+}
+
+/** 一张卡片只说一句运行时状态。开关表达意图，这句话解释现在为什么跑或没跑。 */
+function runtimeStatus(row: McpUiServer, t: McpPanelProps["t"]): { label: string; tip: string; dot: "done" | "error" | "idle" } {
+  const source = SOURCE_LABEL[row.source] ?? fileName(row.filePath);
+  const notes = [t("sourceDetail", { file: source })];
+  if (row.needsYmlTakeover) notes.push(t("readOnlyDetail"));
+  const tail = notes.join("");
+  if (!row.enabled) {
+    return { label: t("statusOff"), tip: `${t("statusOffDetail")}${tail}`, dot: "idle" };
+  }
+  if (row.fiberPhase === "failed") {
+    return { label: t("statusFailed"), tip: `${skipDetail(row.skipReason, t)}${tail}`, dot: "error" };
+  }
+  if (row.active) {
+    return { label: t("statusRunning"), tip: `${t("statusRunningDetail")}${tail}`, dot: "done" };
+  }
+  if (row.fiberPhase === "loading") {
+    return { label: t("statusStarting"), tip: `${t("statusStartingDetail")}${tail}`, dot: "idle" };
+  }
+  if (row.skipReason === "idle" || row.skipReason == null || row.skipReason === "" || row.fiberPhase === "pending" || row.fiberPhase === null) {
+    return { label: t("statusIdle"), tip: `${t("statusIdleDetail")}${tail}`, dot: "idle" };
+  }
+  return { label: t("statusUnmounted"), tip: `${skipDetail(row.skipReason, t)}${tail}`, dot: "error" };
+}
+
 export function McpPanel({ t }: McpPanelProps) {
   const [state, setState] = useState<McpUiState | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -105,8 +151,27 @@ export function McpPanel({ t }: McpPanelProps) {
 
   useEffect(() => {
     load();
-    const timer = setInterval(load, 2000);
-    return () => clearInterval(timer);
+    let source: EventSource | null = null;
+    let poll: ReturnType<typeof setInterval> | undefined;
+    const startPoll = () => {
+      if (poll !== undefined) return;
+      poll = setInterval(load, 8000);
+    };
+    try {
+      source = new EventSource(MCP_UI_EVENTS_PATH);
+      source.addEventListener("updated", () => load());
+      source.onerror = () => {
+        source?.close();
+        source = null;
+        startPoll();
+      };
+    } catch {
+      startPoll();
+    }
+    return () => {
+      source?.close();
+      if (poll !== undefined) clearInterval(poll);
+    };
   }, []);
 
   const run = async (body: Record<string, unknown>, path: string) => {
@@ -114,7 +179,11 @@ export function McpPanel({ t }: McpPanelProps) {
     try {
       const result = await post(path, body);
       if (!result.ok && result.code === "confirm-yml") return result;
-      if (!result.ok) setError("message" in result ? result.message : t("error"));
+      if (!result.ok) {
+        const name = typeof body.serverName === "string" ? body.serverName : "";
+        const message = "message" in result ? result.message : t("error");
+        setError(name === "" ? message : `${name}：${message}`);
+      }
       else setError(null);
       load();
       return result;
@@ -178,17 +247,15 @@ export function McpPanel({ t }: McpPanelProps) {
     }
   }
 
-  const pendingBody = pending === null ? "" : pending.kind === "server" && pending.action === "remove" && !pending.row.needsYmlTakeover
-    ? t("removeBody", { name: pending.row.serverName, yml: pending.row.managedPath ?? pending.row.filePath })
-    : t("takeoverBody", {
-      name: pending.kind === "tool" ? pending.tool : pending.row.serverName,
-      file: pending.row.filePath,
-      yml: pending.row.managedPath ?? ""
-    });
+  const pendingWill = pending === null ? "" : pending.kind === "server" && pending.action === "remove" && !pending.row.needsYmlTakeover
+    ? t("removeWill", { name: pending.row.serverName })
+    : t("takeoverWill");
+  const pendingWont = pending === null ? "" : pending.kind === "server" && pending.action === "remove" && !pending.row.needsYmlTakeover
+    ? t("removeWont")
+    : t("takeoverWont", { file: pending.row.filePath, yml: pending.row.managedPath ?? "" });
 
   return (
     <div className="dsh-mcp-ui">
-      <h2>{t("title")}</h2>
       <p className="intro">{t("intro")}</p>
       <div className="toolbar">
         <Menu
@@ -208,14 +275,15 @@ export function McpPanel({ t }: McpPanelProps) {
           anchor={(
             <Button variant="outline" size="sm" icon={<IconFolderOpenOutlineRegular size={16} />} disabled={busy} onClick={() => setMenuOpen(true)}>
               {t("open")}
+              <IconChevronDownOutlineRegular size={14} />
             </Button>
           )}
         />
-        <Button variant="ghost" size="sm" disabled={busy} onClick={load}>{t("refresh")}</Button>
       </div>
       {error !== null && <p className="banner">{error}</p>}
       {state === null && error === null && <p className="empty">{t("loading")}</p>}
       {state !== null && state.servers.length === 0 && <p className="empty">{t("empty")}</p>}
+      {state !== null && state.servers.length > 0 && <p className="hint">{t("addHint")}</p>}
 
       {[...projects.entries()].length > 0 && (
         <section className="section">
@@ -243,16 +311,18 @@ export function McpPanel({ t }: McpPanelProps) {
       <Modal
         open={pending !== null}
         onClose={() => setPending(null)}
-        title={pending?.kind === "server" && pending.action === "remove" ? t("removeTitle", { name: pending.row.serverName }) : t("takeoverTitle")}
+        title={pending?.kind === "server" && pending.action === "remove" && !pending.row.needsYmlTakeover ? t("removeTitle", { name: pending.row.serverName }) : t("takeoverTitle")}
         closeLabel={t("cancel")}
-        description={pendingBody}
+        description={pendingWill}
         footer={(
           <>
             <Button variant="ghost" size="sm" onClick={() => setPending(null)}>{t("cancel")}</Button>
             <Button variant="primary" size="sm" disabled={busy} onClick={() => pending !== null && void commit(pending, true)}>{t("continueWrite")}</Button>
           </>
         )}
-      />
+      >
+        {pendingWont !== "" && <p className="dsh-mcp-confirm-note">{pendingWont}</p>}
+      </Modal>
 
       <Modal
         open={toolsFor !== null}
@@ -297,26 +367,29 @@ function ServerCard({ row, busy, t, onToggle, onRemove, onTools }: {
   onRemove: () => void;
   onTools: () => void;
 }) {
+  const status = runtimeStatus(row, t);
+  const endpointKind = row.endpoint.startsWith("http://") || row.endpoint.startsWith("https://") ? t("endpointUrl") : t("endpointCmd");
   return (
     <article className="card">
       <div className="row">
         <div className="identity">
-          <StateDot state={row.active ? "done" : row.fiberPhase === "failed" ? "error" : "idle"} />
+          <StateDot state={status.dot} />
           <span className="name">{row.serverName}</span>
         </div>
         <Switch checked={row.enabled} disabled={busy} label={t("enableLabel")} onChange={onToggle} />
       </div>
-      <div className="meta">
-        <Tag tone={row.layer === "project" ? "info" : "neutral"}>{row.layer === "project" ? t("projectLayer") : t("userLayer")}</Tag>
-        <Tag tone={row.active ? "success" : "outline"}>{row.active ? t("active") : t("inactive")}</Tag>
-        <Tag tone="quiet">{SOURCE_LABEL[row.source] ?? fileName(row.filePath)}</Tag>
-        {row.needsYmlTakeover && <Tag tone="warning">{t("readOnlySource")}</Tag>}
-        {row.skipReason != null && row.skipReason !== "" && <Tag tone="outline">{row.skipReason}</Tag>}
-      </div>
-      {row.endpoint !== "" && <div className="endpoint">{row.endpoint}</div>}
+      <Tooltip label={status.tip} side="bottom" portal maxWidth={360}>
+        <p className={`status status-${status.dot}`}>{status.label}</p>
+      </Tooltip>
+      {row.endpoint !== "" && (
+        <div className="endpoint" title={row.endpoint}>
+          <span className="endpoint-kind">{endpointKind}</span>
+          <span className="endpoint-value">{row.endpoint}</span>
+        </div>
+      )}
       <div className="actions">
-        <Button variant="outline" size="sm" disabled={busy} onClick={onTools}>{t("tools")}</Button>
-        <Button variant="ghost" size="sm" disabled={busy} icon={<IconTrashOutlineRegular size={16} />} onClick={onRemove}>{t("remove")}</Button>
+        <Button variant="outline" size="sm" disabled={busy} onClick={onTools}>{row.toolCount > 0 ? t("toolsCount", { count: row.toolCount }) : t("tools")}</Button>
+        <Button className="danger" variant="ghost" size="sm" disabled={busy} icon={<IconTrashOutlineRegular size={16} />} onClick={onRemove}>{t("remove")}</Button>
       </div>
     </article>
   );

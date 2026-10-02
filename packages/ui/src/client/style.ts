@@ -7,18 +7,13 @@ export const PANEL_CSS = `
   max-width: 760px;
   color: var(--dsw-alias-label-primary);
 }
-.dsh-mcp-ui h2 {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 600;
-}
 .dsh-mcp-ui .intro,
 .dsh-mcp-ui .empty,
 .dsh-mcp-ui .hint {
   margin: 0;
   font-size: 13px;
   line-height: 20px;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
 }
 .dsh-mcp-ui .toolbar {
   display: flex;
@@ -42,7 +37,7 @@ export const PANEL_CSS = `
   font-family: var(--ds-font-family-code);
   font-size: 12px;
   line-height: 18px;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
 }
 .dsh-mcp-ui .card {
   display: flex;
@@ -73,24 +68,50 @@ export const PANEL_CSS = `
   font-size: 14px;
   font-weight: 500;
 }
-.dsh-mcp-ui .meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
+.dsh-mcp-ui .status {
+  margin: 0;
+  width: fit-content;
+  max-width: 100%;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-secondary);
+  cursor: default;
+}
+.dsh-mcp-ui .status-done {
+  color: var(--dsw-alias-state-success-primary, var(--dsw-alias-label-primary));
+}
+.dsh-mcp-ui .status-error {
+  color: var(--dsw-alias-state-error-primary);
 }
 .dsh-mcp-ui .endpoint {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-family: var(--ds-font-family-code);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
+.dsh-mcp-ui .endpoint-kind {
+  flex: none;
+  font-family: var(--dsw-font-family, inherit);
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsh-mcp-ui .endpoint-value {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--ds-font-family-code);
-  font-size: 12px;
-  color: var(--dsw-alias-label-tertiary);
+  min-width: 0;
 }
 .dsh-mcp-ui .actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  align-items: center;
+}
+.dsh-mcp-ui .danger {
+  color: var(--dsw-alias-state-error-primary);
 }
 .dsh-mcp-ui .banner {
   margin: 0;
@@ -158,6 +179,13 @@ export const PANEL_CSS = `
 }
 .dsh-mcp-tools-switch {
   justify-self: end;
+}
+.dsh-mcp-confirm-note {
+  margin: 0;
+  font-family: var(--dsw-font-family);
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--dsw-alias-label-secondary);
 }
 .dsh-mcp-tools-status {
   margin: 0;

@@ -9,6 +9,7 @@ import type { McpRowSource, ProjectFileState } from "dsh-project-mcp-manager";
 import {
   MCP_UI_OPEN_PATH,
   MCP_UI_SERVER_PATH,
+  MCP_UI_EVENTS_PATH,
   MCP_UI_STATE_PATH,
   MCP_UI_TOOL_PATH,
   MCP_UI_TOOLS_PATH,
@@ -221,4 +222,51 @@ export function apply(ctx: Context) {
   for (const route of routes) {
     ctx.effect(() => connection.fetch.register({ path: route.path, methods: route.methods, requestBody: "buffered", fetch: guarded(route.fetch) }), `dsh-project-mcp-ui: ${route.path}`);
   }
+  ctx.effect(() => connection.fetch.register({
+    path: MCP_UI_EVENTS_PATH,
+    methods: ["GET"],
+    requestBody: "buffered",
+    fetch: (request) => Promise.resolve(eventStream(request, mcp))
+  }), "dsh-project-mcp-ui: events");
+}
+
+/** 对账结束推一条 SSE。浏览器关页时 abort 退订。 */
+function eventStream(request: Request, mcp: Context["projectMcp"]): Response {
+  const encoder = new TextEncoder();
+  let unsubscribe = (): void => {};
+  let ping: ReturnType<typeof setInterval> | undefined;
+  const stream = new ReadableStream({
+    start(controller) {
+      const write = (chunk: string) => {
+        try {
+          controller.enqueue(encoder.encode(chunk));
+        } catch {
+          // 对端已关闭
+        }
+      };
+      const close = () => {
+        unsubscribe();
+        if (ping !== undefined) clearInterval(ping);
+        try {
+          controller.close();
+        } catch {
+          // 已经关闭
+        }
+      };
+      write("event: ready\ndata: 0\n\n");
+      unsubscribe = mcp.subscribeUpdated(() => write("event: updated\ndata: 1\n\n"));
+      ping = setInterval(() => write(": ping\n\n"), 20000);
+      request.signal.addEventListener("abort", close);
+    },
+    cancel() {
+      unsubscribe();
+      if (ping !== undefined) clearInterval(ping);
+    }
+  });
+  return new Response(stream, {
+    headers: {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache"
+    }
+  });
 }
