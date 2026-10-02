@@ -1,0 +1,7 @@
+# dsh-project-mcp-ui bundle.
+# Install beside the loader:
+#   dsh plugin --profile web add dsh-project-mcp-manager dsh-project-mcp-ui
+# Hide the page by disabling this row in the profile patch; the loader keeps running.
+- insert:
+    - id: mcp-project-ui
+      name: dsh-project-mcp-ui

@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `dsh-mcp --scope profile` writes the yml by default (`--format json` keeps
   writing `mcp.json`); `remove --scope profile` without `--format` checks the
   yml first, then the json.
+- Editing a legacy `.mcp.json` row writes the project's managed `.dsh/mcp.yml`
+  (the original file stays unchanged).
+- Companion settings package `dsh-project-mcp-ui` (`packages/ui`): lists every
+  readable server, opens the managed yml for the user layer, the active profile,
+  or a project, and toggles or removes servers and individual tools. A non-yml
+  source asks before a higher-priority yml row is written. Disable the
+  `mcp-project-ui` bundle row to hide the page.
 
 ## [0.7.2] - 2026-10-02
 
