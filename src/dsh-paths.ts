@@ -4,14 +4,16 @@
  * 宿主支持用 `DSH_HOME` 重定位 dsh 家目录（README.md / docs/README.zh.md：
  * 「dshHome 默认为 `%USERPROFILE%\.dsh`（设置了 `DSH_HOME` 则用其值）」，宿主进程
  * 环境实测含该变量）。注册表与 CLI 必须走同一份解析：否则重定位后用户层三个文件
- * （`mcp.yml`/`mcp.json`/`profiles/<name>/mcp.json`）与全局诊断会整体落到
+ * （`mcp.yml`/`mcp.json`/`profiles/<name>/mcp.json`）与诊断会整体落到
  * `~/.dsh` 而**静默失效**——文件缺失在本插件里是合法的「零配置」状态，不报错。
  *
  * 纯路径计算，无 I/O；env 与 home 均可注入，便于测试。
  */
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { JSON_MCP_FILE, FOREIGN_MCP_JSON_FILE } from "./json-file.js";
+import { projectKeyOf } from "./model.js";
 
 /** dsh 家目录重定位环境变量。 */
 export const DSH_HOME_ENV = "DSH_HOME";
@@ -21,8 +23,10 @@ export const PROFILE_ENV = "DSH_MCP_PROFILE";
 export const MCP_YML_FILE = "mcp.yml";
 /** 项目/用户层配置目录名（项目层为 `<root>/.dsh`）。 */
 export const DSH_DIR = ".dsh";
-/** 诊断文件名（项目层写 `<root>/.dsh/`，全局层写 `<dshHome>/`）。 */
+/** 全局诊断文件名（只写 `<dshHome>/`，不进用户工作区）。 */
 export const DIAG_FILE = ".mcp-diag.json";
+/** 项目诊断目录（`<dshHome>/mcp-diag/<hash>.json`）。 */
+export const PROJECT_DIAG_DIR = "mcp-diag";
 
 /**
  * dsh 家目录：`DSH_HOME` 非空则取其绝对化值，否则 `<home>/.dsh`。
@@ -67,6 +71,20 @@ export function profileMcpJsonFile(profilesDir: string, profile: string): string
 /** profile 层原生受管块路径（`<dshHome>/profiles/<name>/mcp.yml`）；读取顺序高于该 profile 的 mcp.json。 */
 export function profileMcpYmlFile(profilesDir: string, profile: string): string {
   return join(profilesDir, profile, MCP_YML_FILE);
+}
+
+/**
+ * 项目诊断文件：落在 dsh 家目录，不写进用户工作区。
+ * 文件名是项目键的 sha256 前 16 位，Windows 上与路径大小写无关。
+ */
+export function projectDiagFile(dshHome: string, projectRoot: string): string {
+  const id = createHash("sha256").update(projectKeyOf(projectRoot)).digest("hex").slice(0, 16);
+  return join(dshHome, PROJECT_DIAG_DIR, `${id}.json`);
+}
+
+/** 旧版项目诊断路径（`<projectRoot>/.dsh/.mcp-diag.json`）。只用于删掉已留下的文件。 */
+export function legacyProjectDiagFile(projectRoot: string): string {
+  return join(projectRoot, DSH_DIR, DIAG_FILE);
 }
 
 /** 对方插件全局存储路径（`$DSH_HOME/dsh-mcp.json`）；本插件不读取内容，只在存在时诊断。 */

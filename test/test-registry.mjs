@@ -8,6 +8,7 @@ import { bindProjectMcpService, PROJECT_MCP_SERVICE } from "../lib/service.js";
 import { apply, PROJECT_MCP_UPDATED_EVENT } from "../lib/index.js";
 import { MCP_BLOCK_BEGIN, MCP_BLOCK_END, extractManagedRows, writeManagedRows } from "../lib/mcp-file.js";
 import { byCodeUnit } from "../lib/model.js";
+import { projectDiagFile } from "../lib/dsh-paths.js";
 
 let passed = 0;
 function pass(name) {
@@ -15,7 +16,8 @@ function pass(name) {
   console.log("PASS  " + name);
 }
 
-const diagFile = (projectRoot) => join(projectRoot, ".dsh", ".mcp-diag.json");
+const diagFile = (dshHome, projectRoot) => projectDiagFile(dshHome, projectRoot);
+const legacyDiagFile = (projectRoot) => join(projectRoot, ".dsh", ".mcp-diag.json");
 async function pathExists(path) {
   try {
     await access(path);
@@ -24,18 +26,18 @@ async function pathExists(path) {
     return false;
   }
 }
-async function readDiag(projectRoot) {
-  return parseDiagDocument(JSON.parse(await readFile(diagFile(projectRoot), "utf8"))).events;
+async function readDiag(dshHome, projectRoot) {
+  return parseDiagDocument(JSON.parse(await readFile(diagFile(dshHome, projectRoot), "utf8"))).events;
 }
-async function readDiagSummary(projectRoot) {
-  return parseDiagDocument(JSON.parse(await readFile(diagFile(projectRoot), "utf8"))).summary;
+async function readDiagSummary(dshHome, projectRoot) {
+  return parseDiagDocument(JSON.parse(await readFile(diagFile(dshHome, projectRoot), "utf8"))).summary;
 }
 /** 轮询 diag 直到谓词成立：事件驱动用例里对账链可能仍在落盘（不能用固定 sleep）。 */
-async function waitForDiag(projectRoot, predicate, timeoutMs = 5000) {
+async function waitForDiag(dshHome, projectRoot, predicate, timeoutMs = 5000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     try {
-      if (predicate(await readDiag(projectRoot))) return true;
+      if (predicate(await readDiag(dshHome, projectRoot))) return true;
     } catch {
       // diag 尚不存在或正被半读到截断 JSON：视为「暂不满足」，继续轮询。
     }
@@ -347,11 +349,16 @@ try {
   assert.equal(projAFile.servers[0].scope.kind, "workspace");
   assert.equal(projAFile.servers[0].effectiveServerName, mounted.serverName);
   assert.equal(projAFile.servers[0].fiberPhase, "active");
-  const summaryA = await readDiagSummary(projectA);
+  const home0 = join(dir, "nohome", ".dsh");
+  const summaryA = await readDiagSummary(home0, projectA);
   assert.ok(summaryA !== undefined, "configured project diag includes a summary");
   assert.ok(summaryA.rows >= 1, "summary counts project rows");
   assert.ok(summaryA.mounted >= 1, "summary counts mounted servers");
-  assert.equal(await pathExists(diagFile(projectB)), false, "zero-config project still has no diag after summary writes");
+  assert.equal(await pathExists(legacyDiagFile(projectA)), false, "project diag is not written into the workspace");
+  await writeFile(legacyDiagFile(projectA), "{}\n", "utf8");
+  await registry.reconcileNow();
+  assert.equal(await pathExists(legacyDiagFile(projectA)), false, "a leftover workspace diag is removed on the next reconcile");
+  assert.equal(await pathExists(diagFile(home0, projectB)), false, "zero-config project still has no diag after summary writes");
   pass("registry snapshot reports project file rows with workspace scope and phase");
 
   // 4. 移除行 → 卸载（fiber dispose）
@@ -374,9 +381,10 @@ try {
   //    <projectB>/.dsh/.mcp-diag.json 追加一条误报的 ENOENT "error"。
   await registry.reconcileNow();
   await registry.reconcileNow();
-  assert.equal(await pathExists(diagFile(projectB)), false, "clean project without mcp.yml must not get a diag file");
+  assert.equal(await pathExists(diagFile(join(dir, "nohome", ".dsh"), projectB)), false, "clean project without mcp.yml must not get a diag file");
+  assert.equal(await pathExists(legacyDiagFile(projectB)), false, "clean project does not get a workspace diag file");
   assert.equal((await registry.snapshot()).find((file) => file.project === projectB), undefined, "project without config is not a known project");
-  const diagA = await readDiag(projectA);
+  const diagA = await readDiag(join(dir, "nohome", ".dsh"), projectA);
   assert.ok(diagA.some((row) => row.kind === "scan" && row.ok === true && row.rows.includes("gitlab")), "configured project still logs its scans");
   assert.equal(diagA.some((row) => row.ok === false), false, "no spurious scan error recorded for a project that only emptied its rows");
   pass("registry writes no diagnostics for a clean project without mcp.yml");
@@ -389,10 +397,11 @@ try {
   ctx.agentsList.push(agentC);
   await registry.reconcileNow();
   assert.ok(ctx.mounts.some((config) => config.serverName === "echo-c"), "project C server mounted");
-  assert.equal(await pathExists(diagFile(projectC)), true, "configured project gets a diag file");
+  assert.equal(await pathExists(diagFile(join(dir, "nohome", ".dsh"), projectC)), true, "configured project gets a diag file outside the workspace");
+  assert.equal(await pathExists(legacyDiagFile(projectC)), false, "configured project diag stays out of the workspace");
   await rm(projectMcpFile(projectC), { force: true });
   await registry.reconcileNow();
-  const vanished = (await readDiag(projectC)).findLast((row) => row.kind === "scan");
+  const vanished = (await readDiag(join(dir, "nohome", ".dsh"), projectC)).findLast((row) => row.kind === "scan");
   assert.equal(vanished.ok, false, "losing mcp.yml under a live mount is reported as an error");
   assert.match(String(vanished.error), /ENOENT/);
   assert.ok(ctx.disposals.includes("echo-c"), "server unmounted after its config file vanished");
@@ -428,7 +437,7 @@ try {
   assert.ok(snapD !== undefined && snapD.ok === false, "snapshot marks the bad file instead of throwing");
   assert.match(String(snapD.error), /!!js/);
   assert.equal(snapD.servers.length, 0);
-  const diagD = await readDiag(projectD);
+  const diagD = await readDiag(join(dir, "nohome", ".dsh"), projectD);
   assert.ok(diagD.some((row) => row.kind === "scan" && row.ok === false && String(row.error).includes("!!js")), "diag records the rejection");
   pass("registry rejects native !!js tags in project files with an explicit error");
 
@@ -476,10 +485,10 @@ try {
     assert.deepEqual(names10, ["alpha"], "legacy .mcp.json rows mount; sse and missing-env rows do not");
     const alpha10 = ctx2.mounts.find((config) => config.serverName === "alpha");
     assert.equal(alpha10.cwd, dir2, "CC stdio cwd defaults to project root");
-    const diagE10 = await readDiag(dir2);
+    const diagE10 = await readDiag(join(home2, ".dsh"), dir2);
     assert.ok(diagE10.some((row) => row.kind === "scan" && Array.isArray(row.ccEntryErrors) && row.ccEntryErrors.some((note) => note.includes("bad"))), "sse entry error recorded in scan diag");
     assert.ok(diagE10.some((row) => row.kind === "env-missing" && row.rawName === "beta" && row.missingVar === "CC_TEST_MISSING"), "env-missing diag names the variable, not the value");
-    const summaryE10 = await readDiagSummary(dir2);
+    const summaryE10 = await readDiagSummary(join(home2, ".dsh"), dir2);
     assert.ok(summaryE10 !== undefined, "diag file carries a summary after reconcile");
     assert.equal(summaryE10.skippedByReason["env-missing"], 1, "summary counts env-missing skips");
     assert.ok(summaryE10.unhealthy.some((item) => item.name === "beta" && item.reason === "env-missing"), "summary names the env-missing row");
@@ -507,7 +516,7 @@ try {
     const alphaMounts12 = ctx2.mounts.filter((config) => config.serverName === "alpha");
     assert.ok(alphaMounts12.length >= 2, "shadowed row was remounted from the yml layer");
     assert.deepEqual(alphaMounts12.at(-1).args, ["a-yml.js"], "yml row wins over .mcp.json row of the same name");
-    const diag12 = await readDiag(dir2);
+    const diag12 = await readDiag(join(home2, ".dsh"), dir2);
     assert.ok(diag12.some((row) => row.kind === "scan" && Array.isArray(row.shadowedByYml) && row.shadowedByYml.includes("alpha")), "shadowing recorded in diag");
     const snap12 = await registry2.snapshot();
     const alphaYml12 = snap12.find((file) => file.path === projectMcpFile(dir2)).servers.find((server) => server.serverName === "alpha");
@@ -624,9 +633,9 @@ try {
       const httpOk19 = ctx2.mounts.findLast((config) => config.serverName === "http-ok");
       assert.equal(httpOk19.headers.Authorization, "Bearer sekret", "in-string interpolation reaches the mount config");
       assert.ok(await registry2.waitForState(dir2, "http-bad", (state) => state === undefined, 500), "invalid expanded url is never mounted");
-      const seen19 = await waitForDiag(dir2, (lines) => lines.some((row) => row.kind === "env-invalid" && row.rawName === "http-bad"), 5000);
+      const seen19 = await waitForDiag(join(home2, ".dsh"), dir2, (lines) => lines.some((row) => row.kind === "env-invalid" && row.rawName === "http-bad"), 5000);
       assert.ok(seen19, "post-expansion schema failure lands as env-invalid diag");
-      const diag19 = await readDiag(dir2);
+      const diag19 = await readDiag(join(home2, ".dsh"), dir2);
       assert.equal(diag19.some((row) => row.error === "not a url"), false, "diag must not echo the offending value");
     } finally {
       delete process.env.CC_TEST_NOTURL;
@@ -697,14 +706,14 @@ try {
     assert.ok(eps24, "the user-layer row is mounted globally");
     assert.equal(ctx2.mounts.filter((config) => config.serverName === "user-nocwd").length, 1, "adding a project does not add a second global instance");
     await registry2.reconcileNow();
-    assert.equal(await pathExists(diagFile(dir5)), false, "a project with no rows writes no diagnostics");
+    assert.equal(await pathExists(diagFile(join(home2, ".dsh"), dir5)), false, "a project with no rows writes no diagnostics");
     // 对照：真实 yml 行装载后文件被删 → 记 scan 错仍是正确行为
     await writeManagedRows(projectMcpFile(dir5), [stdioRow("real-yml")], { createIfMissing: true });
     await registry2.reconcileNow();
     assert.ok(await registry2.waitForState(dir5, "real-yml", (state) => state?.phase === "active", 5000), "project yml row mounts");
     await rm(projectMcpFile(dir5));
     await registry2.reconcileNow();
-    const diag24 = await readDiag(dir5);
+    const diag24 = await readDiag(join(home2, ".dsh"), dir5);
     assert.ok(diag24.some((row) => row.kind === "scan" && row.ok === false && String(row.error).includes("ENOENT")), "deleting a live yml file still records a scan error");
     pass("absent project yml stays silent for user-layer-only mounts and stays loud for removed live yml files");
 
@@ -761,7 +770,7 @@ try {
         ctx2.agentsList.push(fakeAgent("session-j", dir6));
         await registry2.reconcileNow();
         assert.ok(
-          await waitForDiag(dir6, (rows) => rows.some((r) => r.kind === "scan" && Array.isArray(r.shadowedIdentity)
+          await waitForDiag(join(home2, ".dsh"), dir6, (rows) => rows.some((r) => r.kind === "scan" && Array.isArray(r.shadowedIdentity)
             && r.shadowedIdentity.some((s) => s.name === "unity-mcp" && s.winner === "unityMCP" && s.reason === "normname"))),
           "scan diag reports the identity shadow with winner and reason");
         assert.ok(warns28.some((w) => w.includes('跳过重复服务定义 "unity-mcp"')), "dup definition warned on the first reconcile: " + JSON.stringify(warns28.slice(-3)));
@@ -1032,7 +1041,8 @@ try {
         const registry33 = new ProjectMcpRegistry(ctx33, { globalNames: async () => [], userLayerPaths: userPaths33 });
         ctx33.agentsList.push(fakeAgent("session-m4", proj33));
         await registry33.reconcileNow();
-        assert.equal(await pathExists(diagFile(proj33)), false, "a zero-config project stays free of .mcp-diag.json");
+        assert.equal(await pathExists(diagFile(home33, proj33)), false, "a zero-config project stays free of a dsh-home diag");
+        assert.equal(await pathExists(legacyDiagFile(proj33)), false, "a zero-config project stays free of a workspace diag");
         const globalDiag = parseDiagDocument(JSON.parse(await readFile(join(home33, ".mcp-diag.json"), "utf8"))).events;
         assert.ok(globalDiag.some((row) => row.kind === "shadow" && Array.isArray(row.shadowedIdentity)
           && row.shadowedIdentity.some((s) => s.name === "twin-json" && s.winner === "twin-yml")), "global diag records the user-layer identity shadow: " + JSON.stringify(globalDiag.slice(-2)));
@@ -1166,7 +1176,7 @@ try {
         });
         ctxF.agentsList.push(fakeAgent("session-foreign", projF));
         await registryF.reconcileNow();
-        const diagF = await readDiag(projF);
+        const diagF = await readDiag(homeF, projF);
         assert.ok(diagF.some((row) => typeof row.foreignFormat === "string" && row.foreignFormat.includes("dsh-mcp-manager")), "project diag names the foreign format: " + JSON.stringify(diagF));
         const globalDiag = parseDiagDocument(JSON.parse(await readFile(join(homeF, ".mcp-diag.json"), "utf8"))).events;
         assert.ok(globalDiag.some((row) => row.kind === "foreign-format" && String(row.path).includes("dsh-mcp.json")), "global diag mentions dsh-mcp.json: " + JSON.stringify(globalDiag));
@@ -1289,7 +1299,7 @@ try {
     await pulseDead();
     assert.equal(ctxH.disposals.length, 1, "dead connection is unmounted once");
     assert.equal(ctxH.mounts.length, 2, "dead connection is remounted once");
-    const diagH = await readDiag(projH);
+    const diagH = await readDiag(join(homeH, ".dsh"), projH);
     assert.ok(diagH.some((row) => row.kind === "remount" && row.attempt === 1), "remount diag: " + JSON.stringify(diagH.slice(-4)));
     const mountsAfterFirst = ctxH.mounts.length;
     await registryH.reconcileNow();
@@ -1321,12 +1331,12 @@ try {
     await registryH.reconcileNow();
     await registryH.reconcileNow();
     await registryH.reconcileNow();
-    const diagGive = await readDiag(projH);
+    const diagGive = await readDiag(join(homeH, ".dsh"), projH);
     assert.ok(diagGive.some((row) => row.kind === "give-up"), "give-up after remount limit without recovery: " + JSON.stringify(diagGive.slice(-6)));
     const mountsAtGiveUp = ctxH.mounts.length;
     await registryH.reconcileNow();
     assert.equal(ctxH.mounts.length, mountsAtGiveUp, "give-up stops further remounts");
-    const summaryGive = await readDiagSummary(projH);
+    const summaryGive = await readDiagSummary(join(homeH, ".dsh"), projH);
     assert.ok(summaryGive?.unhealthy.some((item) => item.name === "alive" && item.reason === "give-up"), "give-up is unhealthy in summary: " + JSON.stringify(summaryGive));
     assert.ok((summaryGive?.skippedByReason["give-up"] ?? 0) >= 1, "summary counts give-up skips");
     const giveView = (await registryH.snapshot()).flatMap((file) => file.servers ?? []).find((row) => row.serverName === "alive");
@@ -1336,7 +1346,7 @@ try {
     await registryH.reconcileNow();
     assert.equal(registryH.debugHealth(projH, "alive")?.givenUp, false, "tools returning after give-up clears givenUp");
     assert.equal(registryH.debugHealth(projH, "alive")?.remountCount, 0);
-    const summaryRecovered = await readDiagSummary(projH);
+    const summaryRecovered = await readDiagSummary(join(homeH, ".dsh"), projH);
     assert.ok(summaryRecovered?.unhealthy.every((item) => item.reason !== "give-up"), "summary drops give-up after recovery: " + JSON.stringify(summaryRecovered));
     assert.ok((summaryRecovered?.mounted ?? 0) >= 1, "recovered row counts as mounted");
     const recoveredView = (await registryH.snapshot()).flatMap((file) => file.servers ?? []).find((row) => row.serverName === "alive");
@@ -1516,7 +1526,7 @@ try {
     assert.equal(budgetWarns.length, 1, "budget warns once: " + budgetWarns.join("|"));
     await registryBgt.reconcileNow();
     assert.equal(warnsBgt.filter((w) => w.includes("超过告警阈值")).length, 1, "budget warn is gated");
-    const summaryBgt = await readDiagSummary(projBgt);
+    const summaryBgt = await readDiagSummary(join(dirBgt, "home", ".dsh"), projBgt);
     assert.ok(summaryBgt.toolBudget?.some((item) => item.name === heavyName && item.tools === 3), "summary lists over-budget server: " + JSON.stringify(summaryBgt.toolBudget));
     assert.equal(ctxBgt.schemas.length, 3, "budget never clips tools");
     ctxBgt.schemas.length = 1;
@@ -1766,7 +1776,7 @@ try {
     assert.equal(pendingA.length, 1, "unmounted project keeps its catalog entry");
     assert.equal(pendingA[0].fiberPhase, "pending");
     assert.equal(pendingA[0].skipReason, "idle", "idle unmount is visible as skipReason");
-    const summaryIdleA = await readDiagSummary(projA);
+    const summaryIdleA = await readDiagSummary(join(homeOn, ".dsh"), projA);
     assert.ok(summaryIdleA !== undefined && summaryIdleA.rows >= 1, "idle unmount still counts catalog rows: " + JSON.stringify(summaryIdleA));
     assert.equal(summaryIdleA.skippedByReason.idle, 1, "summary records idle skip");
     assert.ok(!(summaryIdleA.unhealthy ?? []).some((item) => item.reason === "idle"), "idle is not listed as unhealthy");
@@ -1824,14 +1834,14 @@ try {
     });
     ctxT3.agentsList.push(fakeAgent("session-t3", projT3));
     await registryT3.reconcileNow();
-    const summaryLive = await readDiagSummary(projT3);
+    const summaryLive = await readDiagSummary(join(homeT3, ".dsh"), projT3);
     assert.equal(summaryLive.skippedByReason["env-missing"], 1, "live summary counts env-missing: " + JSON.stringify(summaryLive));
     assert.ok(summaryLive.rows >= 2, "catalog counts both rows while one is mounted: " + JSON.stringify(summaryLive));
     ctxT3.agentsList.length = 0;
     await registryT3.reconcileNow();
     now += UNMOUNT_GRACE_MS + 1;
     await registryT3.reconcileNow();
-    const summaryIdle = await readDiagSummary(projT3);
+    const summaryIdle = await readDiagSummary(join(homeT3, ".dsh"), projT3);
     assert.ok(summaryIdle.rows >= 2, "idle unmount keeps catalog row count: " + JSON.stringify(summaryIdle));
     assert.equal(summaryIdle.skippedByReason["env-missing"], 1, "env-missing survives idle prune");
     assert.equal(summaryIdle.skippedByReason.idle, 1, "mounted row becomes idle");

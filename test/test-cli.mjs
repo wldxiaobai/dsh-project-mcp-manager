@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { runCli } from "../lib/cli.js";
 import { projectMcpFile } from "../lib/registry.js";
 import { writeManagedRows } from "../lib/mcp-file.js";
+import { projectDiagFile } from "../lib/dsh-paths.js";
 
 let passed = 0;
 function pass(name) {
@@ -461,8 +462,10 @@ try {
       assert.equal(await runCli(["status"], capRows.io, statusDeps), 0);
       const listed = capRows.lines.join("\n");
       assert.ok(listed.includes("fs"), "status lists configured names: " + listed);
-      await mkdir(join(statusProj, ".dsh"), { recursive: true });
-      await writeFile(join(statusProj, ".dsh", ".mcp-diag.json"), JSON.stringify({
+      const projectDiag = projectDiagFile(join(statusHome, ".dsh"), statusProj);
+      await mkdir(join(projectDiag, ".."), { recursive: true });
+      await writeFile(projectDiag, JSON.stringify({
+        project: statusProj,
         summary: {
           at: "2026-01-01T00:00:00.000Z",
           rows: 1,

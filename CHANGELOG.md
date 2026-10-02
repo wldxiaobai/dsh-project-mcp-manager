@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Project diagnostics are written under `$DSH_HOME/mcp-diag/`, not into the
+  workspace. A leftover `<projectRoot>/.dsh/.mcp-diag.json` is removed on the
+  next reconcile. `dsh-mcp status` reads the new path.
 - Opening a workspace for the first time in a running dsh process now loads
   that directory's MCP config without a restart. Session creation is observed
   even when the event is scoped, and live session directories are rescanned

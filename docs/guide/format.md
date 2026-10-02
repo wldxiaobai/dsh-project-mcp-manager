@@ -63,7 +63,7 @@ object and those keys are present, `tools.allow` / `tools.deny` win.
 expression evaluated by the profile loader, e.g. the official README's
 `env: { TOKEN: !!js process.env.GITHUB_TOKEN }`) is **not supported** in
 project files — an unresolved tag inside the managed block makes the whole
-file fail with an explicit error (logged and written to `.dsh/.mcp-diag.json`)
+file fail with an explicit error (logged and written to `$DSH_HOME/mcp-diag/<hash>.json`)
 instead of silently mounting the expression text as a literal string. Values
 in `env`/`headers` are otherwise literal, except for `${VAR}` references
 which are interpolated at mount time (see [`${VAR}` expansion](env-expansion.md));

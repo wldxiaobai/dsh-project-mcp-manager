@@ -20,7 +20,7 @@ import { mkdir, readdir, readFile } from "node:fs/promises";
 import { extractManagedRows, readPatchFile, updateManagedRows, type PatchRow } from "./mcp-file.js";
 import { byCodeUnit, inputFromPatchRow, mcpServerInputSchema, parseCliTransport, patchRowToView, rowNameOf, toPatchRow, type McpServerInput } from "./model.js";
 import { CC_PROJECT_FILE, FOREIGN_MCP_FORMAT_HINT, IGNORE_MCP_JSON_ENV, JSON_MCP_FILE, mcpJsonLayerEnabled, parseJsonServersValue, readDshJsonFile, readMcpJsonFile, type JsonReadResult, type McpRowSource, type SourcedRow } from "./json-file.js";
-import { MCP_YML_FILE, DIAG_FILE, dshHomeFor, profileMcpJsonFile, profileMcpYmlFile, userLayerPathsIn } from "./dsh-paths.js";
+import { MCP_YML_FILE, DIAG_FILE, dshHomeFor, profileMcpJsonFile, profileMcpYmlFile, projectDiagFile, userLayerPathsIn } from "./dsh-paths.js";
 import { readJsonServers, toJsonEntry, updateJsonServers } from "./json-write.js";
 import { mergeSourcedRows, parseDiagDocument, projectDshJsonFile, projectMcpFile, projectMcpJsonFile, type DiagDocument, type DiagSummary, type IdentityShadow } from "./registry.js";
 import { findProjectRoot } from "./project-root.js";
@@ -1024,7 +1024,7 @@ async function printDiagStatus(path: string, io: CliIo): Promise<boolean> {
     return true;
   }
   const doc: DiagDocument = parseDiagDocument(loaded.value);
-  io.out(`诊断 ${path}`);
+  io.out(doc.project === undefined ? `诊断 ${path}` : `诊断 ${path}（${doc.project}）`);
   if (doc.summary !== undefined) printDiagSummary(doc.summary, io);
   printDiagForeignEvents(doc.events, io);
   return true;
@@ -1064,7 +1064,7 @@ async function cmdStatus(parsed: ParsedArgs, io: CliIo, deps: CliDeps): Promise<
   const projectRoot = await resolveProjectRootFor(deps);
   const printedProject = parsed.scope === "user" || parsed.scope === "profile"
     ? false
-    : await printDiagStatus(join(projectRoot, ".dsh", DIAG_FILE), io);
+    : await printDiagStatus(projectDiagFile(dshHomeOf(deps), projectRoot), io);
   const printedGlobal = parsed.scope === "project"
     ? false
     : await printDiagStatus(join(dshHomeOf(deps), DIAG_FILE), io);

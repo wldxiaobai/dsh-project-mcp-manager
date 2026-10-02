@@ -52,8 +52,10 @@ import {
   dshHomeDir,
   foreignUserMcpJsonFile,
   isValidProfileName,
+  legacyProjectDiagFile,
   profileMcpJsonFile,
   profileMcpYmlFile,
+  projectDiagFile,
   userLayerPathsIn,
   type UserLayerPaths
 } from "./dsh-paths.js";
@@ -633,6 +635,8 @@ export interface DiagSummary {
 export interface DiagDocument {
   summary?: DiagSummary;
   events: Record<string, unknown>[];
+  /** 项目诊断才有：这份文件对应的项目根。全局诊断不写。 */
+  project?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -680,7 +684,12 @@ export function parseDiagDocument(raw: unknown): DiagDocument {
   if (!isRecord(raw)) return { events: [] };
   const events = Array.isArray(raw.events) ? raw.events.filter(isRecord) : [];
   const summary = parseDiagSummary(raw.summary);
-  return summary === undefined ? { events } : { summary, events };
+  const project = typeof raw.project === "string" && raw.project !== "" ? raw.project : undefined;
+  return {
+    events,
+    ...(summary === undefined ? {} : { summary }),
+    ...(project === undefined ? {} : { project })
+  };
 }
 
 function parseDiagSummary(raw: unknown): DiagSummary | undefined {
@@ -1537,7 +1546,7 @@ export class ProjectMcpRegistry {
     // 影子优先级：.dsh/mcp.yml > .dsh/mcp.json > .mcp.json > profile yml > profile json > 用户 yml > 用户 json。
     const merged = mergeSourcedRows([yml.rows, projectJson.rows, cc.rows, this.userLayer.profileYmlRows, this.userLayer.profileRows, this.userLayer.ymlRows, this.userLayer.jsonRows]);
     // 归因过滤：纯用户层之间的重复定义与本项目无关（否则零配置项目也会被写
-    // .dsh/.mcp-diag.json、各刷一遍同样的告警），只保留至少一侧是项目层行的条目。
+    // 项目诊断、各刷一遍同样的告警），只保留至少一侧是项目层行的条目。
     const identityShadows = merged.shadowedIdentity.filter((shadow) => isProjectLayerSource(shadow.source) || isProjectLayerSource(shadow.winnerSource));
     // 跨来源同服务去重告警：unityMCP 与 unity-mcp 这类「一个服务器两个名字」的
     // 冗余定义，只装载高优先级层一条，被剔除的必须可见，不能静默消失。
@@ -1789,12 +1798,17 @@ export class ProjectMcpRegistry {
     }
   }
 
-  // ── 装载诊断（项目：<root>/.dsh/.mcp-diag.json；全局：<dshHome>/.mcp-diag.json）──
-  // 调用方只在有异常或有配置行时写入：无配置的干净项目不创建该文件。
-  // 文件形态：`{ summary?, events: [...] }`（旧版纯数组读入后当作 events）。
+  // ── 装载诊断（项目：<dshHome>/mcp-diag/<hash>.json；全局：<dshHome>/.mcp-diag.json）──
+  // 不写进用户工作区。调用方只在有异常或有配置行时写入：无配置的干净项目不创建文件。
+  // 文件形态：`{ project?, summary?, events: [...] }`（旧版纯数组读入后当作 events）。
+
+  private diagHome(): string {
+    return dirname(this.resolveUserLayerPaths().mcpYml);
+  }
 
   private async writeDiag(projectRoot: string, event: Record<string, unknown>): Promise<void> {
-    await this.writeDiagAt(join(projectRoot, DSH_DIR, DIAG_FILE), event);
+    await this.writeDiagAt(projectDiagFile(this.diagHome(), projectRoot), event, undefined, projectRoot);
+    await this.removeLegacyProjectDiag(projectRoot);
   }
 
   /** 全局诊断落 dshHome 根（与用户层 mcp.yml 同目录：注入 userLayerPaths 时同样跟随注入值）。 */
@@ -1803,7 +1817,14 @@ export class ProjectMcpRegistry {
     await this.writeDiagAt(join(dirname(mcpYml), DIAG_FILE), event);
   }
 
-  private async writeDiagAt(path: string, event?: Record<string, unknown>, summary?: DiagSummary): Promise<void> {
+  /** 删掉曾经写进工作区的诊断和它的锁。配置文件不动。 */
+  private async removeLegacyProjectDiag(projectRoot: string): Promise<void> {
+    const path = legacyProjectDiagFile(projectRoot);
+    await rm(path, { force: true }).catch(() => {});
+    await rm(path + ".mcp-project.lock", { force: true }).catch(() => {});
+  }
+
+  private async writeDiagAt(path: string, event?: Record<string, unknown>, summary?: DiagSummary, projectRoot?: string): Promise<void> {
     try {
       await withPatchLock(path, async () => {
         const tmp = path + `.tmp-${process.pid}`;
@@ -1819,7 +1840,12 @@ export class ProjectMcpRegistry {
             if (doc.events.length > 30) doc.events = doc.events.slice(-30);
           }
           if (summary !== undefined) doc.summary = summary;
-          const payload = doc.summary === undefined ? { events: doc.events } : { summary: doc.summary, events: doc.events };
+          const project = projectRoot ?? doc.project;
+          const payload = {
+            ...(project === undefined || project === "" ? {} : { project }),
+            ...(doc.summary === undefined ? {} : { summary: doc.summary }),
+            events: doc.events
+          };
           await mkdir(dirname(path), { recursive: true });
           await writeFile(tmp, JSON.stringify(payload, null, 2), "utf8");
           await rename(tmp, path);
@@ -1893,7 +1919,8 @@ export class ProjectMcpRegistry {
     for (const [key, entry] of this.projects) {
       const catalog = this.lastScanDesired.get(key)?.rows ?? [];
       const summary = this.summarizeScope(key, entry.servers, catalog, at);
-      const path = join(entry.projectRoot, DSH_DIR, DIAG_FILE);
+      const path = projectDiagFile(this.diagHome(), entry.projectRoot);
+      await this.removeLegacyProjectDiag(entry.projectRoot);
       if (summary.rows === 0 && summary.unhealthy.length === 0 && (summary.idle?.length ?? 0) === 0) {
         try {
           await readFile(path);
@@ -1901,7 +1928,7 @@ export class ProjectMcpRegistry {
           continue;
         }
       }
-      await this.writeDiagAt(path, undefined, summary);
+      await this.writeDiagAt(path, undefined, summary, entry.projectRoot);
     }
     const globalSummary = this.summarizeScope(GLOBAL_SCOPE_KEY, this.globalServers, this.lastGlobalDesired, at, this.projects.size);
     const userHasContent = this.userLayer.ymlRows.length + this.userLayer.jsonRows.length + this.userLayer.profileRows.length + this.userLayer.profileYmlRows.length > 0

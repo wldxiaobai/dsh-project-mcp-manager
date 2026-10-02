@@ -38,12 +38,13 @@ the config file or brought in with `dsh-mcp import`. `list` and `get` still
 show those filters (pattern text only).
 
 **`status`** reads the six source layers and the diagnostic files
-(`<projectRoot>/.dsh/.mcp-diag.json` and `$DSH_HOME/.mcp-diag.json`). It
+(per-project `$DSH_HOME/mcp-diag/<hash>.json`, global `$DSH_HOME/.mcp-diag.json`;
+neither is written into a workspace). It
 prints each layer's row count and names, then the latest `summary`
 (mounted / skipped / unhealthy / idle-not-mounted / tool-budget hits). It does not inspect host memory: if the
 host has never reconciled, the files are absent and the command reports
 that. `--scope project|user|profile` filters which layers are listed and which
-diagnostic file is printed (project `.dsh/.mcp-diag.json` vs
+diagnostic file is printed (the project file vs
 `$DSH_HOME/.mcp-diag.json`). `--scope profile` lists only profile layers
 (add `--profile <name>` to keep one); `--scope user` still lists every
 user-layer file, including all profiles. Idle catalog rows print as

@@ -68,11 +68,11 @@ are *not* part of the key: two genuinely different servers sharing one command
 line (but e.g. different env) still collapse to the winner, while the same
 server written once with a `${VAR}` and once as a literal does not match. If a
 drop was unintended, rename the loser (past normalization) or adjust its
-command line. Losers are reported in `.dsh/.mcp-diag.json`
+command line. Losers are reported in `$DSH_HOME/mcp-diag/<hash>.json`
 (`shadowedByYml` / `shadowedByProject` / `shadowedIdentity`) and every
 identity/normalized-name drop warns in the host log ("skipping duplicate
 service definition"). User-layer row diagnostics are written to
-`~/.dsh/.mcp-diag.json`.
+`~/.dsh/.mcp-diag.json`. Neither file is written into a workspace.
 
 When a project-layer row and a user-layer row collide on the same name, the
 project row is renamed to `p<hash>_<name>` per the effective-name rules while
@@ -108,7 +108,7 @@ global row's tools (project-side suppression).
   (`url` = MCP SSE); see [configuration format](format.md#httpurl-transport-and-url-inference).
 - Broken files/entries never take down the valid ones, and they fail **per
   source**: an unreadable `.mcp.json` cannot unmount the same project's yml
-  rows (and vice versa). Entry errors land in `.dsh/.mcp-diag.json` and the
+  rows (and vice versa). Entry errors land in `$DSH_HOME/mcp-diag/<hash>.json` and the
   host log (diagnostics never carry file content).
 - `enabled: false` is skipped silently and holds **no name** (the ecosystem
   convention); `disabled: true` **holds its shadow keys but does not mount** —

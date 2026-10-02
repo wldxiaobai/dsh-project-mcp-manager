@@ -51,9 +51,9 @@
 `cwd` **不参与**身份键：同一命令行、仅 env 不同的两台真不同服务器仍会被去重
 （只留高优先级一条），同一台服务器一条写 `${VAR}`、一条写字面量则**不**互认。
 误剔时的处置：给被剔行改名（归一化后不同）或调整命令与参数。被遮蔽方写入
-`.dsh/.mcp-diag.json`（`shadowedByYml` / `shadowedByProject` /
+`$DSH_HOME/mcp-diag/<hash>.json`（`shadowedByYml` / `shadowedByProject` /
 `shadowedIdentity`），身份/归一名去重剔除的每行还会在宿主日志告警「跳过重复
-服务定义」。用户层行的诊断写入 `~/.dsh/.mcp-diag.json`。
+服务定义」。用户层行的诊断写入 `~/.dsh/.mcp-diag.json`。诊断都不进工作区。
 
 项目层同名行与用户层行撞名时，项目行按生效名规则改为 `p<hash>_<名>`，全局行保持
 原名；该项目的会话同时 deny 掉全局那条的工具（项目侧压制）。
@@ -80,7 +80,7 @@
   **裸 `url` 在本插件按 Streamable HTTP 解释**，与 Gemini CLI（`url` = MCP SSE）
   相反；见 [配置格式](format.zh.md#httpurltransport-与-url-推断)。
 - 坏文件/坏条目不影响其他服务器，且**按源隔离**：`.mcp.json` 坏了不会卸掉
-  同项目的 yml 行（反之亦然）；条目错误写入 `.dsh/.mcp-diag.json` 与宿主
+  同项目的 yml 行（反之亦然）；条目错误写入 `$DSH_HOME/mcp-diag/<hash>.json` 与宿主
   日志（诊断从不带文件内容）。
 - `enabled: false` 静默跳过、**不占名**（生态通行写法）；`disabled: true` **占住
   影子键但不装载**——禁用意味着"这个名字不许跑"，而不是"让位给别的副本"。

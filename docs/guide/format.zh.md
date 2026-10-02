@@ -59,7 +59,7 @@ insert 列表），每行一个 MCP 服务器：
 **与原生 cordis 方言的差异**：`!!js` 标签（profile 的 `cordis.patch.yml` 由
 Loader 求值的 js-yaml 表达式，如官方 README 示例 `env: { TOKEN: !!js
 process.env.GITHUB_TOKEN }`）在项目文件里**不支持**——受管块内出现未解析
-标签会使该文件整体报错跳过（写入 `.dsh/.mcp-diag.json` 并打日志），不会把
+标签会使该文件整体报错跳过（写入 `$DSH_HOME/mcp-diag/<hash>.json` 并打日志），不会把
 表达式当字面量字符串静默装载。`env`/`headers` 的值其余情况下是字面量，仅
 `${VAR}` 引用会在装载时做串内插值（见 [`${VAR}` 展开](env-expansion.zh.md)）；
 `disabled` 只能是 `true`/`false`。可选 `maxInstructionBytes`（整数 ≥ 1）是官方对
