@@ -92,8 +92,8 @@ function fakeCtx() {
       };
     },
     /** 触发已注册的宿主事件（mock 需要；真实宿主由 dsh 派发）。 */
-    emit(name, payload) {
-      for (const callback of handlers.get(name) ?? []) callback(payload);
+    emit(name, ...args) {
+      for (const callback of handlers.get(name) ?? []) callback(...args);
     },
     provide(name, value) {
       this.provided[name] = value;
@@ -2002,6 +2002,68 @@ try {
   } finally {
     process.chdir(savedCwdSession);
     await rmRetry(dirSession);
+  }
+}
+
+// 桌面端切回另一个工作区时，上一个会话不会 dispose。焦点一旦离开，那个项目的
+// MCP 必须立刻卸载，不能靠 5 分钟宽限继续留在全局工具层里。
+{
+  const dirFocus = await mkdtemp(join(tmpdir(), "dsh-mcp-focus-"));
+  const homeFocus = join(dirFocus, "home");
+  const projMcp = join(dirFocus, "with-mcp");
+  const projPlain = join(dirFocus, "without-mcp");
+  await mkdir(join(homeFocus, ".dsh"), { recursive: true });
+  await mkdir(projMcp, { recursive: true });
+  await mkdir(projPlain, { recursive: true });
+  await writeManagedRows(projectMcpFile(projMcp), [stdioRow("from-mcp")], { createIfMissing: true });
+  const savedCwdFocus = process.cwd();
+  try {
+    process.chdir(dirFocus);
+    const ctxFocus = fakeCtx();
+    const registryFocus = new ProjectMcpRegistry(ctxFocus, {
+      globalNames: async () => [],
+      unmountGraceMs: UNMOUNT_GRACE_MS,
+      userLayerPaths: { mcpYml: join(homeFocus, ".dsh", "mcp.yml"), mcpJson: join(homeFocus, ".dsh", "mcp.json"), profilesDir: join(homeFocus, ".dsh", "profiles") }
+    });
+    const agentPlain = fakeAgent("session-plain", projPlain);
+    const agentMcp = fakeAgent("session-mcp", projMcp);
+    ctxFocus.agentsList.push(agentPlain);
+    ctxFocus.schemas.push({ name: "mcp__from-mcp__read" });
+    await registryFocus.reconcileNow();
+    ctxFocus.agentsList.push(agentMcp);
+    ctxFocus.emit("agent/created", { agent: agentMcp, source: "resume" });
+    assert.ok(
+      await registryFocus.waitForState(projMcp, "from-mcp", (state) => state?.phase === "active", 5000),
+      "focusing the mcp workspace mounts its server"
+    );
+    ctxFocus.emit("session/event", { id: "session-plain", header: { cwd: projPlain } }, { type: "tool/result" });
+    await registryFocus.reconcileNow();
+    assert.equal(
+      (await registryFocus.snapshot()).find((file) => file.project === projMcp)?.servers?.some((row) => row.fiberPhase === "active"),
+      true,
+      "a background tool result in the other workspace must not unmount the focused project"
+    );
+    ctxFocus.emit("session/event", { id: "session-plain", header: { cwd: projPlain } }, { type: "user/message" });
+    assert.ok(
+      await registryFocus.waitForState(projMcp, "from-mcp", (state) => state === undefined, 5000),
+      "activity in the other workspace unmounts the previous project without waiting for grace"
+    );
+    const snapFocus = await registryFocus.snapshot();
+    const still = (snapFocus.find((file) => file.project === projMcp)?.servers ?? []).filter((row) => row.fiberPhase === "active" || row.fiberPhase === "loading");
+    assert.equal(still.length, 0, "the other workspace's server is not active: " + JSON.stringify(still));
+    ctxFocus.emit("agent/created", { agent: agentMcp, source: "resume" });
+    assert.ok(
+      await registryFocus.waitForState(projMcp, "from-mcp", (state) => state?.phase === "active", 5000),
+      "focusing the mcp workspace again remounts its server"
+    );
+    for (const disposer of ctxFocus.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    pass("switching the focused workspace unmounts the previous project's MCP immediately");
+  } finally {
+    process.chdir(savedCwdFocus);
+    await rmRetry(dirFocus);
   }
 }
 

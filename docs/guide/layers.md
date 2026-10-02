@@ -40,13 +40,17 @@ layers is described in [configuration format](format.md).
   `skipReason: "name-taken"` in the snapshot (no renaming, to avoid
   `serverName` reservation conflicts).
 - **On-demand project mounts** (v0.6.0): the catalog and effective names are
-  still computed for every known project. Project-layer fibers are created
-  only for projects with a live session or the process cwd. After the last
-  session leaves (and the project is not cwd) servers unmount after a
-  5 minute grace; the project entry and file watcher remain, and the row is
-  listed in `summary.idle` with `skipReason: "idle"` (more specific skips
-  such as `env-missing` are preserved). Idle is not `unhealthy`. User-layer
-  globals stay resident.
+  still computed for every known project. Before any workspace is focused,
+  project-layer fibers are created only for projects with a live session or
+  the process cwd, and they unmount after a 5 minute grace once the last
+  session leaves. After the user focuses a workspace (opening its session,
+  or continuing to work in it), only that project stays mounted; every other
+  workspace unmounts immediately. Desktop does not dispose the previous
+  session on switch, so leaving those servers up would leak their tools into
+  the global tool list. The project entry and file watcher remain, and the
+  row is listed in `summary.idle` with `skipReason: "idle"` (more specific
+  skips such as `env-missing` are preserved). Idle is not `unhealthy`.
+  User-layer globals stay resident.
 
 A server that registers more than `DSH_MCP_TOOL_BUDGET_WARN` tools or
 description/schema bytes (default 200 / 256KiB) is warned once per crossing

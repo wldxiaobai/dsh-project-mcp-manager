@@ -142,10 +142,13 @@ pnpm test          # node test/test-model.mjs / test-mcp-file / test-json-file /
 - **Mounting**: each `(project, serverName)` pair in the project layers mounts
   one `@deepseek-ai/dsh-mcp-client` instance (`ctx.plugin`) on the host ctx and
   registers it into the global tool layer; multiple sessions inside the same
-  project share a single connection. **Project-layer fibers are created only
-  for projects with a live session or the process cwd**; after the last
-  session leaves (and the project is not cwd) servers unmount following a
-  5 minute grace while the catalog entry and watcher remain. **Every
+  project share a single connection. Before a workspace is focused,
+  project-layer fibers are created only for projects with a live session or
+  the process cwd, and they unmount after a 5 minute grace. Once the user
+  focuses a workspace, only that project stays mounted and the others
+  unmount immediately, so a desktop workspace switch cannot leave another
+  project's tools in the global list. The catalog entry and watcher remain.
+  **Every
   user-layer row mounts exactly one instance** (global, independent of the
   number of projects) — see
   [configuration sources and layers](docs/guide/layers.md).
