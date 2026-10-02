@@ -137,6 +137,9 @@ importers:
       '@deepseek-ai/dsh-native-command':
         specifier: ^0.2.0-rc.2
         version: 0.2.0-rc.2(@deepseek-ai/cordis@4.0.4)
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ^4.0.4

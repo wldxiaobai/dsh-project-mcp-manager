@@ -31,6 +31,18 @@ export type McpUiLocaleKey =
   | "addHeaders"
   | "addHeadersPlaceholder"
   | "addSubmit"
+  | "addPaste"
+  | "addPasteDenied"
+  | "addPasteEmpty"
+  | "addPasteParse"
+  | "addPasteNone"
+  | "addPasteSse"
+  | "addPasteBoth"
+  | "addPasteCommand"
+  | "addPasteUrl"
+  | "addPasteFields"
+  | "addPasteTransport"
+  | "addPasteSkipped"
   | "addNameInvalid"
   | "addCommandRequired"
   | "addUrlRequired"
@@ -116,6 +128,18 @@ export const en: Record<McpUiLocaleKey, string> = {
   addHeaders: "Headers (optional, Name: value)",
   addHeadersPlaceholder: "Authorization: Bearer ${TOKEN}",
   addSubmit: "Add",
+  addPaste: "Fill from clipboard",
+  addPasteDenied: "Couldn't read the clipboard. Allow clipboard access and try again.",
+  addPasteEmpty: "The clipboard is empty.",
+  addPasteParse: "The clipboard is not JSON or YAML.",
+  addPasteNone: "No MCP server was found in the clipboard.",
+  addPasteSse: "This entry uses SSE. Only a local command or a remote URL can be filled in.",
+  addPasteBoth: "Both a command and a URL are set. Keep one, or set type.",
+  addPasteCommand: "This config has no command.",
+  addPasteUrl: "This config has no URL.",
+  addPasteFields: "Arguments, environment, or headers contain a value that cannot go in the form.",
+  addPasteTransport: "That transport cannot be filled in as a local command or a remote URL.",
+  addPasteSkipped: "The clipboard has more than one server. Filled the first. {count} more were left out.",
   addNameInvalid: "Use 1–32 letters, digits, underscores, or hyphens.",
   addCommandRequired: "Enter the command to run.",
   addUrlRequired: "Enter the server URL.",
@@ -202,6 +226,18 @@ export const zh: Record<McpUiLocaleKey, string> = {
   addHeaders: "请求头（可选，每行 名称: 值）",
   addHeadersPlaceholder: "Authorization: Bearer ${TOKEN}",
   addSubmit: "添加",
+  addPaste: "从剪贴板填入",
+  addPasteDenied: "读不到剪贴板。允许这个页面读取剪贴板后再试。",
+  addPasteEmpty: "剪贴板是空的。",
+  addPasteParse: "剪贴板里的内容不是 JSON 或 YAML。",
+  addPasteNone: "没有从剪贴板里认出 MCP 服务器。",
+  addPasteSse: "这是 SSE 传输。这里只能填本地命令或远程地址。",
+  addPasteBoth: "同时写了命令和地址。请只留一种，或写上 type。",
+  addPasteCommand: "这份配置没有命令。",
+  addPasteUrl: "这份配置没有地址。",
+  addPasteFields: "参数、环境变量或请求头里有无法填进表单的值。",
+  addPasteTransport: "这个传输类型没法对应到本地命令或远程地址。",
+  addPasteSkipped: "剪贴板里有多个服务器，只填了第一个。另外 {count} 个没有填入。",
   addNameInvalid: "名称只能是 1–32 位字母、数字、下划线或连字符。",
   addCommandRequired: "填写要运行的命令。",
   addUrlRequired: "填写服务器地址。",

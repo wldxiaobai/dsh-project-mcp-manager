@@ -27,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The Add MCP dialog can fill its fields from a JSON or YAML server on the
+  clipboard (`mcpServers`, `servers`, one entry, or a managed yml row). The
+  save location stays whatever is selected in the dialog. A clipboard with
+  several servers fills the first and says how many were left out.
 - Profile-layer native managed block `~/.dsh/profiles/<name>/mcp.yml`
   (source `dsh-profile-user-yml`), read ahead of that profile's `mcp.json`.
   Layer precedence is now `.dsh/mcp.yml` > `.dsh/mcp.json` > `.mcp.json` >

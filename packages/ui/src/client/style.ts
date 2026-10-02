@@ -340,6 +340,9 @@ button.dsh-mcp-switch[aria-checked="true"] {
     max-height: min(480px, calc(100dvh - 240px));
   }
 }
+.dsh-mcp-add-paste {
+  align-self: flex-start;
+}
 .dsh-mcp-add-field {
   display: flex;
   flex-direction: column;

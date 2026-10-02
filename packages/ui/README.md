@@ -1,6 +1,6 @@
 # dsh-project-mcp-ui
 
-Settings tab for [dsh-project-mcp-manager](https://github.com/wldxiaobai/dsh-project-mcp-manager). It lists the servers the loader will run, and writes only the managed `mcp.yml` for that scope. A same-name copy in another file stays as a note on that card. A non-yml row with a different name but the same command and arguments, or the same URL, is left off the list. Add MCP opens a form and writes the row; MCP config stays beside it and opens the file for anything the form does not cover.
+Settings tab for [dsh-project-mcp-manager](https://github.com/wldxiaobai/dsh-project-mcp-manager). It lists the servers the loader will run, and writes only the managed `mcp.yml` for that scope. A same-name copy in another file stays as a note on that card. A non-yml row with a different name but the same command and arguments, or the same URL, is left off the list. Add MCP opens a form and writes the row. Fill from clipboard reads one JSON or YAML server into that form. MCP config stays beside it and opens the file for anything the form does not cover.
 
 Install both packages into the web profile:
 

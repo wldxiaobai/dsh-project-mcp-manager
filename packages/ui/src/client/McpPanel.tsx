@@ -18,6 +18,7 @@ import {
 } from "../wire.ts";
 import type { McpUiLocaleKey } from "./locales.ts";
 import { collapseServers, type LogicalServer } from "./collapse.ts";
+import { parsePastedConfig, type PasteConfigFailure } from "./paste-config.ts";
 import { PANEL_CSS } from "./style.ts";
 
 export interface McpPanelProps {
@@ -195,6 +196,7 @@ export function McpPanel({ t }: McpPanelProps) {
   const [addTargets, setAddTargets] = useState<McpUiWriteTarget[]>([]);
   const [draft, setDraft] = useState<AddDraft>(emptyDraft([]));
   const [formError, setFormError] = useState<string | null>(null);
+  const [pasteNote, setPasteNote] = useState<string | null>(null);
   const loadRef = useRef<() => void>(() => {});
   const settleTimer = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
@@ -320,6 +322,7 @@ export function McpPanel({ t }: McpPanelProps) {
   const updateDraft = (patch: Partial<AddDraft>) => {
     setDraft((current) => ({ ...current, ...patch }));
     setFormError(null);
+    setPasteNote(null);
   };
 
   const openAdd = () => {
@@ -327,7 +330,42 @@ export function McpPanel({ t }: McpPanelProps) {
     setAddTargets(targets);
     setDraft(emptyDraft(targets));
     setFormError(null);
+    setPasteNote(null);
     setAddOpen(true);
+  };
+
+  const pasteFailure = (reason: PasteConfigFailure): string => {
+    switch (reason) {
+      case "empty": return t("addPasteEmpty");
+      case "parse": return t("addPasteParse");
+      case "none": return t("addPasteNone");
+      case "sse": return t("addPasteSse");
+      case "both": return t("addPasteBoth");
+      case "command": return t("addPasteCommand");
+      case "url": return t("addPasteUrl");
+      case "fields": return t("addPasteFields");
+      case "transport": return t("addPasteTransport");
+    }
+  };
+
+  const fillFromClipboard = async () => {
+    let text: string;
+    try {
+      text = await navigator.clipboard.readText();
+    } catch {
+      setPasteNote(null);
+      setFormError(t("addPasteDenied"));
+      return;
+    }
+    const parsed = parsePastedConfig(text);
+    if (!parsed.ok) {
+      setPasteNote(null);
+      setFormError(pasteFailure(parsed.reason));
+      return;
+    }
+    setDraft((current) => ({ ...current, ...parsed.fields }));
+    setFormError(null);
+    setPasteNote(parsed.skipped > 0 ? t("addPasteSkipped", { count: parsed.skipped }) : null);
   };
 
   const submitAdd = async () => {
@@ -503,6 +541,12 @@ export function McpPanel({ t }: McpPanelProps) {
           event.preventDefault();
           void submitAdd();
         }}>
+          <div className="dsh-mcp-add-field">
+            <Button className="dsh-mcp-add-paste" variant="outline" size="sm" type="button" disabled={busy} onClick={() => void fillFromClipboard()}>
+              {t("addPaste")}
+            </Button>
+            {pasteNote !== null && <p className="dsh-mcp-add-path">{pasteNote}</p>}
+          </div>
           <div className="dsh-mcp-add-field">
             <span className="dsh-mcp-add-label" aria-hidden="true">{t("addScope")}</span>
             <SegmentedControl
