@@ -43,6 +43,9 @@ Feature documentation lives in `docs/`, English and Chinese side by side:
 - [`${VAR}` expansion](docs/guide/env-expansion.md) — mount-time interpolation and
   its diagnostics.
 - [CLI `dsh-mcp`](docs/guide/cli.md) — scopes, write formats, ownership contract.
+- [Query surface](docs/guide/service.md) — `ctx.projectMcp`, the
+  `projectMcp/updated` event, exported view types, and the semver contract for
+  the companion UI.
 
 Design and release records (Chinese): [dsh 0.2.0-rc.2 adaptation](docs/design/adaptation-dsh-0.2.0-rc.2.md) ·
 [dsh 0.1.6-alpha.2 adaptation plan](docs/design/adaptation-dsh-0.1.6-alpha.2.md) ·
@@ -51,6 +54,7 @@ Design and release records (Chinese): [dsh 0.2.0-rc.2 adaptation](docs/design/ad
 [dsh 0.1.2-rc.1 adaptation](docs/design/adaptation-dsh-0.1.2-rc1.md) ·
 [JSON config layer proposal](docs/design/proposal-json-mcp-config.md) ·
 [Runtime robustness & JSON interop proposal](docs/design/proposal-runtime-robustness-and-json-interop.md) ·
+[v0.7.2 release notes](docs/releases/v0.7.2.md) ·
 [v0.7.1 release notes](docs/releases/v0.7.1.md) ·
 [v0.7.0 release notes](docs/releases/v0.7.0.md) ·
 [v0.6.0 release notes](docs/releases/v0.6.0.md) ·
@@ -90,7 +94,7 @@ dsh plugin --profile web add dsh-project-mcp-manager@latest
 
 # Install a specific version (check available versions with
 # npm view dsh-project-mcp-manager versions)
-dsh plugin --profile web add dsh-project-mcp-manager@0.7.1
+dsh plugin --profile web add dsh-project-mcp-manager@0.7.2
 ```
 
 **Option 2: install directly with pnpm** (equivalent to option 1):
@@ -117,7 +121,7 @@ pnpm add link:<path-to-your-dsh-mcp-project-source>   # e.g. D:\dev\dsh-mcp-proj
 > trigger the bundle reconcile.
 
 **Upgrading / pinning versions**: re-run the `add` command from option 1 with
-the desired version suffix — `@latest` upgrades to the newest release, `@0.7.1`
+the desired version suffix — `@latest` upgrades to the newest release, `@0.7.2`
 pins to a specific version. v0.7.x needs dsh 0.2.0-rc.2 (the `0.2.0` line).
 dsh 0.1.5 keeps working with plugin `@0.6.0`.
 
@@ -178,6 +182,21 @@ pnpm test          # node test/test-model.mjs / test-mcp-file / test-json-file /
   global servers suppressed by the project's own rows; a session without a cwd
   falls back to the owner project (subagents), then to the project containing
   the dsh process cwd. Released when the session is destroyed.
+
+## Query surface
+
+Other plugins and the companion UI read mount state from `ctx.projectMcp`
+(`snapshot`, `serverView`, `globalState`, `reload`). Queries are the previous
+reconcile's memory; they do not read disk. A successful reconcile emits
+`projectMcp/updated` with no payload. The listener calls `snapshot()` and
+diffs. This package does not open a browser SSE channel.
+
+That surface — the methods, the event, and the view types re-exported from the
+package entry (`ProjectFileState`, `McpServerRuntimeView`, `McpServerView`,
+`McpRowSource`, and the types those views name) — follows semantic versioning
+for the companion UI. The UI package peer-depends on
+`dsh-project-mcp-manager` at the **same exact version** (no `^` or `~`).
+Details: [query surface](docs/guide/service.md).
 
 ## Security boundary
 
