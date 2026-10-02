@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { ProjectMcpRegistry, parseDiagDocument, planProjectChanges, projectMcpFile, mergeSourcedRows, profileNameFromConfigPath, UNMOUNT_GRACE_MS } from "../lib/registry.js";
 import { bindProjectMcpService, PROJECT_MCP_SERVICE } from "../lib/service.js";
 import { apply, PROJECT_MCP_UPDATED_EVENT } from "../lib/index.js";
-import { MCP_BLOCK_BEGIN, MCP_BLOCK_END, writeManagedRows } from "../lib/mcp-file.js";
+import { MCP_BLOCK_BEGIN, MCP_BLOCK_END, extractManagedRows, writeManagedRows } from "../lib/mcp-file.js";
 import { byCodeUnit } from "../lib/model.js";
 
 let passed = 0;
@@ -1629,6 +1629,79 @@ try {
   }
   await rmRetry(dirSvc);
   pass("projectMcp service matches registry queries and apply provides it");
+}
+
+// 受管 yml 编辑：启停 / 删除 / 工具开关只写该作用域的受管块；其它来源落占位或拷贝。
+{
+  const dirEdit = await mkdtemp(join(tmpdir(), "dsh-mcp-edit-"));
+  const homeEdit = join(dirEdit, "home");
+  const projEdit = join(dirEdit, "proj");
+  await mkdir(join(homeEdit, ".dsh"), { recursive: true });
+  await mkdir(join(projEdit, ".dsh"), { recursive: true });
+  await writeManagedRows(projectMcpFile(projEdit), [stdioRow("own")], { createIfMissing: true });
+  await writeFile(join(projEdit, ".dsh", "mcp.json"), JSON.stringify({
+    mcpServers: { fromjson: { command: "node", args: ["j.js"] } }
+  }), "utf8");
+  const ctxEdit = fakeCtx();
+  const opened = [];
+  const registryEdit = new ProjectMcpRegistry(ctxEdit, {
+    globalNames: async () => [],
+    userLayerPaths: { mcpYml: join(homeEdit, ".dsh", "mcp.yml"), mcpJson: join(homeEdit, ".dsh", "mcp.json"), profilesDir: join(homeEdit, ".dsh", "profiles") },
+    openPath: (path) => { opened.push(path); }
+  });
+  ctxEdit.agentsList.push(fakeAgent("session-edit", projEdit));
+  await registryEdit.reconcileNow();
+  const ymlPath = projectMcpFile(projEdit);
+
+  // 打开配置文件：项目层落到 <root>/.dsh/mcp.yml。
+  assert.equal(await registryEdit.openConfigFile("dsh-project", projEdit), ymlPath);
+  assert.deepEqual(opened, [ymlPath], "openPath receives the managed yml path");
+
+  // 停用 yml 行：就地翻 disabled，不新建行。
+  await registryEdit.setServerEnabled("dsh-project", projEdit, "own", false);
+  let rows = extractManagedRows(await readFile(ymlPath, "utf8"));
+  assert.equal(rows.length, 1, "disable edits the existing yml row in place");
+  assert.equal(rows[0].disabled, true);
+  // 再启用：去掉 disabled。
+  await registryEdit.setServerEnabled("dsh-project", projEdit, "own", true);
+  rows = extractManagedRows(await readFile(ymlPath, "utf8"));
+  assert.equal(rows[0].disabled, undefined, "enable clears the disabled flag");
+
+  // 停用 JSON 层行：在受管 yml 里落一条 disabled 占位（同 id），不改 json 文件。
+  await registryEdit.setServerEnabled("dsh-project-json", projEdit, "fromjson", false);
+  rows = extractManagedRows(await readFile(ymlPath, "utf8"));
+  const placeholder = rows.find((row) => row.id === "panel-mcp-fromjson");
+  assert.ok(placeholder !== undefined, "disabling a json row lands a placeholder in the managed yml");
+  assert.equal(placeholder.disabled, true);
+  assert.equal(JSON.parse(await readFile(join(projEdit, ".dsh", "mcp.json"), "utf8")).mcpServers.fromjson.command, "node", "the json file is untouched");
+
+  // 删除 yml 行：就地移除。
+  await registryEdit.removeServer("dsh-project", projEdit, "own");
+  rows = extractManagedRows(await readFile(ymlPath, "utf8"));
+  assert.ok(!rows.some((row) => row.id === "panel-mcp-own"), "removing a yml row deletes it");
+
+  // 工具开关：deny 写入受管 yml 的 tools.deny；再打开时移除。
+  await registryEdit.setServerEnabled("dsh-project-json", projEdit, "fromjson", true);
+  await registryEdit.setToolEnabled("dsh-project-json", projEdit, "fromjson", "read_file", false);
+  rows = extractManagedRows(await readFile(ymlPath, "utf8"));
+  const taken = rows.find((row) => row.id === "panel-mcp-fromjson");
+  assert.deepEqual(taken?.config?.tools, { deny: ["read_file"] }, "tool disable writes tools.deny into the managed yml");
+  await registryEdit.setToolEnabled("dsh-project-json", projEdit, "fromjson", "read_file", true);
+  rows = extractManagedRows(await readFile(ymlPath, "utf8"));
+  assert.equal(rows.find((row) => row.id === "panel-mcp-fromjson")?.config?.tools, undefined, "re-enabling the last denied tool drops the tools key");
+
+  // 只读遗留层与未知行：明确报错，不写文件。
+  await writeFile(join(projEdit, ".mcp.json"), JSON.stringify({ mcpServers: { ghost: { command: "node", args: ["g.js"] } } }), "utf8");
+  await registryEdit.reconcileNow();
+  await assert.rejects(() => registryEdit.setServerEnabled("cc-project", projEdit, "ghost", false), /只读/);
+  await assert.rejects(() => registryEdit.removeServer("dsh-project", projEdit, "nosuch"), /找不到服务器/);
+
+  for (const disposer of ctxEdit.disposers) {
+    const cleanup = disposer();
+    if (typeof cleanup === "function") cleanup();
+  }
+  await rmRetry(dirEdit);
+  pass("managed yml edits: enable/disable/remove/tool toggles write only the managed block");
 }
 
 {

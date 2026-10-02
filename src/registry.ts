@@ -43,7 +43,7 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import type { Context } from "@deepseek-ai/cordis";
 import * as mcpClient from "@deepseek-ai/dsh-mcp-client";
 import { PROJECT_MCP_UPDATED_EVENT } from "./service.js";
-import { extractManagedRows, readPatchFile, withPatchLock, type PatchRow } from "./mcp-file.js";
+import { extractManagedRows, readPatchFile, updateManagedRows, withPatchLock, MCP_PLUGIN_NAME, type PatchRow } from "./mcp-file.js";
 import {
   DIAG_FILE,
   DSH_DIR,
@@ -80,6 +80,7 @@ import {
   configFromPatchRow,
   patchRowToView,
   projectKeyOf,
+  rowIdForServerName,
   rowNameOf,
   toOfficialConfig,
   toolFilterFromConfig,
@@ -207,6 +208,8 @@ export interface ProjectMcpRegistryOptions {
   toolBudget?: { maxTools: number; maxBytes: number };
   /** 无会话后卸载宽限（毫秒）；缺省 `UNMOUNT_GRACE_MS`（5 分钟）。测试注入。 */
   unmountGraceMs?: number;
+  /** 打开配置文件的宿主动作（配套 UI 的「打开配置文件」按钮）；缺省时该按钮不可用。 */
+  openPath?: (path: string) => void | Promise<void>;
 }
 
 interface ProjectEntry {
@@ -2301,6 +2304,165 @@ export class ProjectMcpRegistry {
   /** 内存快照：进 enqueue 与对账互斥，不读盘、不触发对账。要收敛请走 `reload()` / `reconcileNow()`。 */
   async snapshot(): Promise<ProjectFileState[]> {
     return this.enqueue(() => this.buildSnapshotFromMemory());
+  }
+
+  // ── 受管 yml 编辑（配套 UI 的写路径；只写原生受管块，JSON 与遗留层只读）──
+
+  /**
+   * 一条服务器行对应的原生受管 yml 路径（该作用域的权威写入文件）：
+   * 项目层 → `<projectRoot>/.dsh/mcp.yml`；profile 层 → `profiles/<name>/mcp.yml`；
+   * 其余用户层 → `~/.dsh/mcp.yml`。文件可以尚不存在（创建语义）。
+   */
+  private managedYmlPathFor(source: McpRowSource, projectRoot: string): string | undefined {
+    if (source === "cc-project") return undefined;
+    if (source === "dsh-project" || source === "dsh-project-json") return projectMcpFile(projectRoot);
+    const paths = this.resolveUserLayerPaths();
+    if (source === "dsh-profile-user" || source === "dsh-profile-user-yml") {
+      if (this.activeProfileName === undefined) return undefined;
+      return profileMcpYmlFile(paths.profilesDir, this.activeProfileName);
+    }
+    return paths.mcpYml;
+  }
+
+  /** 该行的受管 yml 路径；遗留只读层与解析不出 profile 名时返回 undefined。 */
+  managedPathFor(source: McpRowSource, projectRoot: string): string | undefined {
+    return this.managedYmlPathFor(source, projectRoot);
+  }
+
+  /** 锁内读-改-写该作用域的受管 yml；写完排一次对账（不等待对账结束）。 */
+  private async editManagedYml(
+    source: McpRowSource,
+    projectRoot: string,
+    mutate: (rows: PatchRow[]) => PatchRow[]
+  ): Promise<string> {
+    const path = this.managedYmlPathFor(source, projectRoot);
+    if (path === undefined) {
+      throw new Error(source === "cc-project"
+        ? "该服务器来自只读的遗留 .mcp.json，不能写入受管 yml；请直接编辑该文件"
+        : "当前解析不出运行中的 profile 名，无法定位 profile 层 mcp.yml");
+    }
+    await updateManagedRows(path, (rows) => mutate(rows), { createIfMissing: true });
+    this.configEpoch += 1;
+    this.schedule(async () => {
+      await this.reconcileAll();
+    });
+    return path;
+  }
+
+  /** 在受管 yml 里找到目标行：优先同名，其次同服务身份（接管 JSON 层时身份一致才算同一条）。 */
+  private findManagedRowIndex(rows: PatchRow[], rawName: string, located: { row?: PatchRow }): number {
+    const byName = rows.findIndex((row) => rowNameOf(row) === rawName);
+    if (byName >= 0) return byName;
+    const identity = located.row === undefined ? undefined : serviceIdentityKey({ rawName, row: located.row, source: "dsh-project" });
+    if (identity === undefined) return -1;
+    return rows.findIndex((row) => {
+      const name = rowNameOf(row);
+      if (name === undefined) return false;
+      return serviceIdentityKey({ rawName: name, row, source: "dsh-project" }) === identity;
+    });
+  }
+
+  /** 启用/停用：yml 行就地翻 disabled；其它来源在受管 yml 里落一条同身份行（启用=完整拷贝，停用=disabled 占位）。 */
+  async setServerEnabled(source: McpRowSource, projectRoot: string, rawName: string, enabled: boolean): Promise<string> {
+    return this.enqueue(async () => {
+      const located = this.locateRowFromMemory(projectRoot, rawName, undefined);
+      if (located.row === undefined) throw new Error(`找不到服务器 "${rawName}"（可能刚被移除；请刷新后重试）`);
+      return this.editManagedYml(source, projectRoot, (rows) => {
+        const index = this.findManagedRowIndex(rows, rawName, located);
+        if (index >= 0) {
+          const next = [...rows];
+          const row = { ...next[index] };
+          if (enabled) delete row.disabled;
+          else row.disabled = true;
+          next[index] = row;
+          return next;
+        }
+        if (enabled) {
+          const copy: PatchRow = { ...located.row! };
+          delete copy.disabled;
+          return [...rows, copy];
+        }
+        return [...rows, { id: located.row!.id ?? rowIdForServerName(rawName), name: MCP_PLUGIN_NAME, disabled: true, ...(located.row!.config === undefined ? {} : { config: located.row!.config }) }];
+      });
+    });
+  }
+
+  /** 删除：yml 行就地移除；其它来源在受管 yml 里落一条 disabled 占位行（遮蔽原层，不删原文件）。 */
+  async removeServer(source: McpRowSource, projectRoot: string, rawName: string): Promise<string> {
+    return this.enqueue(async () => {
+      const located = this.locateRowFromMemory(projectRoot, rawName, undefined);
+      if (located.row === undefined) throw new Error(`找不到服务器 "${rawName}"（可能刚被移除；请刷新后重试）`);
+      return this.editManagedYml(source, projectRoot, (rows) => {
+        const index = this.findManagedRowIndex(rows, rawName, located);
+        if (index >= 0) {
+          const next = [...rows];
+          next.splice(index, 1);
+          return next;
+        }
+        return [...rows, { id: located.row!.id ?? rowIdForServerName(rawName), name: MCP_PLUGIN_NAME, disabled: true, ...(located.row!.config === undefined ? {} : { config: located.row!.config }) }];
+      });
+    });
+  }
+
+  /** 单个工具的可见开关：写入该作用域受管 yml 行的 tools.allow/deny（deny 优先；全开时删除 tools 键）。 */
+  async setToolEnabled(source: McpRowSource, projectRoot: string, rawName: string, tool: string, enabled: boolean): Promise<string> {
+    if (tool === "" || tool.includes("*") || tool.includes("?") || tool.includes("[")) {
+      throw new Error(`工具名 ${JSON.stringify(tool)} 不是精确的已注册名（含 glob 字符），不能作为单项开关`);
+    }
+    return this.enqueue(async () => {
+      const located = this.locateRowFromMemory(projectRoot, rawName, undefined);
+      if (located.row === undefined) throw new Error(`找不到服务器 "${rawName}"（可能刚被移除；请刷新后重试）`);
+      return this.editManagedYml(source, projectRoot, (rows) => {
+        const index = this.findManagedRowIndex(rows, rawName, located);
+        const base: PatchRow = index >= 0 ? { ...rows[index] } : { ...located.row! };
+        if (index < 0) delete base.disabled;
+        const config = { ...(configFromPatchRow(base) ?? {}) };
+        const filter = toolFilterFromConfig(config);
+        const allow = new Set(filter?.allow ?? []);
+        const deny = new Set(filter?.deny ?? []);
+        if (enabled) {
+          deny.delete(tool);
+          if (filter?.allow !== undefined) allow.add(tool);
+        } else {
+          deny.add(tool);
+        }
+        if (allow.size === 0 && deny.size === 0) delete config.tools;
+        else config.tools = { ...(allow.size > 0 || filter?.allow !== undefined ? { allow: [...allow] } : {}), ...(deny.size > 0 ? { deny: [...deny] } : {}) };
+        base.config = config;
+        if (index >= 0) {
+          const next = [...rows];
+          next[index] = base;
+          return next;
+        }
+        return [...rows, base];
+      });
+    });
+  }
+
+  /** 一台服务器当前已注册的工具名（短名）与逐项可见性；未装载/无工具时返回空列表。 */
+  toolStates(projectRoot: string, rawName: string): { name: string; enabled: boolean }[] {
+    const key = projectKeyOf(projectRoot);
+    const state = this.projects.get(key)?.servers.get(rawName) ?? this.globalServers.get(rawName);
+    if (state === undefined || state.phase !== "active") return [];
+    const prefix = `mcp__${state.effectiveName}__`;
+    const ids = this.registeredToolIds().filter((id) => id.startsWith(prefix));
+    const filter = toolFilterFromConfig(configFromPatchRow(state.row.config));
+    const denied = new Set(deniedToolsForFilter(state.effectiveName, filter, ids));
+    return ids.map((id) => ({ name: id.slice(prefix.length), enabled: !denied.has(id) }));
+  }
+
+  /** 打开该作用域的受管 yml（经注入的 openPath；未注入时报错由 UI 呈现）。 */
+  async openConfigFile(source: McpRowSource, projectRoot: string): Promise<string> {
+    const path = this.managedYmlPathFor(source, projectRoot);
+    if (path === undefined) {
+      throw new Error(source === "cc-project"
+        ? "遗留 .mcp.json 没有对应的受管 yml；请打开该文件本身"
+        : "当前解析不出运行中的 profile 名，无法定位 profile 层 mcp.yml");
+    }
+    const opener = this.providers.openPath;
+    if (opener === undefined) throw new Error("宿主未提供打开文件的能力（openPath 未注入）");
+    await opener(path);
+    return path;
   }
 
   private pushYmlSnapshot(
