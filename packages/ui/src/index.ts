@@ -19,8 +19,8 @@ import {
 } from "./wire.js";
 
 export const name = "dsh-project-mcp-ui";
-/** connection 不写成硬依赖：headless 没有这条服务时仍能装上本插件。 */
-export const inject = ["projectMcp"];
+/** connection 必须注入：浏览器路由挂在它的 /api Fetch 表上。headless 没有这条服务时，本插件行停在等待，装载器不受影响。 */
+export const inject = ["projectMcp", "connection"];
 
 const YML_SOURCES = new Set<McpRowSource>(["dsh-project", "dsh-profile-user-yml", "dsh-user-yml"]);
 
@@ -121,8 +121,7 @@ export function apply(ctx: Context) {
 
   const connection = connectionOf(ctx);
   if (connection === undefined) {
-    ctx.logger?.info?.("project mcp ui：当前宿主没有 connection，浏览器路由未注册");
-    return;
+    throw new Error("project mcp ui：connection 服务不可用，无法注册 /api/project-mcp 路由");
   }
 
   const state = async (): Promise<McpUiState> => {

@@ -35,15 +35,35 @@ const SOURCE_LABEL: Record<string, string> = {
   "dsh-user": "mcp.json"
 };
 
+async function readBody(response: Response): Promise<string> {
+  try {
+    return (await response.text()).trim();
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
 async function post(path: string, body: Record<string, unknown>): Promise<McpUiResult> {
-  const response = await fetch(path, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body)
-  });
-  const payload = await response.json() as McpUiResult;
-  if (!response.ok && payload.ok !== false) return { ok: false, message: `HTTP ${String(response.status)}` };
-  return payload;
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(body)
+    });
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+  }
+  const text = await readBody(response);
+  if (text === "") return { ok: false, message: `HTTP ${String(response.status)}，响应为空（${path}）` };
+  try {
+    const payload = JSON.parse(text) as McpUiResult;
+    if (!response.ok && payload.ok !== false) return { ok: false, message: `HTTP ${String(response.status)} ${text.slice(0, 400)}` };
+    return payload;
+  } catch {
+    return { ok: false, message: `HTTP ${String(response.status)} ${text.slice(0, 400)}` };
+  }
 }
 
 function fileName(path: string): string {
@@ -61,13 +81,26 @@ export function McpPanel({ t }: McpPanelProps) {
   const [tools, setTools] = useState<McpUiTool[] | null>(null);
 
   const load = () => {
-    fetch(MCP_UI_STATE_PATH, { headers: { accept: "application/json" } })
+    fetch(MCP_UI_STATE_PATH, { credentials: "same-origin", headers: { accept: "application/json" } })
       .then(async (response) => {
-        if (!response.ok) throw new Error(String(response.status));
-        setState(await response.json() as McpUiState);
+        const text = await readBody(response);
+        if (!response.ok) throw new Error(`HTTP ${String(response.status)} ${text.slice(0, 400) || "响应为空"}（${MCP_UI_STATE_PATH}）`);
+        let payload: McpUiState;
+        try {
+          payload = JSON.parse(text) as McpUiState;
+        } catch {
+          throw new Error(`响应不是 JSON：${text.slice(0, 400) || "空"}（${MCP_UI_STATE_PATH}）`);
+        }
+        if (!Array.isArray(payload.servers) || !Array.isArray(payload.openTargets)) {
+          throw new Error(`响应缺少 servers/openTargets：${text.slice(0, 400)}`);
+        }
+        setState(payload);
         setError(null);
       })
-      .catch(() => setError(t("error")));
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        setError(`${t("error")} ${detail}`);
+      });
   };
 
   useEffect(() => {
@@ -166,10 +199,12 @@ export function McpPanel({ t }: McpPanelProps) {
             const target = state?.openTargets.find((item) => item.id === id);
             if (target !== undefined) void openFile(target);
           }}
-          items={(state?.openTargets ?? []).map((target) => ({
-            id: target.id,
-            label: target.source === "dsh-user-yml" ? t("userFile") : target.source === "dsh-profile-user-yml" ? t("profileFile") : target.label
-          }))}
+          items={state !== null && state.openTargets.length > 0
+            ? state.openTargets.map((target) => ({
+              id: target.id,
+              label: target.source === "dsh-user-yml" ? t("userFile") : target.source === "dsh-profile-user-yml" ? t("profileFile") : target.label
+            }))
+            : [{ id: "unavailable", label: error ?? t("loading"), disabled: true }]}
           anchor={(
             <Button variant="outline" size="sm" icon={<IconFolderOpenOutlineRegular size={16} />} disabled={busy} onClick={() => setMenuOpen(true)}>
               {t("open")}
