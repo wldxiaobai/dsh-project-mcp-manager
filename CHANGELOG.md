@@ -35,7 +35,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `mcp-project-ui` bundle row to hide the page.
 - The settings page adds a server from a form. Confirm writes one managed
   `mcp.yml` row for the current workspace, the user layer, or the active
-  profile. Edit managed yml stays beside that button.
+  profile. MCP config stays beside that button as a file menu.
+
+### Changed
+
+- MCP settings cards say whether a server is running ("Running · N tools") or
+  only switched on ("On · waiting for a session"). Each card shows its source
+  file, and a warning badge when an edit must take over into the managed yml.
+  A skip reason is a line on the card. The page intro keeps one sentence; the
+  write-policy note sits on a help icon.
+- The settings list counts one card per server name. After a non-yml row is
+  taken over, that copy stays on the card as a covered-by note. It no longer
+  appears as a second server that is still waiting for a session.
 
 ## [0.7.2] - 2026-10-02
 

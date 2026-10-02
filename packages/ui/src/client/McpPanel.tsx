@@ -1,7 +1,7 @@
 /** MCP settings tab: layers, activation, delete, and per-tool switches. */
 
 import { useEffect, useState, type CSSProperties } from "react";
-import { Button, IconChevronDownOutlineRegular, IconFolderOpenOutlineRegular, IconPlusOutlineRegular, IconTrashOutlineRegular, Input, Menu, Modal, SegmentedControl, StateDot, Switch, Tooltip } from "@deepseek-ai/dsh-client-ui-primitives";
+import { Button, IconChevronDownOutlineRegular, IconFolderCloseRegular, IconInfoOutlineRegular, IconPlusOutlineRegular, IconTrashOutlineRegular, IconWarningOutlineRegular, Input, Menu, Modal, SegmentedControl, StateDot, Switch, Tag, Tooltip } from "@deepseek-ai/dsh-client-ui-primitives";
 import {
   MCP_UI_ADD_PATH,
   MCP_UI_EVENTS_PATH,
@@ -118,49 +118,116 @@ function fileName(path: string): string {
   return parts[parts.length - 1] ?? path;
 }
 
-function skipDetail(reason: string | null, t: McpPanelProps["t"]): string {
+type StatusTone = "running" | "waiting" | "starting" | "error" | "off";
+
+interface RuntimeStatus {
+  label: string;
+  /** 状态行没说完的原因。空则卡片上不再加一行。来源和接管不放这里。 */
+  detail: string | null;
+  tone: StatusTone;
+}
+
+/** 失败或跳过时，状态行用短句，下面一行放完整原因。来源改由名字旁的标签承担。 */
+function problemStatus(reason: string | null, t: McpPanelProps["t"]): { label: string; detail: string | null } {
   switch (reason) {
+    case "name-taken":
+      return { label: t("statusNameTaken"), detail: t("skipNameTaken") };
+    case "env-missing":
+      return { label: t("statusEnvMissing"), detail: t("skipEnvMissing") };
+    case "env-invalid":
+      return { label: t("statusEnvInvalid"), detail: t("skipEnvInvalid") };
+    case "give-up":
+      return { label: t("statusGiveUp"), detail: t("skipGiveUp") };
+    case "config-invalid":
+      return { label: t("statusConfigInvalid"), detail: t("skipConfigInvalid") };
     case null:
     case "":
     case "idle":
-      return t("statusIdleDetail");
-    case "name-taken":
-      return t("skipNameTaken");
-    case "env-missing":
-      return t("skipEnvMissing");
-    case "env-invalid":
-      return t("skipEnvInvalid");
-    case "give-up":
-      return t("skipGiveUp");
-    case "config-invalid":
-      return t("skipConfigInvalid");
+      return { label: t("statusFailed"), detail: null };
     default:
-      return t("skipOther", { reason: reason ?? "" });
+      return { label: t("statusUnmounted"), detail: t("skipOther", { reason: reason ?? "" }) };
   }
 }
 
-/** 一张卡片只说一句运行时状态。开关表达意图，这句话解释现在为什么跑或没跑。 */
-function runtimeStatus(row: McpUiServer, t: McpPanelProps["t"]): { label: string; tip: string; dot: "done" | "error" | "idle" } {
-  const source = SOURCE_LABEL[row.source] ?? fileName(row.filePath);
-  const notes = [t("sourceDetail", { file: source })];
-  if (row.needsYmlTakeover) notes.push(t("readOnlyDetail"));
-  const tail = notes.join("");
-  if (!row.enabled) {
-    return { label: t("statusOff"), tip: `${t("statusOffDetail")}${tail}`, dot: "idle" };
-  }
-  if (row.fiberPhase === "failed") {
-    return { label: t("statusFailed"), tip: `${skipDetail(row.skipReason, t)}${tail}`, dot: "error" };
-  }
-  if (row.active) {
-    return { label: t("statusRunning"), tip: `${t("statusRunningDetail")}${tail}`, dot: "done" };
-  }
-  if (row.fiberPhase === "loading") {
-    return { label: t("statusStarting"), tip: `${t("statusStartingDetail")}${tail}`, dot: "idle" };
-  }
+function runningLabel(count: number, t: McpPanelProps["t"]): string {
+  if (count <= 0) return t("statusRunning");
+  if (count === 1) return t("statusRunningOne");
+  return t("statusRunningCount", { count });
+}
+
+/** 开关表达意图。这句话只说现在有没有在跑，不再把来源和写入策略拼进同一句。 */
+function runtimeStatus(row: McpUiServer, t: McpPanelProps["t"]): RuntimeStatus {
+  if (!row.enabled) return { label: t("statusOff"), detail: null, tone: "off" };
+  if (row.fiberPhase === "failed") return { ...problemStatus(row.skipReason, t), tone: "error" };
+  if (row.active) return { label: runningLabel(row.toolCount, t), detail: null, tone: "running" };
+  if (row.fiberPhase === "loading") return { label: t("statusStarting"), detail: null, tone: "starting" };
   if (row.skipReason === "idle" || row.skipReason == null || row.skipReason === "" || row.fiberPhase === "pending" || row.fiberPhase === null) {
-    return { label: t("statusIdle"), tip: `${t("statusIdleDetail")}${tail}`, dot: "idle" };
+    return { label: t("statusIdle"), detail: null, tone: "waiting" };
   }
-  return { label: t("statusUnmounted"), tip: `${skipDetail(row.skipReason, t)}${tail}`, dot: "error" };
+  return { ...problemStatus(row.skipReason, t), tone: "error" };
+}
+
+/** 数字越小越优先，与装载器七层影子序一致。 */
+const SOURCE_RANK: Record<string, number> = {
+  "dsh-project": 0,
+  "dsh-project-json": 1,
+  "cc-project": 2,
+  "dsh-profile-user-yml": 3,
+  "dsh-profile-user": 4,
+  "dsh-user-yml": 5,
+  "dsh-user": 6
+};
+
+interface LogicalServer {
+  winner: McpUiServer;
+  shadowed: McpUiServer[];
+}
+
+function normServerName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function sourceFileLabel(row: McpUiServer): string {
+  return SOURCE_LABEL[row.source] ?? fileName(row.filePath);
+}
+
+/**
+ * 同一作用域里的同名行是一台服务器。高优先级那份占据卡片和开关，
+ * 其余只作为「已被覆盖」说明，避免 mcp.json 在写入 yml 之后仍显示成第二台正在等待的服务器。
+ */
+function collapseServers(rows: McpUiServer[]): LogicalServer[] {
+  const groups = new Map<string, McpUiServer[]>();
+  const order: string[] = [];
+  for (const row of rows) {
+    const scope = row.layer === "project" ? row.projectRoot : "";
+    const key = scope + "\0" + normServerName(row.serverName);
+    const list = groups.get(key);
+    if (list === undefined) {
+      groups.set(key, [row]);
+      order.push(key);
+    } else list.push(row);
+  }
+  const out: LogicalServer[] = [];
+  for (const key of order) {
+    const list = groups.get(key);
+    if (list === undefined || list.length === 0) continue;
+    const ranked = [...list].sort((a, b) => (SOURCE_RANK[a.source] ?? 99) - (SOURCE_RANK[b.source] ?? 99));
+    const winner = ranked[0];
+    if (winner === undefined) continue;
+    out.push({ winner, shadowed: ranked.slice(1) });
+  }
+  return out;
+}
+
+function groupedLogical(rows: McpUiServer[], keyOf: (server: LogicalServer) => string): Array<[string, LogicalServer[]]> {
+  const map = new Map<string, LogicalServer[]>();
+  for (const server of collapseServers(rows)) {
+    const key = keyOf(server);
+    const list = map.get(key);
+    if (list === undefined) map.set(key, [server]);
+    else list.push(server);
+  }
+  return [...map.entries()];
 }
 
 export function McpPanel({ t }: McpPanelProps) {
@@ -359,16 +426,14 @@ export function McpPanel({ t }: McpPanelProps) {
     }
   };
 
-  const projects = new Map<string, McpUiServer[]>();
+  const projectRows: McpUiServer[] = [];
   const userRows: McpUiServer[] = [];
   for (const row of state?.servers ?? []) {
     if (row.layer === "user") userRows.push(row);
-    else {
-      const list = projects.get(row.projectRoot) ?? [];
-      list.push(row);
-      projects.set(row.projectRoot, list);
-    }
+    else projectRows.push(row);
   }
+  const projectGroups = groupedLogical(projectRows, (server) => server.winner.projectRoot);
+  const userGroups = groupedLogical(userRows, (server) => server.winner.filePath);
 
   const addTarget = addTargets.find((item) => item.id === draft.scope);
   const scopeReady = (id: AddScope) => addTargets.some((item) => item.id === id);
@@ -382,7 +447,14 @@ export function McpPanel({ t }: McpPanelProps) {
 
   return (
     <div className="dsh-mcp-ui">
-      <p className="intro">{t("intro")}</p>
+      <div className="intro">
+        <p>{t("intro")}</p>
+        <Tooltip label={t("introHelp")} side="right" portal maxWidth={280} openOnClick>
+          <button type="button" className="intro-help" aria-label={t("introHelp")}>
+            <IconInfoOutlineRegular size={14} />
+          </button>
+        </Tooltip>
+      </div>
       <div className="toolbar">
         <Button variant="primary" size="sm" icon={<IconPlusOutlineRegular size={16} />} disabled={busy || state === null || state.writeTargets.length === 0} onClick={openAdd}>
           {t("add")}
@@ -398,43 +470,28 @@ export function McpPanel({ t }: McpPanelProps) {
           items={state !== null && state.openTargets.length > 0
             ? state.openTargets.map((target) => ({
               id: target.id,
-              label: target.source === "dsh-user-yml" ? t("userFile") : target.source === "dsh-profile-user-yml" ? t("profileFile") : target.label
+              label: target.source === "dsh-user-yml" ? t("userFile") : target.source === "dsh-profile-user-yml" ? t("profileFile") : target.source === "dsh-project" ? t("projectFile") : target.label
             }))
             : [{ id: "unavailable", label: error ?? t("loading"), disabled: true }]}
           anchor={(
-            <Button variant="outline" size="sm" icon={<IconFolderOpenOutlineRegular size={16} />} disabled={busy} onClick={() => setMenuOpen(true)}>
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => setMenuOpen(true)}>
               {t("open")}
               <IconChevronDownOutlineRegular size={14} />
             </Button>
           )}
         />
       </div>
-      {error !== null && <p className="banner">{error}</p>}
+      {error !== null && (
+        <p className="dsh-mcp-banner" role="alert">
+          <IconWarningOutlineRegular size={16} />
+          <span>{error}</span>
+        </p>
+      )}
       {state === null && error === null && <p className="empty">{t("loading")}</p>}
       {state !== null && state.servers.length === 0 && <p className="empty">{t("empty")}</p>}
 
-      {[...projects.entries()].length > 0 && (
-        <section className="section">
-          <h3>{t("projectLayer")}</h3>
-          {[...projects.entries()].map(([project, rows]) => (
-            <div key={project}>
-              <p className="project">{project}</p>
-              {rows.map((row) => (
-                <ServerCard key={row.source + row.serverName} row={row} busy={busy} t={t} onToggle={(enabled) => askOrRun({ kind: "server", action: enabled ? "enable" : "disable", row })} onRemove={() => askOrRun({ kind: "server", action: "remove", row })} onTools={() => void openTools(row)} />
-              ))}
-            </div>
-          ))}
-        </section>
-      )}
-
-      {userRows.length > 0 && (
-        <section className="section">
-          <h3>{t("userLayer")}</h3>
-          {userRows.map((row) => (
-            <ServerCard key={row.source + row.filePath + row.serverName} row={row} busy={busy} t={t} onToggle={(enabled) => askOrRun({ kind: "server", action: enabled ? "enable" : "disable", row })} onRemove={() => askOrRun({ kind: "server", action: "remove", row })} onTools={() => void openTools(row)} />
-          ))}
-        </section>
-      )}
+      <ServerGroups title={t("projectLayer")} groups={projectGroups} busy={busy} t={t} onToggle={(row, enabled) => askOrRun({ kind: "server", action: enabled ? "enable" : "disable", row })} onRemove={(row) => askOrRun({ kind: "server", action: "remove", row })} onTools={(row) => void openTools(row)} />
+      <ServerGroups title={t("userLayer")} groups={userGroups} busy={busy} t={t} onToggle={(row, enabled) => askOrRun({ kind: "server", action: enabled ? "enable" : "disable", row })} onRemove={(row) => askOrRun({ kind: "server", action: "remove", row })} onTools={(row) => void openTools(row)} />
 
       <Modal
         open={pending !== null}
@@ -533,7 +590,12 @@ export function McpPanel({ t }: McpPanelProps) {
             </>
           )}
         </form>
-        {formError !== null && <p className="dsh-mcp-add-error">{formError}</p>}
+        {formError !== null && (
+          <p className="dsh-mcp-banner dsh-mcp-add-error" role="alert">
+            <IconWarningOutlineRegular size={16} />
+            <span>{formError}</span>
+          </p>
+        )}
       </Modal>
 
       <Modal
@@ -553,7 +615,7 @@ export function McpPanel({ t }: McpPanelProps) {
               <div className="dsh-mcp-tools-row" key={tool.name} style={TOOL_ROW_STYLE}>
                 <span className="dsh-mcp-tools-name" title={tool.name} style={TOOL_NAME_STYLE}>{tool.name}</span>
                 <Switch
-                  className="dsh-mcp-tools-switch"
+                  className="dsh-mcp-tools-switch dsh-mcp-switch"
                   checked={tool.enabled}
                   disabled={busy || toolsFor === null}
                   label={t("toolEnableLabel", { name: tool.name })}
@@ -571,36 +633,78 @@ export function McpPanel({ t }: McpPanelProps) {
   );
 }
 
-function ServerCard({ row, busy, t, onToggle, onRemove, onTools }: {
-  row: McpUiServer;
+function ServerGroups({ title, groups, busy, t, onToggle, onRemove, onTools }: {
+  title: string;
+  groups: Array<[string, LogicalServer[]]>;
+  busy: boolean;
+  t: McpPanelProps["t"];
+  onToggle: (row: McpUiServer, enabled: boolean) => void;
+  onRemove: (row: McpUiServer) => void;
+  onTools: (row: McpUiServer) => void;
+}) {
+  if (groups.length === 0) return null;
+  return (
+    <section className="section">
+      <h3>{title}</h3>
+      <div className="groups">
+        {groups.map(([label, servers]) => (
+          <div className="group" key={label}>
+            <div className="group-head">
+              <IconFolderCloseRegular size={16} />
+              <span className="group-path" title={label}>{label}</span>
+              <span className="group-count">{t("serverCount", { count: servers.length })}</span>
+            </div>
+            {servers.map((server) => (
+              <ServerCard key={server.winner.source + server.winner.filePath + server.winner.serverName} server={server} busy={busy} t={t} onToggle={(enabled) => onToggle(server.winner, enabled)} onRemove={() => onRemove(server.winner)} onTools={() => onTools(server.winner)} />
+            ))}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ServerCard({ server, busy, t, onToggle, onRemove, onTools }: {
+  server: LogicalServer;
   busy: boolean;
   t: McpPanelProps["t"];
   onToggle: (enabled: boolean) => void;
   onRemove: () => void;
   onTools: () => void;
 }) {
+  const row = server.winner;
   const status = runtimeStatus(row, t);
+  const source = sourceFileLabel(row);
   const endpointKind = row.endpoint.startsWith("http://") || row.endpoint.startsWith("https://") ? t("endpointUrl") : t("endpointCmd");
+  const badgeTone = row.needsYmlTakeover ? "warning" : row.active ? "success" : "neutral";
+  const shadowedFiles = [...new Set(server.shadowed.map((item) => sourceFileLabel(item)))].join(", ");
   return (
     <article className="card">
-      <div className="row">
+      <div className="head">
         <div className="identity">
-          <StateDot state={status.dot} />
           <span className="name">{row.serverName}</span>
+          <span className="badge" title={row.needsYmlTakeover ? `${t("badgeTakeoverHint")} ${row.filePath}` : row.filePath}>
+            <Tag tone={badgeTone}>{row.needsYmlTakeover ? t("badgeTakeover", { file: source }) : source}</Tag>
+          </span>
         </div>
-        <Switch checked={row.enabled} disabled={busy} label={t("enableLabel")} onChange={onToggle} />
+        <Switch className="dsh-mcp-switch" checked={row.enabled} disabled={busy} label={t("enableLabel")} onChange={onToggle} />
       </div>
-      <Tooltip label={status.tip} side="bottom" portal maxWidth={360}>
-        <p className={`status status-${status.dot}`}>{status.label}</p>
-      </Tooltip>
-      {row.endpoint !== "" && (
-        <div className="endpoint" title={row.endpoint}>
-          <span className="endpoint-kind">{endpointKind}</span>
-          <span className="endpoint-value">{row.endpoint}</span>
-        </div>
-      )}
+      <div className="meta">
+        <p className={`status status-${status.tone}`}>
+          {status.tone === "starting" && <StateDot state="ongoing" size={14} />}
+          <span>{status.label}</span>
+        </p>
+        {row.endpoint !== "" && (
+          <div className="endpoint" title={row.endpoint}>
+            <span className="endpoint-kind">{endpointKind}</span>
+            <span className="endpoint-value">{row.endpoint}</span>
+          </div>
+        )}
+        {status.detail !== null && <p className="detail">{status.detail}</p>}
+        {shadowedFiles !== "" && <p className="shadow-note">{t("shadowedNote", { files: shadowedFiles, winner: source })}</p>}
+      </div>
       <div className="actions">
-        <Button variant="outline" size="sm" disabled={busy} onClick={onTools}>{row.toolCount > 0 ? t("toolsCount", { count: row.toolCount }) : t("tools")}</Button>
+        <Button variant="outline" size="sm" disabled={busy} onClick={onTools}>{t("tools")}</Button>
         <Button className="danger" variant="ghost" size="sm" disabled={busy} icon={<IconTrashOutlineRegular size={16} />} onClick={onRemove}>{t("remove")}</Button>
       </div>
     </article>
@@ -627,9 +731,11 @@ const ADD_FORM_STYLE: CSSProperties = {
   boxSizing: "border-box",
   width: "100%",
   maxHeight: "min(480px, calc(100vh - 240px))",
+  paddingRight: 16,
   overflowX: "hidden",
   overflowY: "auto",
-  overscrollBehavior: "contain"
+  overscrollBehavior: "contain",
+  scrollbarGutter: "stable"
 };
 
 const TOOL_LIST_STYLE: CSSProperties = {
@@ -638,6 +744,7 @@ const TOOL_LIST_STYLE: CSSProperties = {
   boxSizing: "border-box",
   width: "100%",
   maxHeight: "min(420px, calc(100vh - 230px))",
+  paddingRight: 16,
   overflowX: "hidden",
   overflowY: "auto",
   overscrollBehavior: "contain",

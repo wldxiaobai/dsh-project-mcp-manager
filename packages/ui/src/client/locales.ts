@@ -3,6 +3,7 @@
 export type McpUiLocaleKey =
   | "tab"
   | "intro"
+  | "introHelp"
   | "open"
   | "add"
   | "addTitle"
@@ -37,31 +38,35 @@ export type McpUiLocaleKey =
   | "addNoTarget"
   | "projectLayer"
   | "userLayer"
+  | "serverCount"
   | "empty"
   | "loading"
   | "error"
   | "statusRunning"
-  | "statusRunningDetail"
+  | "statusRunningOne"
+  | "statusRunningCount"
   | "statusIdle"
-  | "statusIdleDetail"
   | "statusOff"
-  | "statusOffDetail"
   | "statusStarting"
-  | "statusStartingDetail"
   | "statusFailed"
   | "statusUnmounted"
+  | "statusNameTaken"
+  | "statusEnvMissing"
+  | "statusEnvInvalid"
+  | "statusGiveUp"
+  | "statusConfigInvalid"
   | "skipNameTaken"
   | "skipEnvMissing"
   | "skipEnvInvalid"
   | "skipGiveUp"
   | "skipConfigInvalid"
   | "skipOther"
-  | "sourceDetail"
-  | "readOnlyDetail"
+  | "badgeTakeover"
+  | "badgeTakeoverHint"
+  | "shadowedNote"
   | "endpointCmd"
   | "endpointUrl"
   | "tools"
-  | "toolsCount"
   | "toolsTitle"
   | "toolsEmpty"
   | "toolsClose"
@@ -81,9 +86,10 @@ export type McpUiLocaleKey =
   | "projectFile";
 
 export const en: Record<McpUiLocaleKey, string> = {
-  tab: "MCP",
-  intro: "Servers available to this profile. Add, the switch, and Remove write the managed mcp.yml. A server read from another file asks before that yml is updated.",
-  open: "Edit managed yml",
+  tab: "Plugin: MCP",
+  intro: "MCP servers available right now.",
+  introHelp: "Add, the switch, and Remove write the managed mcp.yml.\nA server read from another file asks before that yml is updated.",
+  open: "MCP config",
   add: "Add MCP",
   addTitle: "Add MCP",
   addDescription: "Confirm writes a row into the managed mcp.yml. A running session loads it on its own.",
@@ -117,31 +123,35 @@ export const en: Record<McpUiLocaleKey, string> = {
   addNoTarget: "That save location is not available. Close this and open Add MCP again.",
   projectLayer: "Project",
   userLayer: "User",
+  serverCount: "{count}",
   empty: "No MCP servers yet. Choose Add MCP and fill in a name and command or URL.",
   loading: "Loading…",
   error: "Could not read MCP state.",
   statusRunning: "Running",
-  statusRunningDetail: "Enabled, and mounted for the workspace you are in.",
-  statusIdle: "Enabled · not mounted",
-  statusIdleDetail: "The switch is on, but no session is using this workspace, so it has not been started.",
+  statusRunningOne: "Running · 1 tool",
+  statusRunningCount: "Running · {count} tools",
+  statusIdle: "On · waiting for a session",
   statusOff: "Off",
-  statusOffDetail: "The switch is off, so this server will not start.",
   statusStarting: "Starting",
-  statusStartingDetail: "Enabled, and the connection is still coming up.",
   statusFailed: "Failed to start",
-  statusUnmounted: "Not mounted",
+  statusUnmounted: "Not started",
+  statusNameTaken: "Not started · name in use",
+  statusEnvMissing: "Not started · missing environment variable",
+  statusEnvInvalid: "Not started · invalid after expansion",
+  statusGiveUp: "Not started · retries stopped",
+  statusConfigInvalid: "Not started · invalid config",
   skipNameTaken: "Another server already uses this name, so this one did not start.",
   skipEnvMissing: "An environment variable in the config is missing, so this one did not start.",
   skipEnvInvalid: "The config is invalid after expanding environment variables, so this one did not start.",
   skipGiveUp: "It still had no tools after several reconnects, so retries stopped.",
   skipConfigInvalid: "The config is invalid, so this one did not start.",
   skipOther: "It did not start ({reason}).",
-  sourceDetail: "Read from {file}.",
-  readOnlyDetail: "That file is not the managed yml. Saving asks first, then writes the yml.",
-  endpointCmd: "cmd",
-  endpointUrl: "url",
+  badgeTakeover: "{file} · unmanaged",
+  badgeTakeoverHint: "Saving asks first, then writes the managed yml.",
+  shadowedNote: "Same name in {files} is covered by {winner} and does not start.",
+  endpointCmd: "cmd:",
+  endpointUrl: "url:",
   tools: "Manage tools",
-  toolsCount: "Manage tools ({count})",
   toolsTitle: "Tools · {name}",
   toolsEmpty: "This server has no registered tools yet.",
   toolsClose: "Close",
@@ -158,13 +168,14 @@ export const en: Record<McpUiLocaleKey, string> = {
   toolEnableLabel: "Tool {name}",
   userFile: "User mcp.yml",
   profileFile: "Profile mcp.yml",
-  projectFile: "Project mcp.yml"
+  projectFile: "Workspace .dsh/mcp.yml"
 };
 
 export const zh: Record<McpUiLocaleKey, string> = {
-  tab: "MCP",
-  intro: "这里列出当前能用的 MCP。添加、开关和删除都写入受管的 mcp.yml。从别的文件读到的服务器，改动前会先确认，再写入这份 yml。",
-  open: "编辑受管 yml",
+  tab: "插件：MCP管理",
+  intro: "这里列出当前能用的 MCP。",
+  introHelp: "添加、开关和删除都写入受管的 mcp.yml。\n从别的文件读到的服务器，改动前会先确认，再写入这份 yml。",
+  open: "MCP 配置",
   add: "添加 MCP",
   addTitle: "添加 MCP",
   addDescription: "确认后写入受管 mcp.yml。正在运行的会话会自己装载。",
@@ -198,31 +209,35 @@ export const zh: Record<McpUiLocaleKey, string> = {
   addNoTarget: "这个保存位置现在不可用。关掉窗口后重新点「添加 MCP」。",
   projectLayer: "项目层",
   userLayer: "用户层",
+  serverCount: "{count} 个",
   empty: "还没有 MCP 服务器。点「添加 MCP」，填写名称和命令或地址。",
   loading: "正在读取…",
   error: "读取 MCP 状态失败。",
   statusRunning: "运行中",
-  statusRunningDetail: "已启用，并且已经挂到当前工作区。",
-  statusIdle: "已启用 · 未挂载",
-  statusIdleDetail: "开关是开的，但当前没有正在使用这个工作区的会话，所以没有启动。",
+  statusRunningOne: "运行中 · 1 个工具",
+  statusRunningCount: "运行中 · {count} 个工具",
+  statusIdle: "已开 · 等待会话启动",
   statusOff: "已关闭",
-  statusOffDetail: "开关已关，不会启动。",
   statusStarting: "正在启动",
-  statusStartingDetail: "已启用，连接还在建立。",
   statusFailed: "启动失败",
-  statusUnmounted: "未挂载",
+  statusUnmounted: "未启动",
+  statusNameTaken: "未启动 · 名称已被占用",
+  statusEnvMissing: "未启动 · 缺少环境变量",
+  statusEnvInvalid: "未启动 · 展开后无效",
+  statusGiveUp: "未启动 · 已停止重试",
+  statusConfigInvalid: "未启动 · 配置无效",
   skipNameTaken: "已经有同名服务器，这一条没有启动。",
   skipEnvMissing: "配置引用的环境变量没有值，这一条没有启动。",
   skipEnvInvalid: "环境变量展开后配置不合法，这一条没有启动。",
   skipGiveUp: "多次重连仍然没有工具，已停止重试。",
   skipConfigInvalid: "配置不合法，这一条没有启动。",
   skipOther: "没有启动（{reason}）。",
-  sourceDetail: "读取自 {file}。",
-  readOnlyDetail: "这份文件不是受管 yml。修改前会先确认，再写入 yml。",
-  endpointCmd: "命令",
-  endpointUrl: "地址",
+  badgeTakeover: "{file} · 待接管",
+  badgeTakeoverHint: "改动前会先确认，再写入受管 yml。",
+  shadowedNote: "{files} 里还有同名配置，已被 {winner} 覆盖，不会启动。",
+  endpointCmd: "命令：",
+  endpointUrl: "地址：",
   tools: "管理工具",
-  toolsCount: "管理工具 ({count})",
   toolsTitle: "工具 · {name}",
   toolsEmpty: "这台服务器还没有已注册的工具。",
   toolsClose: "关闭",
@@ -239,5 +254,5 @@ export const zh: Record<McpUiLocaleKey, string> = {
   toolEnableLabel: "工具 {name}",
   userFile: "用户层 mcp.yml",
   profileFile: "当前 profile 的 mcp.yml",
-  projectFile: "项目 mcp.yml"
+  projectFile: "工作区的 .dsh/mcp.yml"
 };
