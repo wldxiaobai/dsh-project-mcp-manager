@@ -25,6 +25,8 @@ export interface McpUiServer {
   skipReason: string | null;
   toolCount: number;
   endpoint: string;
+  /** 与装载器服务身份键相同。null 表示这行没有可比较的命令或地址。 */
+  serviceKey: string | null;
 }
 
 export interface McpUiOpenTarget {

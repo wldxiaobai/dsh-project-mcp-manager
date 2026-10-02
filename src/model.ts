@@ -562,6 +562,30 @@ export function toPatchRow(input: McpServerInput, enabled = true): PatchRow {
   };
 }
 
+/**
+ * 服务身份键，与装载器三把影子键里的身份键同一口径。
+ * stdio 看「可执行文件 + 参数」，http 看 url。command/url 缺失或为空则没有身份键
+ * （disabled 占名行常无 config，只占名字）。Windows 下 command 小写；args 逐项
+ * 字符串化后以 `\0` 连接，顺序和内容都要一致。
+ */
+export function serviceIdentityKeyOf(config: {
+  transport?: unknown;
+  command?: unknown;
+  args?: unknown;
+  url?: unknown;
+}): string | undefined {
+  if (config.transport === "streamable-http") {
+    return typeof config.url === "string" && config.url !== "" ? "h\0" + config.url : undefined;
+  }
+  if (config.transport === "stdio") {
+    if (typeof config.command !== "string" || config.command === "") return undefined;
+    const command = process.platform === "win32" ? config.command.toLowerCase() : config.command;
+    const args = Array.isArray(config.args) ? config.args.map((item) => String(item)).join("\0") : "";
+    return "s\0" + command + "\0" + args;
+  }
+  return undefined;
+}
+
 /** 读取 patch 行中的 config（宽松，坏行返回 undefined）。 */
 export function configFromPatchRow(row: PatchRow | undefined): Record<string, unknown> | undefined {
   if (row === undefined || row.name !== MCP_PLUGIN_NAME) return undefined;

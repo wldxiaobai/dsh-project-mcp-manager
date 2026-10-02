@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The settings page kept showing "Starting" after the MCP server had connected,
+  until the page was closed and opened again. A mount that becomes active or
+  failed after reconcile emits `projectMcp/updated`, and the page keeps
+  re-reading while any row is still starting.
+- A non-yml row with a different name but the same command and arguments, or
+  the same URL, no longer appears as its own card. The loader never starts
+  that copy, so the card stayed on "On · waiting for a session" with no
+  covered-by note. Same-name copies still stay on the winning card as a note.
 - Project diagnostics are written under `$DSH_HOME/mcp-diag/`, not into the
   workspace. A leftover `<projectRoot>/.dsh/.mcp-diag.json` is removed on the
   next reconcile. `dsh-mcp status` reads the new path.
@@ -44,9 +52,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file, and a warning badge when an edit must take over into the managed yml.
   A skip reason is a line on the card. The page intro keeps one sentence; the
   write-policy note sits on a help icon.
-- The settings list counts one card per server name. After a non-yml row is
-  taken over, that copy stays on the card as a covered-by note. It no longer
-  appears as a second server that is still waiting for a session.
+- The settings list counts one card per server the loader will run. A same-name
+  copy in a lower-priority file stays on that card as a covered-by note. A
+  non-yml row that loses only because the command and arguments, or the URL,
+  already belong to a higher-priority row is left off the list.
 
 ## [0.7.2] - 2026-10-02
 

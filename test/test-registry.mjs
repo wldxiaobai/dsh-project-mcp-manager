@@ -108,6 +108,8 @@ function fakeCtx() {
     tools: {
       schemas: () => schemas
     },
+    holdFibers: false,
+    held: [],
     plugin(_plugin, config) {
       let resolved = false;
       const fiber = {
@@ -118,7 +120,8 @@ function fakeCtx() {
         then(onFulfilled) {
           if (!resolved) {
             resolved = true;
-            queueMicrotask(() => onFulfilled?.());
+            if (ctx.holdFibers) ctx.held.push(() => onFulfilled?.());
+            else queueMicrotask(() => onFulfilled?.());
           }
           return Promise.resolve();
         }
@@ -1596,7 +1599,7 @@ try {
   assert.equal(updates.length, updatesAfterReconcile + 1, "a throwing listener does not drop the reconcile");
   assert.ok(warnsSvc.some((message) => message.includes("变更事件投递失败")), "throwing listener is warned: " + warnsSvc.join("|"));
   const dts = readFileSync(new URL("../lib/index.d.ts", import.meta.url), "utf8");
-  for (const name of ["ProjectFileState", "McpServerRuntimeView", "McpServerView", "McpRowSource", "ProjectServerState", "FiberPhaseView", "PROJECT_MCP_UPDATED_EVENT", "McpAddDraft", "McpWriteTarget"]) {
+  for (const name of ["ProjectFileState", "McpServerRuntimeView", "McpServerView", "McpRowSource", "ProjectServerState", "FiberPhaseView", "PROJECT_MCP_UPDATED_EVENT", "McpAddDraft", "McpWriteTarget", "serviceIdentityKeyOf"]) {
     assert.ok(dts.includes(name), "package entry exports " + name);
   }
   for (const disposer of ctxSvc.disposers) {
@@ -2210,6 +2213,51 @@ try {
   } finally {
     process.chdir(savedCwdAdd);
     await rmRetry(dirAdd);
+  }
+}
+
+{
+  const dirLate = await mkdtemp(join(tmpdir(), "dsh-mcp-settle-"));
+  const homeLate = join(dirLate, "home");
+  const projLate = join(dirLate, "proj");
+  await mkdir(join(homeLate, ".dsh"), { recursive: true });
+  await mkdir(projLate, { recursive: true });
+  await writeManagedRows(projectMcpFile(projLate), [stdioRow("late")], { createIfMissing: true });
+  const ctxLate = fakeCtx();
+  ctxLate.holdFibers = true;
+  ctxLate.agentsList.push(fakeAgent("session-late", projLate));
+  const updatesLate = [];
+  ctxLate.on(PROJECT_MCP_UPDATED_EVENT, () => updatesLate.push(1));
+  const registryLate = new ProjectMcpRegistry(ctxLate, {
+    globalNames: async () => [],
+    userLayerPaths: {
+      mcpYml: join(homeLate, ".dsh", "mcp.yml"),
+      mcpJson: join(homeLate, ".dsh", "mcp.json"),
+      profilesDir: join(homeLate, ".dsh", "profiles")
+    }
+  });
+  try {
+    await registryLate.reconcileNow();
+    const during = await registryLate.serverView(projLate, "late");
+    assert.equal(during?.fiberPhase, "loading", "held fiber stays starting until it settles: " + JSON.stringify(during));
+    const updatesWhileHeld = updatesLate.length;
+    assert.ok(updatesWhileHeld >= 1, "reconcile still emits while the fiber is held");
+    const effective = during?.effectiveServerName ?? "late";
+    ctxLate.schemas.push({ name: `mcp__${effective}__ping` });
+    const release = ctxLate.held[0];
+    assert.equal(typeof release, "function", "mount registered a held fiber");
+    release();
+    assert.equal(updatesLate.length, updatesWhileHeld + 1, "settling after reconcile emits projectMcp/updated");
+    const after = await registryLate.serverView(projLate, "late");
+    assert.equal(after?.fiberPhase, "active");
+    assert.equal(after?.toolCount, 1, "tool count is visible once the fiber settles");
+    pass("mount settle after reconcile emits projectMcp/updated");
+  } finally {
+    for (const disposer of ctxLate.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    await rmRetry(dirLate);
   }
 }
 

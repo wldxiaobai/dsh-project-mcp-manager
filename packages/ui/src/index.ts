@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import { openNativeTextFile } from "@deepseek-ai/dsh-native-command";
-import type { McpRowSource, ProjectFileState } from "dsh-project-mcp-manager";
+import { serviceIdentityKeyOf, type McpRowSource, type ProjectFileState } from "dsh-project-mcp-manager";
 import {
   MCP_UI_ADD_PATH,
   MCP_UI_OPEN_PATH,
@@ -70,7 +70,8 @@ function serversFrom(snapshot: ProjectFileState[], mcp: Context["projectMcp"]): 
         fiberPhase: server.fiberPhase,
         skipReason: server.skipReason,
         toolCount: server.toolCount,
-        endpoint: server.transport === "streamable-http" ? (server.url ?? "") : (server.command ?? "")
+        endpoint: server.transport === "streamable-http" ? (server.url ?? "") : (server.command ?? ""),
+        serviceKey: serviceIdentityKeyOf(server) ?? null
       });
     }
   }

@@ -83,6 +83,7 @@ import {
   mcpServerInputSchema,
   configFromPatchRow,
   patchRowToView,
+  serviceIdentityKeyOf,
   projectKeyOf,
   rowIdForServerName,
   rowNameOf,
@@ -399,22 +400,10 @@ export const HEALTH_REMOUNT_BACKOFF_MS = 5_000;
 /** 项目无活跃会话且不是进程 cwd 之后，再卸载其服务器的缺省宽限。 */
 export const UNMOUNT_GRACE_MS = 5 * 60 * 1000;
 
-/** 服务身份键：stdio 看「可执行文件 + 参数」，http 看 url。command/url 缺失或为空的行
- * 不注册身份键（disabled 占名行常无 config，只占名字不冒充服务）。Windows 下路径大小写
- * 不敏感，command 统一小写；args 逐项字符串化后以 \0 连接（顺序与内容都要求一致）。 */
+/** 服务身份键。口径在 `serviceIdentityKeyOf`，设置页用同一函数，避免异名同命令只在装载器折叠。 */
 function serviceIdentityKey(item: SourcedRow): string | undefined {
   const config = configFromPatchRow(item.row);
-  if (config === undefined) return undefined;
-  if (config.transport === "streamable-http") {
-    return typeof config.url === "string" && config.url !== "" ? "h\0" + config.url : undefined;
-  }
-  if (config.transport === "stdio") {
-    if (typeof config.command !== "string" || config.command === "") return undefined;
-    const command = process.platform === "win32" ? config.command.toLowerCase() : config.command;
-    const args = Array.isArray(config.args) ? config.args.map(String).join("\0") : "";
-    return "s\0" + command + "\0" + args;
-  }
-  return undefined;
+  return config === undefined ? undefined : serviceIdentityKeyOf(config);
 }
 
 /** 归一名键：小写并去掉非字母数字后同名视为同一服务（unityMCP 与 unity-mcp 是一个
@@ -827,6 +816,12 @@ export class ProjectMcpRegistry {
   /** 当前 profile 名（activeProfile provider 的最近一次解析结果）。 */
   private activeProfileName: string | undefined;
   private reconcileCount = 0;
+  /**
+   * `reconcileAll` 正在执行。fiber 若在这期间 settle，收尾那一次 `emitUpdated`
+   * 已经能读到新 phase，不必再发。对账结束后才 settle 的，要另发一次，否则
+   * 设置页会停在「正在启动」，直到关掉重开。
+   */
+  private reconciling = false;
   /** identity 去重告警/诊断的变更门控：projectKey → 上次对账的剔除集签名。 */
   private readonly identityShadowSigs = new Map<string, string>();
   /**
@@ -1601,10 +1596,21 @@ export class ProjectMcpRegistry {
    * 全量对账：重算项目集合 → 读全部项目文件 → 计算生效名 → 逐项目装载/
    * 卸载 → 重扫各会话 deny。文件事件、新 agent、插件热更都汇到这里。
    * 成功结束时 emit `projectMcp/updated`（无载荷）；中途退出或抛错不发。
+   * fiber 若在对账结束后才变为 active/failed，再发一次（见 emitMountSettled）。
    */
   async reconcileAll(): Promise<void> {
     if (this.disposed) return;
     this.reconcileCount++;
+    this.reconciling = true;
+    try {
+      await this.reconcileAllInner();
+    } finally {
+      this.reconciling = false;
+    }
+  }
+
+  /** 对账正文。成功才 emit；抛错时调用方清掉 `reconciling`，事件不发。 */
+  private async reconcileAllInner(): Promise<void> {
     const roots = await this.knownProjects();
     const hostGlobalNames = await this.providers.globalNames().catch(() => []);
     const { skip: skipReread, signature } = await this.shouldSkipConfigReread(roots, hostGlobalNames);
@@ -1669,7 +1675,8 @@ export class ProjectMcpRegistry {
   }
 
   /**
-   * 对账成功结束的推送：宿主监听后再读 `snapshot()`。无载荷、不带 diff。
+   * 快照可能变了：宿主监听后再读 `snapshot()`。无载荷、不带 diff。
+   * 对账成功结束发一次；装载 fiber 在对账结束后才 settle 时再发一次。
    * 浏览器 SSE 仍由配套 UI 自建。监听方抛错只记一条 warn，不让对账失败。
    */
   private emitUpdated(): void {
@@ -1681,7 +1688,13 @@ export class ProjectMcpRegistry {
     }
   }
 
-  /** 订阅对账结束事件（供进程内 Remote 桥转发给浏览器）；返回退订函数。 */
+  /** 对账已经结束才把 phase 写成 active/failed 时补一次推送。对账进行中不发，收尾那一次已经覆盖。 */
+  private emitMountSettled(): void {
+    if (this.disposed || this.reconciling) return;
+    this.emitUpdated();
+  }
+
+  /** 订阅快照变更（对账结束，以及其后的装载 settle）。返回退订函数。 */
   subscribeUpdated(listener: () => void): () => void {
     (this.ctx as Context).on(PROJECT_MCP_UPDATED_EVENT, listener);
     return () => {
@@ -2210,6 +2223,7 @@ export class ProjectMcpRegistry {
         state.error = undefined;
         this.enqueueDiag(container, { kind: "active", effectiveName });
         this.kickSweep();
+        this.emitMountSettled();
       },
       (error: unknown) => {
         if (!container.isCurrent(state)) return;
@@ -2218,6 +2232,7 @@ export class ProjectMcpRegistry {
         this.enqueueDiag(container, { kind: "failed", effectiveName, error: state.error });
         this.ctx.logger.error(`${container.label} "${effectiveName}" 装载失败：${state.error}`);
         this.kickSweep();
+        this.emitMountSettled();
       }
     );
   }

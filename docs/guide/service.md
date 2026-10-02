@@ -5,9 +5,9 @@ English | [中文](service.zh.md)
 [← README](../../README.md) ｜ Related: [configuration sources and layers](layers.md) · [CLI `dsh-mcp`](cli.md)
 
 Other plugins and the companion UI read mount state through the cordis service
-`ctx.projectMcp`. This package stays in-process: it emits one event when a
-reconcile finishes. The browser still uses the SSE channel the companion UI
-builds itself.
+`ctx.projectMcp`. This package stays in-process: it emits when a reconcile
+finishes, and once more if a mount settles only after that. The browser still
+uses the SSE channel the companion UI builds itself.
 
 ## Methods
 
@@ -26,7 +26,12 @@ builds itself.
 
 After every **successful** `reconcileAll` — including a fingerprint hit that
 still runs the health check, session deny sweep, tool budget, and summary —
-the registry emits:
+the registry emits. If a mount fiber becomes active or failed only **after**
+that reconcile returns, it emits once more: `fiberPhase` and `toolCount` are
+not final until the connection settles, and without the extra event the
+settings page stays on "Starting" until it is closed and opened again. A fiber
+that settles while reconcile is still running does not emit on its own; the
+emit at the end of that reconcile already sees the new phase. The registry emits:
 
 ```ts
 ctx.on("projectMcp/updated", async () => {

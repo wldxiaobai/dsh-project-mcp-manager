@@ -1,6 +1,6 @@
 /** MCP settings tab: layers, activation, delete, and per-tool switches. */
 
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Button, IconChevronDownOutlineRegular, IconFolderCloseRegular, IconInfoOutlineRegular, IconPlusOutlineRegular, IconTrashOutlineRegular, IconWarningOutlineRegular, Input, Menu, Modal, SegmentedControl, StateDot, Switch, Tag, Tooltip } from "@deepseek-ai/dsh-client-ui-primitives";
 import {
   MCP_UI_ADD_PATH,
@@ -17,6 +17,7 @@ import {
   type McpUiWriteTarget
 } from "../wire.ts";
 import type { McpUiLocaleKey } from "./locales.ts";
+import { collapseServers, type LogicalServer } from "./collapse.ts";
 import { PANEL_CSS } from "./style.ts";
 
 export interface McpPanelProps {
@@ -167,60 +168,12 @@ function runtimeStatus(row: McpUiServer, t: McpPanelProps["t"]): RuntimeStatus {
   return { ...problemStatus(row.skipReason, t), tone: "error" };
 }
 
-/** 数字越小越优先，与装载器七层影子序一致。 */
-const SOURCE_RANK: Record<string, number> = {
-  "dsh-project": 0,
-  "dsh-project-json": 1,
-  "cc-project": 2,
-  "dsh-profile-user-yml": 3,
-  "dsh-profile-user": 4,
-  "dsh-user-yml": 5,
-  "dsh-user": 6
-};
-
-interface LogicalServer {
-  winner: McpUiServer;
-  shadowed: McpUiServer[];
-}
-
-function normServerName(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
 function sourceFileLabel(row: McpUiServer): string {
   return SOURCE_LABEL[row.source] ?? fileName(row.filePath);
 }
 
-/**
- * 同一作用域里的同名行是一台服务器。高优先级那份占据卡片和开关，
- * 其余只作为「已被覆盖」说明，避免 mcp.json 在写入 yml 之后仍显示成第二台正在等待的服务器。
- */
-function collapseServers(rows: McpUiServer[]): LogicalServer[] {
-  const groups = new Map<string, McpUiServer[]>();
-  const order: string[] = [];
-  for (const row of rows) {
-    const scope = row.layer === "project" ? row.projectRoot : "";
-    const key = scope + "\0" + normServerName(row.serverName);
-    const list = groups.get(key);
-    if (list === undefined) {
-      groups.set(key, [row]);
-      order.push(key);
-    } else list.push(row);
-  }
-  const out: LogicalServer[] = [];
-  for (const key of order) {
-    const list = groups.get(key);
-    if (list === undefined || list.length === 0) continue;
-    const ranked = [...list].sort((a, b) => (SOURCE_RANK[a.source] ?? 99) - (SOURCE_RANK[b.source] ?? 99));
-    const winner = ranked[0];
-    if (winner === undefined) continue;
-    out.push({ winner, shadowed: ranked.slice(1) });
-  }
-  return out;
-}
-
-function groupedLogical(rows: McpUiServer[], keyOf: (server: LogicalServer) => string): Array<[string, LogicalServer[]]> {
-  const map = new Map<string, LogicalServer[]>();
+function groupedLogical(rows: McpUiServer[], keyOf: (server: LogicalServer<McpUiServer>) => string): Array<[string, LogicalServer<McpUiServer>[]]> {
+  const map = new Map<string, LogicalServer<McpUiServer>[]>();
   for (const server of collapseServers(rows)) {
     const key = keyOf(server);
     const list = map.get(key);
@@ -242,6 +195,22 @@ export function McpPanel({ t }: McpPanelProps) {
   const [addTargets, setAddTargets] = useState<McpUiWriteTarget[]>([]);
   const [draft, setDraft] = useState<AddDraft>(emptyDraft([]));
   const [formError, setFormError] = useState<string | null>(null);
+  const loadRef = useRef<() => void>(() => {});
+  const settleTimer = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
+
+  /** 连接多在对账结束之后才变成 active。事件若没送到，这里继续读，直到没有「正在启动」。 */
+  const watchStartup = (servers: McpUiServer[]) => {
+    const starting = servers.some((row) => row.enabled && row.fiberPhase === "loading");
+    if (!starting) {
+      if (settleTimer.current !== undefined) {
+        clearInterval(settleTimer.current);
+        settleTimer.current = undefined;
+      }
+      return;
+    }
+    if (settleTimer.current !== undefined) return;
+    settleTimer.current = setInterval(() => loadRef.current(), 1000);
+  };
 
   const load = () => {
     fetch(MCP_UI_STATE_PATH, { credentials: "same-origin", headers: { accept: "application/json" } })
@@ -259,12 +228,14 @@ export function McpPanel({ t }: McpPanelProps) {
         }
         setState(payload);
         setError(null);
+        watchStartup(payload.servers);
       })
       .catch((error: unknown) => {
         const detail = error instanceof Error ? error.message : String(error);
         setError(`${t("error")} ${detail}`);
       });
   };
+  loadRef.current = load;
 
   useEffect(() => {
     load();
@@ -288,6 +259,10 @@ export function McpPanel({ t }: McpPanelProps) {
     return () => {
       source?.close();
       if (poll !== undefined) clearInterval(poll);
+      if (settleTimer.current !== undefined) {
+        clearInterval(settleTimer.current);
+        settleTimer.current = undefined;
+      }
     };
   }, []);
 
@@ -635,7 +610,7 @@ export function McpPanel({ t }: McpPanelProps) {
 
 function ServerGroups({ title, groups, busy, t, onToggle, onRemove, onTools }: {
   title: string;
-  groups: Array<[string, LogicalServer[]]>;
+  groups: Array<[string, LogicalServer<McpUiServer>[]]>;
   busy: boolean;
   t: McpPanelProps["t"];
   onToggle: (row: McpUiServer, enabled: boolean) => void;
@@ -665,7 +640,7 @@ function ServerGroups({ title, groups, busy, t, onToggle, onRemove, onTools }: {
 }
 
 function ServerCard({ server, busy, t, onToggle, onRemove, onTools }: {
-  server: LogicalServer;
+  server: LogicalServer<McpUiServer>;
   busy: boolean;
   t: McpPanelProps["t"];
   onToggle: (enabled: boolean) => void;

@@ -6,7 +6,8 @@
  * 独立成包起不再作为现行口径）。`snapshot` / `serverView` / `globalState`
  * 只读上一轮对账的内存态（查询进 enqueue 与对账互斥，不读盘、不跑
  * reconcileAll）；`reload` 才跑一次 reconcileAll。对账成功结束由 registry
- * `ctx.emit(PROJECT_MCP_UPDATED_EVENT)`，无载荷。插件原有导出（`inject`、
+ * `ctx.emit(PROJECT_MCP_UPDATED_EVENT)`，无载荷；装载 fiber 在对账结束后才
+ * settle 时再发一次。插件原有导出（`inject`、
  * `globalNames()`、`activeProfile()`）不变。
  */
 import type { McpAddDraft, McpServerRuntimeView, McpWriteTarget, ProjectFileState, ProjectMcpRegistry, ProjectServerState } from "./registry.js";
@@ -16,7 +17,8 @@ import type { McpRowSource } from "./json-file.js";
 export const PROJECT_MCP_SERVICE = "projectMcp";
 
 /**
- * 一次全量对账成功结束后发出的 cordis 事件名。无载荷。
+ * 快照可能变化时发出的 cordis 事件名。无载荷。
+ * 对账成功结束发一次；装载 fiber 在那之后才变为 active/failed 时再发一次。
  * 监听方再读 `snapshot()`；本包不打开浏览器 SSE。
  */
 export const PROJECT_MCP_UPDATED_EVENT = "projectMcp/updated";

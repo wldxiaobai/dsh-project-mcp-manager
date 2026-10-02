@@ -24,6 +24,7 @@ import {
   rowIdForServerName,
   rowNameOf,
   serverNameFromRowId,
+  serviceIdentityKeyOf,
   toOfficialConfig,
   toPatchRow,
   unsupportedTransportMessage
@@ -352,6 +353,16 @@ const budgetStats = mcpToolBudgetStats({
 assert.equal(budgetStats.tools, 1);
 assert.ok(budgetStats.bytes > 0, "budget bytes include id/description/schema");
 pass("tool budget env parse and schema byte stats");
+
+const stdioKey = serviceIdentityKeyOf({ transport: "stdio", command: "Node", args: ["a", "b"] });
+const stdioSame = serviceIdentityKeyOf({ transport: "stdio", command: process.platform === "win32" ? "node" : "Node", args: ["a", "b"] });
+assert.equal(stdioKey, stdioSame);
+assert.notEqual(stdioKey, serviceIdentityKeyOf({ transport: "stdio", command: "node", args: ["b", "a"] }));
+assert.equal(serviceIdentityKeyOf({ transport: "stdio", command: "" }), undefined);
+assert.equal(serviceIdentityKeyOf({ transport: "streamable-http", url: "https://mcp.example/mcp" }), "h\0https://mcp.example/mcp");
+assert.equal(serviceIdentityKeyOf({ transport: "streamable-http", url: "" }), undefined);
+assert.equal(serviceIdentityKeyOf({ transport: "sse", command: "node" }), undefined);
+pass("service identity key is command+args or url");
 
 console.log("\n" + passed + " passed, 0 failed");
 console.log("ALL MCP MODEL TESTS PASSED");
