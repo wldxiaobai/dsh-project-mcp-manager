@@ -2,6 +2,11 @@
 # When this package is installed with `dsh plugin --profile <name> add ...`,
 # the profile auto-appends it to dsh.profile.bundles and applies this layer,
 # so the plugin mounts without any manual cordis.patch.yml editing.
+# Both components are enabled by default. Disabling mcp-project-ui in the
+# profile patch hides the page without stopping the loader. Without connection
+# the UI's nested integration stays idle; both bundle rows can remain active.
 - insert:
     - id: mcp-project
       name: dsh-project-mcp-manager
+    - id: mcp-project-ui
+      name: dsh-project-mcp-ui

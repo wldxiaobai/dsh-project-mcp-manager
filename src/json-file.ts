@@ -64,10 +64,10 @@ export function mcpJsonLayerEnabled(env: NodeJS.ProcessEnv = process.env): boole
 
 /**
  * 配置行来源。数组顺序即影子优先序（先到先得）：
- * `dsh-project` > `dsh-project-json` > `cc-project` > `dsh-profile-user` > `dsh-user-yml` > `dsh-user`。
- * 前三者是项目层（按项目装载、按会话隔离），后三者是用户层（宿主级全局装载）。
+ * `dsh-project` > `dsh-project-json` > `cc-project` > `dsh-profile-user-yml` > `dsh-profile-user` > `dsh-user-yml` > `dsh-user`。
+ * 前三者是项目层（按项目装载、按会话隔离），后四者是用户层（宿主级全局装载）。
  */
-export type McpRowSource = "dsh-project" | "dsh-project-json" | "cc-project" | "dsh-profile-user" | "dsh-user-yml" | "dsh-user";
+export type McpRowSource = "dsh-project" | "dsh-project-json" | "cc-project" | "dsh-profile-user-yml" | "dsh-profile-user" | "dsh-user-yml" | "dsh-user";
 
 /** 带来源标记的配置行：主管线合并与快照展示用。disabled=true 的行参与占名
  *  （遮蔽下层同名）但不进入装载集合。 */

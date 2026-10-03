@@ -5,10 +5,13 @@ English | [中文](format.zh.md)
 [← README](../../README.md) ｜ Related: [configuration sources and layers](layers.md) · [`${VAR}` expansion](env-expansion.md) · [CLI `dsh-mcp`](cli.md)
 
 Two dialects are read by the plugin: the **native YAML managed block**
-(`<projectRoot>/.dsh/mcp.yml`) and the **JSON dialect** (`<projectRoot>/.dsh/mcp.json`,
-`~/.dsh/mcp.json`, `~/.dsh/profiles/<name>/mcp.json`, plus the read-only legacy
-Claude Code project file `<projectRoot>/.mcp.json`). Which file belongs to which
-layer is described in [configuration sources and layers](layers.md).
+(`<projectRoot>/.dsh/mcp.yml`, `~/.dsh/mcp.yml`, `~/.dsh/profiles/<name>/mcp.yml`)
+and the **JSON dialect** (`<projectRoot>/.dsh/mcp.json`, `~/.dsh/mcp.json`,
+`~/.dsh/profiles/<name>/mcp.json`, plus the read-only legacy Claude Code project
+file `<projectRoot>/.mcp.json`). Which file belongs to which layer is described
+in [configuration sources and layers](layers.md). The
+[settings page](settings-ui.md) writes only the managed yml files, through the
+same managed block and lock as the CLI.
 
 ## Native YAML: `<projectRoot>/.dsh/mcp.yml`
 
@@ -63,7 +66,7 @@ object and those keys are present, `tools.allow` / `tools.deny` win.
 expression evaluated by the profile loader, e.g. the official README's
 `env: { TOKEN: !!js process.env.GITHUB_TOKEN }`) is **not supported** in
 project files — an unresolved tag inside the managed block makes the whole
-file fail with an explicit error (logged and written to `.dsh/.mcp-diag.json`)
+file fail with an explicit error (logged and written to `$DSH_HOME/mcp-diag/<hash>.json`)
 instead of silently mounting the expression text as a literal string. Values
 in `env`/`headers` are otherwise literal, except for `${VAR}` references
 which are interpolated at mount time (see [`${VAR}` expansion](env-expansion.md));
@@ -110,8 +113,10 @@ Follows the ecosystem (Cursor / Claude Code's `mcpServers` shape):
   rest.
 - **JSON files are owned exclusively by the `dsh-mcp` CLI**: writes preserve
   other top-level keys and key order, but JSON has no comments, so formatting
-  and comments are not preserved. The plugin itself is **read-only** — the host
-  never writes these files.
+  and comments are not preserved. The host side (the loader and the settings
+  page) is **read-only** for JSON and never writes these files; editing a
+  JSON-sourced row in the settings page writes the managed yml of the same
+  scope instead.
 - `${VAR}` has the same semantics as every other source (expanded at mount
   time, see [`${VAR}` expansion](env-expansion.md)).
 

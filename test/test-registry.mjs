@@ -6,8 +6,9 @@ import { tmpdir } from "node:os";
 import { ProjectMcpRegistry, parseDiagDocument, planProjectChanges, projectMcpFile, mergeSourcedRows, profileNameFromConfigPath, UNMOUNT_GRACE_MS } from "../lib/registry.js";
 import { bindProjectMcpService, PROJECT_MCP_SERVICE } from "../lib/service.js";
 import { apply, PROJECT_MCP_UPDATED_EVENT } from "../lib/index.js";
-import { MCP_BLOCK_BEGIN, MCP_BLOCK_END, writeManagedRows } from "../lib/mcp-file.js";
+import { MCP_BLOCK_BEGIN, MCP_BLOCK_END, extractManagedRows, writeManagedRows } from "../lib/mcp-file.js";
 import { byCodeUnit } from "../lib/model.js";
+import { projectDiagFile } from "../lib/dsh-paths.js";
 
 let passed = 0;
 function pass(name) {
@@ -15,7 +16,8 @@ function pass(name) {
   console.log("PASS  " + name);
 }
 
-const diagFile = (projectRoot) => join(projectRoot, ".dsh", ".mcp-diag.json");
+const diagFile = (dshHome, projectRoot) => projectDiagFile(dshHome, projectRoot);
+const legacyDiagFile = (projectRoot) => join(projectRoot, ".dsh", ".mcp-diag.json");
 async function pathExists(path) {
   try {
     await access(path);
@@ -24,18 +26,18 @@ async function pathExists(path) {
     return false;
   }
 }
-async function readDiag(projectRoot) {
-  return parseDiagDocument(JSON.parse(await readFile(diagFile(projectRoot), "utf8"))).events;
+async function readDiag(dshHome, projectRoot) {
+  return parseDiagDocument(JSON.parse(await readFile(diagFile(dshHome, projectRoot), "utf8"))).events;
 }
-async function readDiagSummary(projectRoot) {
-  return parseDiagDocument(JSON.parse(await readFile(diagFile(projectRoot), "utf8"))).summary;
+async function readDiagSummary(dshHome, projectRoot) {
+  return parseDiagDocument(JSON.parse(await readFile(diagFile(dshHome, projectRoot), "utf8"))).summary;
 }
 /** 轮询 diag 直到谓词成立：事件驱动用例里对账链可能仍在落盘（不能用固定 sleep）。 */
-async function waitForDiag(projectRoot, predicate, timeoutMs = 5000) {
+async function waitForDiag(dshHome, projectRoot, predicate, timeoutMs = 5000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     try {
-      if (predicate(await readDiag(projectRoot))) return true;
+      if (predicate(await readDiag(dshHome, projectRoot))) return true;
     } catch {
       // diag 尚不存在或正被半读到截断 JSON：视为「暂不满足」，继续轮询。
     }
@@ -90,8 +92,8 @@ function fakeCtx() {
       };
     },
     /** 触发已注册的宿主事件（mock 需要；真实宿主由 dsh 派发）。 */
-    emit(name, payload) {
-      for (const callback of handlers.get(name) ?? []) callback(payload);
+    emit(name, ...args) {
+      for (const callback of handlers.get(name) ?? []) callback(...args);
     },
     provide(name, value) {
       this.provided[name] = value;
@@ -106,17 +108,27 @@ function fakeCtx() {
     tools: {
       schemas: () => schemas
     },
+    holdFibers: false,
+    held: [],
+    holdDispose: false,
+    releaseDispose: [],
     plugin(_plugin, config) {
       let resolved = false;
       const fiber = {
         config,
         dispose: async () => {
           disposals.push(config.serverName);
+          if (ctx.holdDispose) {
+            await new Promise((resolveDispose) => {
+              ctx.releaseDispose.push(resolveDispose);
+            });
+          }
         },
         then(onFulfilled) {
           if (!resolved) {
             resolved = true;
-            queueMicrotask(() => onFulfilled?.());
+            if (ctx.holdFibers) ctx.held.push(() => onFulfilled?.());
+            else queueMicrotask(() => onFulfilled?.());
           }
           return Promise.resolve();
         }
@@ -347,11 +359,16 @@ try {
   assert.equal(projAFile.servers[0].scope.kind, "workspace");
   assert.equal(projAFile.servers[0].effectiveServerName, mounted.serverName);
   assert.equal(projAFile.servers[0].fiberPhase, "active");
-  const summaryA = await readDiagSummary(projectA);
+  const home0 = join(dir, "nohome", ".dsh");
+  const summaryA = await readDiagSummary(home0, projectA);
   assert.ok(summaryA !== undefined, "configured project diag includes a summary");
   assert.ok(summaryA.rows >= 1, "summary counts project rows");
   assert.ok(summaryA.mounted >= 1, "summary counts mounted servers");
-  assert.equal(await pathExists(diagFile(projectB)), false, "zero-config project still has no diag after summary writes");
+  assert.equal(await pathExists(legacyDiagFile(projectA)), false, "project diag is not written into the workspace");
+  await writeFile(legacyDiagFile(projectA), "{}\n", "utf8");
+  await registry.reconcileNow();
+  assert.equal(await pathExists(legacyDiagFile(projectA)), false, "a leftover workspace diag is removed on the next reconcile");
+  assert.equal(await pathExists(diagFile(home0, projectB)), false, "zero-config project still has no diag after summary writes");
   pass("registry snapshot reports project file rows with workspace scope and phase");
 
   // 4. 移除行 → 卸载（fiber dispose）
@@ -374,9 +391,10 @@ try {
   //    <projectB>/.dsh/.mcp-diag.json 追加一条误报的 ENOENT "error"。
   await registry.reconcileNow();
   await registry.reconcileNow();
-  assert.equal(await pathExists(diagFile(projectB)), false, "clean project without mcp.yml must not get a diag file");
+  assert.equal(await pathExists(diagFile(join(dir, "nohome", ".dsh"), projectB)), false, "clean project without mcp.yml must not get a diag file");
+  assert.equal(await pathExists(legacyDiagFile(projectB)), false, "clean project does not get a workspace diag file");
   assert.equal((await registry.snapshot()).find((file) => file.project === projectB), undefined, "project without config is not a known project");
-  const diagA = await readDiag(projectA);
+  const diagA = await readDiag(join(dir, "nohome", ".dsh"), projectA);
   assert.ok(diagA.some((row) => row.kind === "scan" && row.ok === true && row.rows.includes("gitlab")), "configured project still logs its scans");
   assert.equal(diagA.some((row) => row.ok === false), false, "no spurious scan error recorded for a project that only emptied its rows");
   pass("registry writes no diagnostics for a clean project without mcp.yml");
@@ -389,10 +407,11 @@ try {
   ctx.agentsList.push(agentC);
   await registry.reconcileNow();
   assert.ok(ctx.mounts.some((config) => config.serverName === "echo-c"), "project C server mounted");
-  assert.equal(await pathExists(diagFile(projectC)), true, "configured project gets a diag file");
+  assert.equal(await pathExists(diagFile(join(dir, "nohome", ".dsh"), projectC)), true, "configured project gets a diag file outside the workspace");
+  assert.equal(await pathExists(legacyDiagFile(projectC)), false, "configured project diag stays out of the workspace");
   await rm(projectMcpFile(projectC), { force: true });
   await registry.reconcileNow();
-  const vanished = (await readDiag(projectC)).findLast((row) => row.kind === "scan");
+  const vanished = (await readDiag(join(dir, "nohome", ".dsh"), projectC)).findLast((row) => row.kind === "scan");
   assert.equal(vanished.ok, false, "losing mcp.yml under a live mount is reported as an error");
   assert.match(String(vanished.error), /ENOENT/);
   assert.ok(ctx.disposals.includes("echo-c"), "server unmounted after its config file vanished");
@@ -428,7 +447,7 @@ try {
   assert.ok(snapD !== undefined && snapD.ok === false, "snapshot marks the bad file instead of throwing");
   assert.match(String(snapD.error), /!!js/);
   assert.equal(snapD.servers.length, 0);
-  const diagD = await readDiag(projectD);
+  const diagD = await readDiag(join(dir, "nohome", ".dsh"), projectD);
   assert.ok(diagD.some((row) => row.kind === "scan" && row.ok === false && String(row.error).includes("!!js")), "diag records the rejection");
   pass("registry rejects native !!js tags in project files with an explicit error");
 
@@ -476,10 +495,10 @@ try {
     assert.deepEqual(names10, ["alpha"], "legacy .mcp.json rows mount; sse and missing-env rows do not");
     const alpha10 = ctx2.mounts.find((config) => config.serverName === "alpha");
     assert.equal(alpha10.cwd, dir2, "CC stdio cwd defaults to project root");
-    const diagE10 = await readDiag(dir2);
+    const diagE10 = await readDiag(join(home2, ".dsh"), dir2);
     assert.ok(diagE10.some((row) => row.kind === "scan" && Array.isArray(row.ccEntryErrors) && row.ccEntryErrors.some((note) => note.includes("bad"))), "sse entry error recorded in scan diag");
     assert.ok(diagE10.some((row) => row.kind === "env-missing" && row.rawName === "beta" && row.missingVar === "CC_TEST_MISSING"), "env-missing diag names the variable, not the value");
-    const summaryE10 = await readDiagSummary(dir2);
+    const summaryE10 = await readDiagSummary(join(home2, ".dsh"), dir2);
     assert.ok(summaryE10 !== undefined, "diag file carries a summary after reconcile");
     assert.equal(summaryE10.skippedByReason["env-missing"], 1, "summary counts env-missing skips");
     assert.ok(summaryE10.unhealthy.some((item) => item.name === "beta" && item.reason === "env-missing"), "summary names the env-missing row");
@@ -507,7 +526,7 @@ try {
     const alphaMounts12 = ctx2.mounts.filter((config) => config.serverName === "alpha");
     assert.ok(alphaMounts12.length >= 2, "shadowed row was remounted from the yml layer");
     assert.deepEqual(alphaMounts12.at(-1).args, ["a-yml.js"], "yml row wins over .mcp.json row of the same name");
-    const diag12 = await readDiag(dir2);
+    const diag12 = await readDiag(join(home2, ".dsh"), dir2);
     assert.ok(diag12.some((row) => row.kind === "scan" && Array.isArray(row.shadowedByYml) && row.shadowedByYml.includes("alpha")), "shadowing recorded in diag");
     const snap12 = await registry2.snapshot();
     const alphaYml12 = snap12.find((file) => file.path === projectMcpFile(dir2)).servers.find((server) => server.serverName === "alpha");
@@ -624,9 +643,9 @@ try {
       const httpOk19 = ctx2.mounts.findLast((config) => config.serverName === "http-ok");
       assert.equal(httpOk19.headers.Authorization, "Bearer sekret", "in-string interpolation reaches the mount config");
       assert.ok(await registry2.waitForState(dir2, "http-bad", (state) => state === undefined, 500), "invalid expanded url is never mounted");
-      const seen19 = await waitForDiag(dir2, (lines) => lines.some((row) => row.kind === "env-invalid" && row.rawName === "http-bad"), 5000);
+      const seen19 = await waitForDiag(join(home2, ".dsh"), dir2, (lines) => lines.some((row) => row.kind === "env-invalid" && row.rawName === "http-bad"), 5000);
       assert.ok(seen19, "post-expansion schema failure lands as env-invalid diag");
-      const diag19 = await readDiag(dir2);
+      const diag19 = await readDiag(join(home2, ".dsh"), dir2);
       assert.equal(diag19.some((row) => row.error === "not a url"), false, "diag must not echo the offending value");
     } finally {
       delete process.env.CC_TEST_NOTURL;
@@ -697,14 +716,14 @@ try {
     assert.ok(eps24, "the user-layer row is mounted globally");
     assert.equal(ctx2.mounts.filter((config) => config.serverName === "user-nocwd").length, 1, "adding a project does not add a second global instance");
     await registry2.reconcileNow();
-    assert.equal(await pathExists(diagFile(dir5)), false, "a project with no rows writes no diagnostics");
+    assert.equal(await pathExists(diagFile(join(home2, ".dsh"), dir5)), false, "a project with no rows writes no diagnostics");
     // 对照：真实 yml 行装载后文件被删 → 记 scan 错仍是正确行为
     await writeManagedRows(projectMcpFile(dir5), [stdioRow("real-yml")], { createIfMissing: true });
     await registry2.reconcileNow();
     assert.ok(await registry2.waitForState(dir5, "real-yml", (state) => state?.phase === "active", 5000), "project yml row mounts");
     await rm(projectMcpFile(dir5));
     await registry2.reconcileNow();
-    const diag24 = await readDiag(dir5);
+    const diag24 = await readDiag(join(home2, ".dsh"), dir5);
     assert.ok(diag24.some((row) => row.kind === "scan" && row.ok === false && String(row.error).includes("ENOENT")), "deleting a live yml file still records a scan error");
     pass("absent project yml stays silent for user-layer-only mounts and stays loud for removed live yml files");
 
@@ -761,7 +780,7 @@ try {
         ctx2.agentsList.push(fakeAgent("session-j", dir6));
         await registry2.reconcileNow();
         assert.ok(
-          await waitForDiag(dir6, (rows) => rows.some((r) => r.kind === "scan" && Array.isArray(r.shadowedIdentity)
+          await waitForDiag(join(home2, ".dsh"), dir6, (rows) => rows.some((r) => r.kind === "scan" && Array.isArray(r.shadowedIdentity)
             && r.shadowedIdentity.some((s) => s.name === "unity-mcp" && s.winner === "unityMCP" && s.reason === "normname"))),
           "scan diag reports the identity shadow with winner and reason");
         assert.ok(warns28.some((w) => w.includes('跳过重复服务定义 "unity-mcp"')), "dup definition warned on the first reconcile: " + JSON.stringify(warns28.slice(-3)));
@@ -822,6 +841,8 @@ try {
       await writeFile(join(home2, ".dsh", "profiles", "web", "mcp.json"), JSON.stringify({
         mcpServers: { jsonprofile: { command: "node", args: ["pr.js"] } }
       }), "utf8");
+      // profile 原生 yml（profiles/<name>/mcp.yml）：压过该 profile 的 mcp.json 与 ~/.dsh/mcp.yml。
+      await writeManagedRows(join(home2, ".dsh", "profiles", "web", "mcp.yml"), [stdioRow("ymlprofile"), stdioRow("jsonprofile"), stdioRow("jsonuser")], { createIfMissing: true });
       const userPaths = {
         mcpYml: join(home2, ".dsh", "mcp.yml"),
         mcpJson: join(home2, ".dsh", "mcp.json"),
@@ -835,19 +856,26 @@ try {
       ctx3.agentsList.push(fakeAgent("session-k", dir7), fakeAgent("session-k2", dir7b));
       await registry3.reconcileNow();
       const names29 = ctx3.mounts.map((config) => config.serverName);
-      for (const expected of ["jsonproj", "jsonprofile", "jsonuser"]) {
+      for (const expected of ["jsonproj", "jsonprofile", "jsonuser", "ymlprofile"]) {
         assert.ok(names29.includes(expected), `${expected} mounts from its DSH json layer: ${names29.join(",")}`);
       }
       assert.equal(names29.filter((name) => name === "jsonuser").length, 1, "user json row mounts once for the whole host");
       assert.equal(names29.filter((name) => name === "jsonprofile").length, 1, "profile json row mounts once for the whole host");
       const both29 = ctx3.mounts.findLast((config) => config.serverName === "both");
       assert.deepEqual(both29.args, ["srv-both.js"], "yml wins over .dsh/mcp.json for the same name");
+      const profileYmlWin = ctx3.mounts.findLast((config) => config.serverName === "jsonprofile");
+      assert.deepEqual(profileYmlWin.args, ["srv-jsonprofile.js"], "profile yml wins over profile mcp.json for the same name");
+      const userShadowed = ctx3.mounts.findLast((config) => config.serverName === "jsonuser");
+      assert.deepEqual(userShadowed.args, ["srv-jsonuser.js"], "profile yml wins over ~/.dsh/mcp.json for the same name");
       const snap29 = await registry3.snapshot();
       assert.ok(snap29.some((file) => file.source === "dsh-project-json" && file.project === dir7), "project json partition present");
       const userPart29 = snap29.find((file) => file.source === "dsh-user" && file.kind === "global");
       assert.ok(userPart29 !== undefined, "user json partition present");
-      assert.equal(userPart29.servers[0].fiberPhase, "active", "global partition carries the global fiber phase");
+      assert.equal(userPart29.servers[0].fiberPhase, null, "shadowed user json row is not active");
       assert.ok(snap29.some((file) => file.source === "dsh-profile-user" && file.kind === "global"), "profile json partition present");
+      const profileYmlPart = snap29.find((file) => file.source === "dsh-profile-user-yml" && file.kind === "global");
+      assert.ok(profileYmlPart !== undefined, "profile yml partition present");
+      assert.ok(profileYmlPart.servers.some((server) => server.serverName === "ymlprofile" && server.fiberPhase === "active"), "profile yml row is active");
       // 与宿主 patch 行全局服务器撞名 → 跳过（name-taken），不改名、不冲突。
       const ctxTaken = fakeCtx();
       const registryTaken = new ProjectMcpRegistry(ctxTaken, { globalNames: async () => ["jsonuser"], activeProfile: async () => "web", userLayerPaths: userPaths });
@@ -1023,7 +1051,8 @@ try {
         const registry33 = new ProjectMcpRegistry(ctx33, { globalNames: async () => [], userLayerPaths: userPaths33 });
         ctx33.agentsList.push(fakeAgent("session-m4", proj33));
         await registry33.reconcileNow();
-        assert.equal(await pathExists(diagFile(proj33)), false, "a zero-config project stays free of .mcp-diag.json");
+        assert.equal(await pathExists(diagFile(home33, proj33)), false, "a zero-config project stays free of a dsh-home diag");
+        assert.equal(await pathExists(legacyDiagFile(proj33)), false, "a zero-config project stays free of a workspace diag");
         const globalDiag = parseDiagDocument(JSON.parse(await readFile(join(home33, ".mcp-diag.json"), "utf8"))).events;
         assert.ok(globalDiag.some((row) => row.kind === "shadow" && Array.isArray(row.shadowedIdentity)
           && row.shadowedIdentity.some((s) => s.name === "twin-json" && s.winner === "twin-yml")), "global diag records the user-layer identity shadow: " + JSON.stringify(globalDiag.slice(-2)));
@@ -1157,7 +1186,7 @@ try {
         });
         ctxF.agentsList.push(fakeAgent("session-foreign", projF));
         await registryF.reconcileNow();
-        const diagF = await readDiag(projF);
+        const diagF = await readDiag(homeF, projF);
         assert.ok(diagF.some((row) => typeof row.foreignFormat === "string" && row.foreignFormat.includes("dsh-mcp-manager")), "project diag names the foreign format: " + JSON.stringify(diagF));
         const globalDiag = parseDiagDocument(JSON.parse(await readFile(join(homeF, ".mcp-diag.json"), "utf8"))).events;
         assert.ok(globalDiag.some((row) => row.kind === "foreign-format" && String(row.path).includes("dsh-mcp.json")), "global diag mentions dsh-mcp.json: " + JSON.stringify(globalDiag));
@@ -1280,7 +1309,7 @@ try {
     await pulseDead();
     assert.equal(ctxH.disposals.length, 1, "dead connection is unmounted once");
     assert.equal(ctxH.mounts.length, 2, "dead connection is remounted once");
-    const diagH = await readDiag(projH);
+    const diagH = await readDiag(join(homeH, ".dsh"), projH);
     assert.ok(diagH.some((row) => row.kind === "remount" && row.attempt === 1), "remount diag: " + JSON.stringify(diagH.slice(-4)));
     const mountsAfterFirst = ctxH.mounts.length;
     await registryH.reconcileNow();
@@ -1312,12 +1341,12 @@ try {
     await registryH.reconcileNow();
     await registryH.reconcileNow();
     await registryH.reconcileNow();
-    const diagGive = await readDiag(projH);
+    const diagGive = await readDiag(join(homeH, ".dsh"), projH);
     assert.ok(diagGive.some((row) => row.kind === "give-up"), "give-up after remount limit without recovery: " + JSON.stringify(diagGive.slice(-6)));
     const mountsAtGiveUp = ctxH.mounts.length;
     await registryH.reconcileNow();
     assert.equal(ctxH.mounts.length, mountsAtGiveUp, "give-up stops further remounts");
-    const summaryGive = await readDiagSummary(projH);
+    const summaryGive = await readDiagSummary(join(homeH, ".dsh"), projH);
     assert.ok(summaryGive?.unhealthy.some((item) => item.name === "alive" && item.reason === "give-up"), "give-up is unhealthy in summary: " + JSON.stringify(summaryGive));
     assert.ok((summaryGive?.skippedByReason["give-up"] ?? 0) >= 1, "summary counts give-up skips");
     const giveView = (await registryH.snapshot()).flatMap((file) => file.servers ?? []).find((row) => row.serverName === "alive");
@@ -1327,7 +1356,7 @@ try {
     await registryH.reconcileNow();
     assert.equal(registryH.debugHealth(projH, "alive")?.givenUp, false, "tools returning after give-up clears givenUp");
     assert.equal(registryH.debugHealth(projH, "alive")?.remountCount, 0);
-    const summaryRecovered = await readDiagSummary(projH);
+    const summaryRecovered = await readDiagSummary(join(homeH, ".dsh"), projH);
     assert.ok(summaryRecovered?.unhealthy.every((item) => item.reason !== "give-up"), "summary drops give-up after recovery: " + JSON.stringify(summaryRecovered));
     assert.ok((summaryRecovered?.mounted ?? 0) >= 1, "recovered row counts as mounted");
     const recoveredView = (await registryH.snapshot()).flatMap((file) => file.servers ?? []).find((row) => row.serverName === "alive");
@@ -1507,7 +1536,7 @@ try {
     assert.equal(budgetWarns.length, 1, "budget warns once: " + budgetWarns.join("|"));
     await registryBgt.reconcileNow();
     assert.equal(warnsBgt.filter((w) => w.includes("超过告警阈值")).length, 1, "budget warn is gated");
-    const summaryBgt = await readDiagSummary(projBgt);
+    const summaryBgt = await readDiagSummary(join(dirBgt, "home", ".dsh"), projBgt);
     assert.ok(summaryBgt.toolBudget?.some((item) => item.name === heavyName && item.tools === 3), "summary lists over-budget server: " + JSON.stringify(summaryBgt.toolBudget));
     assert.equal(ctxBgt.schemas.length, 3, "budget never clips tools");
     ctxBgt.schemas.length = 1;
@@ -1577,7 +1606,7 @@ try {
   assert.equal(updates.length, updatesAfterReconcile + 1, "a throwing listener does not drop the reconcile");
   assert.ok(warnsSvc.some((message) => message.includes("变更事件投递失败")), "throwing listener is warned: " + warnsSvc.join("|"));
   const dts = readFileSync(new URL("../lib/index.d.ts", import.meta.url), "utf8");
-  for (const name of ["ProjectFileState", "McpServerRuntimeView", "McpServerView", "McpRowSource", "ProjectServerState", "FiberPhaseView", "PROJECT_MCP_UPDATED_EVENT"]) {
+  for (const name of ["ProjectFileState", "McpServerRuntimeView", "McpServerView", "McpRowSource", "ProjectServerState", "FiberPhaseView", "PROJECT_MCP_UPDATED_EVENT", "McpAddDraft", "McpWriteTarget", "serviceIdentityKeyOf"]) {
     assert.ok(dts.includes(name), "package entry exports " + name);
   }
   for (const disposer of ctxSvc.disposers) {
@@ -1620,6 +1649,82 @@ try {
   }
   await rmRetry(dirSvc);
   pass("projectMcp service matches registry queries and apply provides it");
+}
+
+// 受管 yml 编辑：启停 / 删除 / 工具开关只写该作用域的受管块；其它来源落占位或拷贝。
+{
+  const dirEdit = await mkdtemp(join(tmpdir(), "dsh-mcp-edit-"));
+  const homeEdit = join(dirEdit, "home");
+  const projEdit = join(dirEdit, "proj");
+  await mkdir(join(homeEdit, ".dsh"), { recursive: true });
+  await mkdir(join(projEdit, ".dsh"), { recursive: true });
+  await writeManagedRows(projectMcpFile(projEdit), [stdioRow("own")], { createIfMissing: true });
+  await writeFile(join(projEdit, ".dsh", "mcp.json"), JSON.stringify({
+    mcpServers: { fromjson: { command: "node", args: ["j.js"] } }
+  }), "utf8");
+  const ctxEdit = fakeCtx();
+  const opened = [];
+  const registryEdit = new ProjectMcpRegistry(ctxEdit, {
+    globalNames: async () => [],
+    userLayerPaths: { mcpYml: join(homeEdit, ".dsh", "mcp.yml"), mcpJson: join(homeEdit, ".dsh", "mcp.json"), profilesDir: join(homeEdit, ".dsh", "profiles") },
+    openPath: (path) => { opened.push(path); }
+  });
+  ctxEdit.agentsList.push(fakeAgent("session-edit", projEdit));
+  await registryEdit.reconcileNow();
+  const ymlPath = projectMcpFile(projEdit);
+
+  // 打开配置文件：项目层落到 <root>/.dsh/mcp.yml。
+  assert.equal(await registryEdit.openConfigFile("dsh-project", projEdit), ymlPath);
+  assert.deepEqual(opened, [ymlPath], "openPath receives the managed yml path");
+
+  // 停用 yml 行：就地翻 disabled，不新建行。
+  await registryEdit.setServerEnabled("dsh-project", projEdit, "own", false);
+  let rows = extractManagedRows(await readFile(ymlPath, "utf8"));
+  assert.equal(rows.length, 1, "disable edits the existing yml row in place");
+  assert.equal(rows[0].disabled, true);
+  // 再启用：去掉 disabled。
+  await registryEdit.setServerEnabled("dsh-project", projEdit, "own", true);
+  rows = extractManagedRows(await readFile(ymlPath, "utf8"));
+  assert.equal(rows[0].disabled, undefined, "enable clears the disabled flag");
+
+  // 停用 JSON 层行：在受管 yml 里落一条 disabled 占位（同 id），不改 json 文件。
+  await registryEdit.setServerEnabled("dsh-project-json", projEdit, "fromjson", false);
+  rows = extractManagedRows(await readFile(ymlPath, "utf8"));
+  const placeholder = rows.find((row) => row.id === "panel-mcp-fromjson");
+  assert.ok(placeholder !== undefined, "disabling a json row lands a placeholder in the managed yml");
+  assert.equal(placeholder.disabled, true);
+  assert.equal(JSON.parse(await readFile(join(projEdit, ".dsh", "mcp.json"), "utf8")).mcpServers.fromjson.command, "node", "the json file is untouched");
+
+  // 删除 yml 行：就地移除。
+  await registryEdit.removeServer("dsh-project", projEdit, "own");
+  rows = extractManagedRows(await readFile(ymlPath, "utf8"));
+  assert.ok(!rows.some((row) => row.id === "panel-mcp-own"), "removing a yml row deletes it");
+
+  // 工具开关：deny 写入受管 yml 的 tools.deny；再打开时移除。
+  await registryEdit.setServerEnabled("dsh-project-json", projEdit, "fromjson", true);
+  await registryEdit.setToolEnabled("dsh-project-json", projEdit, "fromjson", "read_file", false);
+  rows = extractManagedRows(await readFile(ymlPath, "utf8"));
+  const taken = rows.find((row) => row.id === "panel-mcp-fromjson");
+  assert.deepEqual(taken?.config?.tools, { deny: ["read_file"] }, "tool disable writes tools.deny into the managed yml");
+  await registryEdit.setToolEnabled("dsh-project-json", projEdit, "fromjson", "read_file", true);
+  rows = extractManagedRows(await readFile(ymlPath, "utf8"));
+  assert.equal(rows.find((row) => row.id === "panel-mcp-fromjson")?.config?.tools, undefined, "re-enabling the last denied tool drops the tools key");
+
+  // 遗留 .mcp.json 不改原文件，停用落到同项目的受管 yml。
+  await writeFile(join(projEdit, ".mcp.json"), JSON.stringify({ mcpServers: { ghost: { command: "node", args: ["g.js"] } } }), "utf8");
+  await registryEdit.reconcileNow();
+  await registryEdit.setServerEnabled("cc-project", projEdit, "ghost", false);
+  rows = extractManagedRows(await readFile(ymlPath, "utf8"));
+  assert.equal(rows.find((row) => row.id === "panel-mcp-ghost")?.disabled, true, "legacy .mcp.json disable lands in the project yml");
+  assert.equal(JSON.parse(await readFile(join(projEdit, ".mcp.json"), "utf8")).mcpServers.ghost.command, "node", "legacy .mcp.json is not rewritten");
+  await assert.rejects(() => registryEdit.removeServer("dsh-project", projEdit, "nosuch"), /找不到服务器/);
+
+  for (const disposer of ctxEdit.disposers) {
+    const cleanup = disposer();
+    if (typeof cleanup === "function") cleanup();
+  }
+  await rmRetry(dirEdit);
+  pass("managed yml edits: enable/disable/remove/tool toggles write only the managed block");
 }
 
 {
@@ -1681,7 +1786,7 @@ try {
     assert.equal(pendingA.length, 1, "unmounted project keeps its catalog entry");
     assert.equal(pendingA[0].fiberPhase, "pending");
     assert.equal(pendingA[0].skipReason, "idle", "idle unmount is visible as skipReason");
-    const summaryIdleA = await readDiagSummary(projA);
+    const summaryIdleA = await readDiagSummary(join(homeOn, ".dsh"), projA);
     assert.ok(summaryIdleA !== undefined && summaryIdleA.rows >= 1, "idle unmount still counts catalog rows: " + JSON.stringify(summaryIdleA));
     assert.equal(summaryIdleA.skippedByReason.idle, 1, "summary records idle skip");
     assert.ok(!(summaryIdleA.unhealthy ?? []).some((item) => item.reason === "idle"), "idle is not listed as unhealthy");
@@ -1739,14 +1844,14 @@ try {
     });
     ctxT3.agentsList.push(fakeAgent("session-t3", projT3));
     await registryT3.reconcileNow();
-    const summaryLive = await readDiagSummary(projT3);
+    const summaryLive = await readDiagSummary(join(homeT3, ".dsh"), projT3);
     assert.equal(summaryLive.skippedByReason["env-missing"], 1, "live summary counts env-missing: " + JSON.stringify(summaryLive));
     assert.ok(summaryLive.rows >= 2, "catalog counts both rows while one is mounted: " + JSON.stringify(summaryLive));
     ctxT3.agentsList.length = 0;
     await registryT3.reconcileNow();
     now += UNMOUNT_GRACE_MS + 1;
     await registryT3.reconcileNow();
-    const summaryIdle = await readDiagSummary(projT3);
+    const summaryIdle = await readDiagSummary(join(homeT3, ".dsh"), projT3);
     assert.ok(summaryIdle.rows >= 2, "idle unmount keeps catalog row count: " + JSON.stringify(summaryIdle));
     assert.equal(summaryIdle.skippedByReason["env-missing"], 1, "env-missing survives idle prune");
     assert.equal(summaryIdle.skippedByReason.idle, 1, "mounted row becomes idle");
@@ -1867,6 +1972,673 @@ try {
   } finally {
     process.chdir(savedCwdCreated);
     await rmRetry(dirCreated);
+  }
+}
+
+// session/created 单独就能装上项目，不依赖 agent/created（作用域过滤漏掉后者时的路径）。
+{
+  const dirSession = await mkdtemp(join(tmpdir(), "dsh-mcp-session-created-"));
+  const homeSession = join(dirSession, "home");
+  const projSession = join(dirSession, "proj");
+  await mkdir(join(homeSession, ".dsh"), { recursive: true });
+  await mkdir(projSession, { recursive: true });
+  await writeManagedRows(projectMcpFile(projSession), [stdioRow("from-session")], { createIfMissing: true });
+  const savedCwdSession = process.cwd();
+  try {
+    process.chdir(dirSession);
+    const ctxSession = fakeCtx();
+    const registrySession = new ProjectMcpRegistry(ctxSession, {
+      globalNames: async () => [],
+      unmountGraceMs: 0,
+      userLayerPaths: { mcpYml: join(homeSession, ".dsh", "mcp.yml"), mcpJson: join(homeSession, ".dsh", "mcp.json"), profilesDir: join(homeSession, ".dsh", "profiles") }
+    });
+    await registrySession.reconcileNow();
+    assert.equal(ctxSession.mounts.length, 0, "no project mount before any session");
+    ctxSession.emit("session/created", { id: "session-direct", header: { cwd: projSession } });
+    assert.ok(
+      await registrySession.waitForState(projSession, "from-session", (state) => state?.phase === "active", 5000),
+      "session/created mounts the workspace project without agent/created"
+    );
+    ctxSession.emit("session/disposed", { id: "session-direct", header: { cwd: projSession } });
+    assert.ok(
+      await registrySession.waitForState(projSession, "from-session", (state) => state === undefined || state.phase === null, 5000),
+      "session/disposed drops the project once the grace is zero"
+    );
+    for (const disposer of ctxSession.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    pass("session/created mounts a newly opened workspace without waiting for agent/created");
+  } finally {
+    process.chdir(savedCwdSession);
+    await rmRetry(dirSession);
+  }
+}
+
+// 桌面端切回另一个工作区时，上一个会话不会 dispose。焦点一旦离开，那个项目的
+// MCP 必须立刻卸载，不能靠 5 分钟宽限继续留在全局工具层里。
+{
+  const dirFocus = await mkdtemp(join(tmpdir(), "dsh-mcp-focus-"));
+  const homeFocus = join(dirFocus, "home");
+  const projMcp = join(dirFocus, "with-mcp");
+  const projPlain = join(dirFocus, "without-mcp");
+  await mkdir(join(homeFocus, ".dsh"), { recursive: true });
+  await mkdir(projMcp, { recursive: true });
+  await mkdir(projPlain, { recursive: true });
+  await writeManagedRows(projectMcpFile(projMcp), [stdioRow("from-mcp")], { createIfMissing: true });
+  const savedCwdFocus = process.cwd();
+  try {
+    process.chdir(dirFocus);
+    const ctxFocus = fakeCtx();
+    const registryFocus = new ProjectMcpRegistry(ctxFocus, {
+      globalNames: async () => [],
+      unmountGraceMs: UNMOUNT_GRACE_MS,
+      userLayerPaths: { mcpYml: join(homeFocus, ".dsh", "mcp.yml"), mcpJson: join(homeFocus, ".dsh", "mcp.json"), profilesDir: join(homeFocus, ".dsh", "profiles") }
+    });
+    const agentPlain = fakeAgent("session-plain", projPlain);
+    const agentMcp = fakeAgent("session-mcp", projMcp);
+    ctxFocus.agentsList.push(agentPlain);
+    ctxFocus.schemas.push({ name: "mcp__from-mcp__read" });
+    await registryFocus.reconcileNow();
+    ctxFocus.agentsList.push(agentMcp);
+    ctxFocus.emit("agent/created", { agent: agentMcp, source: "resume" });
+    assert.ok(
+      await registryFocus.waitForState(projMcp, "from-mcp", (state) => state?.phase === "active", 5000),
+      "focusing the mcp workspace mounts its server"
+    );
+    ctxFocus.emit("session/event", { id: "session-plain", header: { cwd: projPlain } }, { type: "tool/result" });
+    await registryFocus.reconcileNow();
+    assert.equal(
+      (await registryFocus.snapshot()).find((file) => file.project === projMcp)?.servers?.some((row) => row.fiberPhase === "active"),
+      true,
+      "a background tool result in the other workspace must not unmount the focused project"
+    );
+    ctxFocus.emit("session/event", { id: "session-plain", header: { cwd: projPlain } }, { type: "user/message" });
+    assert.ok(
+      await registryFocus.waitForState(projMcp, "from-mcp", (state) => state === undefined, 5000),
+      "activity in the other workspace unmounts the previous project without waiting for grace"
+    );
+    const snapFocus = await registryFocus.snapshot();
+    const still = (snapFocus.find((file) => file.project === projMcp)?.servers ?? []).filter((row) => row.fiberPhase === "active" || row.fiberPhase === "loading");
+    assert.equal(still.length, 0, "the other workspace's server is not active: " + JSON.stringify(still));
+    ctxFocus.emit("agent/created", { agent: agentMcp, source: "resume" });
+    assert.ok(
+      await registryFocus.waitForState(projMcp, "from-mcp", (state) => state?.phase === "active", 5000),
+      "focusing the mcp workspace again remounts its server"
+    );
+    for (const disposer of ctxFocus.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    pass("switching the focused workspace unmounts the previous project's MCP immediately");
+  } finally {
+    process.chdir(savedCwdFocus);
+    await rmRetry(dirFocus);
+  }
+}
+
+{
+  const dirPrep = await mkdtemp(join(tmpdir(), "dsh-mcp-prepare-yml-"));
+  const homePrep = join(dirPrep, "home");
+  const projPrep = join(dirPrep, "proj");
+  await mkdir(join(homePrep, ".dsh"), { recursive: true });
+  await mkdir(projPrep, { recursive: true });
+  await writeFile(join(projPrep, ".mcp.json"), JSON.stringify({ mcpServers: { godot: { command: "node" } } }), "utf8");
+  const savedCwdPrep = process.cwd();
+  try {
+    process.chdir(dirPrep);
+    const ctxPrep = fakeCtx();
+    const registryPrep = new ProjectMcpRegistry(ctxPrep, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(homePrep, ".dsh", "mcp.yml"), mcpJson: join(homePrep, ".dsh", "mcp.json"), profilesDir: join(homePrep, ".dsh", "profiles") }
+    });
+    const created = await registryPrep.prepareManagedYml("cc-project", projPrep);
+    assert.equal(created, projectMcpFile(projPrep), "legacy project source prepares the managed yml, not the json file");
+    const text = await readFile(created, "utf8");
+    assert.match(text, /^\[\]\s*$/, "a missing yml is created as an empty patch array");
+    await writeFile(created, text + "# keep-me\n", "utf8");
+    const again = await registryPrep.prepareManagedYml("cc-project", projPrep);
+    assert.match(await readFile(again, "utf8"), /# keep-me/, "an existing yml is not rewritten");
+    for (const disposer of ctxPrep.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    pass("prepareManagedYml creates a missing managed yml and leaves an existing one untouched");
+  } finally {
+    process.chdir(savedCwdPrep);
+    await rmRetry(dirPrep);
+  }
+}
+
+{
+  const dirAdd = await mkdtemp(join(tmpdir(), "dsh-mcp-add-"));
+  const homeAdd = join(dirAdd, "home");
+  const projAdd = join(dirAdd, "proj");
+  const projOther = join(dirAdd, "other");
+  const profiles = join(homeAdd, ".dsh", "profiles");
+  await mkdir(join(homeAdd, ".dsh"), { recursive: true });
+  await mkdir(projAdd, { recursive: true });
+  await mkdir(projOther, { recursive: true });
+  const savedCwdAdd = process.cwd();
+  try {
+    process.chdir(dirAdd);
+    const ctxAdd = fakeCtx();
+    const agentAdd = fakeAgent("session-add", projAdd);
+    const agentOther = fakeAgent("session-other", projOther);
+    ctxAdd.agentsList.push(agentAdd);
+    const registryAdd = new ProjectMcpRegistry(ctxAdd, {
+      globalNames: async () => [],
+      activeProfile: async () => "web",
+      userLayerPaths: { mcpYml: join(homeAdd, ".dsh", "mcp.yml"), mcpJson: join(homeAdd, ".dsh", "mcp.json"), profilesDir: profiles }
+    });
+    const serviceAdd = bindProjectMcpService(registryAdd);
+    await registryAdd.reconcileNow();
+    assert.equal(registryAdd.focusedProjectRoot(), projAdd, "a single known workspace is the add target before an explicit focus event");
+    const targets = serviceAdd.writeTargets();
+    assert.deepEqual(targets.map((item) => item.id), ["project", "user", "profile"]);
+    assert.equal(targets[0].projectRoot, projAdd);
+    assert.equal(targets[0].path, projectMcpFile(projAdd));
+
+    const written = await serviceAdd.addServer("dsh-project", projAdd, {
+      serverName: "gitlab",
+      transport: "stdio",
+      command: "npx",
+      args: ["-y", "@modelcontextprotocol/server-gitlab"],
+      env: { GITLAB_TOKEN: "${GITLAB_TOKEN}" }
+    });
+    assert.equal(written, projectMcpFile(projAdd));
+    let rows = extractManagedRows(await readFile(written, "utf8"));
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].id, "panel-mcp-gitlab");
+    assert.equal(rows[0].config.serverName, "gitlab");
+    assert.equal(rows[0].config.transport, "stdio");
+    assert.equal(rows[0].config.command, "npx");
+    assert.deepEqual(rows[0].config.args, ["-y", "@modelcontextprotocol/server-gitlab"]);
+    assert.equal(rows[0].config.cwd, ".");
+    assert.deepEqual(rows[0].config.env, { GITLAB_TOKEN: "${GITLAB_TOKEN}" });
+    assert.equal(rows[0].disabled, undefined);
+
+    await assert.rejects(
+      () => registryAdd.addServer("dsh-project", projAdd, { serverName: "gitlab", transport: "stdio", command: "node" }),
+      /已经写在这份 mcp\.yml 里/
+    );
+    rows = extractManagedRows(await readFile(written, "utf8"));
+    assert.equal(rows.length, 1, "a duplicate name does not append a second row");
+
+    await assert.rejects(
+      () => registryAdd.addServer("dsh-project", projAdd, { serverName: "bad name", transport: "stdio", command: "node" }),
+      /配置无效/
+    );
+
+    await registryAdd.addServer("dsh-project", projAdd, {
+      serverName: "sentry",
+      transport: "streamable-http",
+      url: "https://mcp.sentry.dev/mcp",
+      headers: { Authorization: "Bearer ${TOKEN}" }
+    });
+    rows = extractManagedRows(await readFile(written, "utf8"));
+    const http = rows.find((row) => row.config?.serverName === "sentry");
+    assert.equal(http?.config?.transport, "streamable-http");
+    assert.equal(http?.config?.url, "https://mcp.sentry.dev/mcp");
+    assert.deepEqual(http?.config?.headers, { Authorization: "Bearer ${TOKEN}" });
+
+    const userPath = await registryAdd.addServer("dsh-user-yml", "", {
+      serverName: "shared",
+      transport: "stdio",
+      command: "node",
+      args: ["shared.js"]
+    });
+    const userRows = extractManagedRows(await readFile(userPath, "utf8"));
+    assert.equal(userRows[0].config.cwd, "", "user-layer add leaves cwd empty so it inherits the host");
+    assert.equal(userRows[0].config.command, "node");
+
+    const profilePath = await registryAdd.addServer("dsh-profile-user-yml", "", {
+      serverName: "webtool",
+      transport: "stdio",
+      command: "node"
+    });
+    assert.equal(profilePath, join(profiles, "web", "mcp.yml"));
+    const profileRows = extractManagedRows(await readFile(profilePath, "utf8"));
+    assert.equal(profileRows[0].config.serverName, "webtool");
+    assert.equal(profileRows[0].config.cwd, "");
+
+    ctxAdd.agentsList.push(agentOther);
+    ctxAdd.emit("agent/created", { agent: agentOther, source: "resume" });
+    await registryAdd.reconcileNow();
+    assert.equal(registryAdd.focusedProjectRoot(), projOther, "agent/created moves the add target to that workspace");
+    await assert.rejects(
+      () => registryAdd.addServer("dsh-project", projAdd, { serverName: "late", transport: "stdio", command: "node" }),
+      /写入位置当前不可用/
+    );
+    assert.equal(extractManagedRows(await readFile(written, "utf8")).some((row) => row.config?.serverName === "late"), false);
+
+    for (const disposer of ctxAdd.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    pass("addServer writes a managed yml row for the workspace, user, and profile");
+  } finally {
+    process.chdir(savedCwdAdd);
+    await rmRetry(dirAdd);
+  }
+}
+
+{
+  const dirLate = await mkdtemp(join(tmpdir(), "dsh-mcp-settle-"));
+  const homeLate = join(dirLate, "home");
+  const projLate = join(dirLate, "proj");
+  await mkdir(join(homeLate, ".dsh"), { recursive: true });
+  await mkdir(projLate, { recursive: true });
+  await writeManagedRows(projectMcpFile(projLate), [stdioRow("late")], { createIfMissing: true });
+  const ctxLate = fakeCtx();
+  ctxLate.holdFibers = true;
+  ctxLate.agentsList.push(fakeAgent("session-late", projLate));
+  const updatesLate = [];
+  ctxLate.on(PROJECT_MCP_UPDATED_EVENT, () => updatesLate.push(1));
+  const registryLate = new ProjectMcpRegistry(ctxLate, {
+    globalNames: async () => [],
+    userLayerPaths: {
+      mcpYml: join(homeLate, ".dsh", "mcp.yml"),
+      mcpJson: join(homeLate, ".dsh", "mcp.json"),
+      profilesDir: join(homeLate, ".dsh", "profiles")
+    }
+  });
+  try {
+    await registryLate.reconcileNow();
+    const during = await registryLate.serverView(projLate, "late");
+    assert.equal(during?.fiberPhase, "loading", "held fiber stays starting until it settles: " + JSON.stringify(during));
+    const updatesWhileHeld = updatesLate.length;
+    assert.ok(updatesWhileHeld >= 1, "reconcile still emits while the fiber is held");
+    const effective = during?.effectiveServerName ?? "late";
+    ctxLate.schemas.push({ name: `mcp__${effective}__ping` });
+    const release = ctxLate.held[0];
+    assert.equal(typeof release, "function", "mount registered a held fiber");
+    release();
+    assert.equal(updatesLate.length, updatesWhileHeld + 1, "settling after reconcile emits projectMcp/updated");
+    const after = await registryLate.serverView(projLate, "late");
+    assert.equal(after?.fiberPhase, "active");
+    assert.equal(after?.toolCount, 1, "tool count is visible once the fiber settles");
+    pass("mount settle after reconcile emits projectMcp/updated");
+  } finally {
+    for (const disposer of ctxLate.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    await rmRetry(dirLate);
+  }
+}
+
+{
+  const dirTools = await mkdtemp(join(tmpdir(), "dsh-mcp-tool-states-"));
+  const homeTools = join(dirTools, "home");
+  const projTools = join(dirTools, "proj");
+  await mkdir(join(homeTools, ".dsh"), { recursive: true });
+  await mkdir(projTools, { recursive: true });
+  const denied = stdioRow("own");
+  denied.config.tools = { deny: ["read"] };
+  await writeManagedRows(projectMcpFile(projTools), [denied], { createIfMissing: true });
+  const ctxTools = fakeCtx();
+  ctxTools.agentsList.push(fakeAgent("session-tools", projTools));
+  const registryTools = new ProjectMcpRegistry(ctxTools, {
+    globalNames: async () => [],
+    userLayerPaths: { mcpYml: join(homeTools, ".dsh", "mcp.yml"), mcpJson: join(homeTools, ".dsh", "mcp.json"), profilesDir: join(homeTools, ".dsh", "profiles") }
+  });
+  try {
+    await registryTools.reconcileNow();
+    assert.ok(await registryTools.waitForState(projTools, "own", (state) => state?.phase === "active"), "denied row mounts");
+    const effective = (await registryTools.serverView(projTools, "own"))?.effectiveServerName ?? "own";
+    ctxTools.schemas.push({ name: `mcp__${effective}__read` }, { name: `mcp__${effective}__write` });
+    assert.deepEqual(registryTools.toolStates(projTools, "own"), [
+      { name: "read", enabled: false },
+      { name: "write", enabled: true }
+    ], "yml tools.deny is reflected as enabled: false");
+    pass("toolStates reads tools.deny from the mounted patch row");
+  } finally {
+    for (const disposer of ctxTools.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    await rmRetry(dirTools);
+  }
+}
+
+{
+  const dirMask = await mkdtemp(join(tmpdir(), "dsh-mcp-remove-mask-"));
+  const homeMask = join(dirMask, "home");
+  const projMask = join(dirMask, "proj");
+  await mkdir(join(homeMask, ".dsh"), { recursive: true });
+  await mkdir(join(projMask, ".dsh"), { recursive: true });
+  const ymlMask = projectMcpFile(projMask);
+  const kept = stdioRow("kept");
+  kept.config.args = ["same.js"];
+  await writeManagedRows(ymlMask, [stdioRow("both"), kept], { createIfMissing: true });
+  await writeFile(join(projMask, ".dsh", "mcp.json"), JSON.stringify({
+    mcpServers: {
+      both: { command: "node", args: ["from-json.js"] },
+      jsononly: { command: "node", args: ["only.js"] },
+      alias: { command: "node", args: ["same.js"] }
+    }
+  }), "utf8");
+  const ctxMask = fakeCtx();
+  ctxMask.agentsList.push(fakeAgent("session-mask", projMask));
+  const registryMask = new ProjectMcpRegistry(ctxMask, {
+    globalNames: async () => [],
+    userLayerPaths: { mcpYml: join(homeMask, ".dsh", "mcp.yml"), mcpJson: join(homeMask, ".dsh", "mcp.json"), profilesDir: join(homeMask, ".dsh", "profiles") }
+  });
+  try {
+    await registryMask.reconcileNow();
+    await registryMask.removeServer("dsh-project", projMask, "both");
+    let rows = extractManagedRows(await readFile(ymlMask, "utf8"));
+    const masked = rows.find((row) => row.id === "panel-mcp-both");
+    assert.equal(masked?.disabled, true, "same-name json keeps a disabled yml placeholder");
+    assert.equal(JSON.parse(await readFile(join(projMask, ".dsh", "mcp.json"), "utf8")).mcpServers.both.command, "node");
+
+    await registryMask.removeServer("dsh-project-json", projMask, "jsononly");
+    rows = extractManagedRows(await readFile(ymlMask, "utf8"));
+    assert.equal(rows.find((row) => row.id === "panel-mcp-jsononly")?.disabled, true, "json-only delete writes a placeholder");
+    await registryMask.reconcileNow();
+    await registryMask.removeServer("dsh-project", projMask, "jsononly");
+    rows = extractManagedRows(await readFile(ymlMask, "utf8"));
+    assert.equal(rows.find((row) => row.id === "panel-mcp-jsononly")?.disabled, true, "deleting the placeholder does not unmask the json row");
+
+    await registryMask.removeServer("dsh-project", projMask, "kept");
+    rows = extractManagedRows(await readFile(ymlMask, "utf8"));
+    const identityMask = rows.find((row) => row.id === "panel-mcp-kept");
+    assert.equal(identityMask?.disabled, true, "same command in a lower layer keeps the yml row disabled");
+    assert.deepEqual(identityMask?.config?.args, ["same.js"]);
+    pass("remove leaves a disabled placeholder while a lower layer still defines the server");
+  } finally {
+    for (const disposer of ctxMask.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    await rmRetry(dirMask);
+  }
+}
+
+{
+  const dirSrc = await mkdtemp(join(tmpdir(), "dsh-mcp-source-row-"));
+  const homeSrc = join(dirSrc, "home");
+  const profiles = join(homeSrc, ".dsh", "profiles", "desktop");
+  await mkdir(profiles, { recursive: true });
+  await writeManagedRows(join(profiles, "mcp.yml"), [stdioRow("shared")], { createIfMissing: true });
+  const profileRows = extractManagedRows(await readFile(join(profiles, "mcp.yml"), "utf8"));
+  profileRows[0].config.command = "profile-bin";
+  await writeManagedRows(join(profiles, "mcp.yml"), profileRows);
+  await writeFile(join(homeSrc, ".dsh", "mcp.json"), JSON.stringify({
+    mcpServers: { shared: { command: "user-bin", args: ["user.js"] } }
+  }), "utf8");
+  const ctxSrc = fakeCtx();
+  const registrySrc = new ProjectMcpRegistry(ctxSrc, {
+    globalNames: async () => [],
+    activeProfile: async () => "desktop",
+    userLayerPaths: { mcpYml: join(homeSrc, ".dsh", "mcp.yml"), mcpJson: join(homeSrc, ".dsh", "mcp.json"), profilesDir: join(homeSrc, ".dsh", "profiles") }
+  });
+  try {
+    await registrySrc.reconcileNow();
+    await assert.rejects(() => registrySrc.setToolEnabled("dsh-user-yml", "", "shared", "read", false), /找不到服务器/);
+    const written = await registrySrc.setServerEnabled("dsh-user", "", "shared", false);
+    const userRows = extractManagedRows(await readFile(written, "utf8"));
+    assert.equal(userRows.length, 1);
+    assert.equal(userRows[0].disabled, true);
+    assert.equal(userRows[0].config.command, "user-bin", "user-layer disable copies the user json row, not the profile row");
+    await assert.rejects(() => registrySrc.removeServer("no-such-layer", "", "shared"), /写入位置当前不可用/);
+    pass("writes use the requested source and reject an unknown layer");
+  } finally {
+    for (const disposer of ctxSrc.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    await rmRetry(dirSrc);
+  }
+}
+
+{
+  const dirLock = await mkdtemp(join(tmpdir(), "dsh-mcp-workspace-lock-"));
+  const homeLock = join(dirLock, "home");
+  const projFocus = join(dirLock, "focus");
+  const projBack = join(dirLock, "back");
+  await mkdir(join(homeLock, ".dsh"), { recursive: true });
+  await mkdir(projFocus, { recursive: true });
+  await mkdir(projBack, { recursive: true });
+  const ymlBack = projectMcpFile(projBack);
+  await writeManagedRows(projectMcpFile(projFocus), [stdioRow("front")], { createIfMissing: true });
+  await writeManagedRows(ymlBack, [stdioRow("behind")], { createIfMissing: true });
+  const savedCwdLock = process.cwd();
+  try {
+    process.chdir(dirLock);
+    const ctxLock = fakeCtx();
+    const agentFocus = fakeAgent("session-lock-focus", projFocus);
+    ctxLock.agentsList.push(agentFocus);
+    const registryLock = new ProjectMcpRegistry(ctxLock, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(homeLock, ".dsh", "mcp.yml"), mcpJson: join(homeLock, ".dsh", "mcp.json"), profilesDir: join(homeLock, ".dsh", "profiles") }
+    });
+    ctxLock.emit("agent/created", { agent: agentFocus, source: "resume" });
+    await registryLock.reconcileNow();
+    assert.equal(registryLock.focusedProjectRoot(), projFocus);
+    const before = await readFile(ymlBack, "utf8");
+    await assert.rejects(
+      () => registryLock.setServerEnabled("dsh-project", projBack, "behind", false),
+      /这个工作区当前不能改/
+    );
+    await assert.rejects(
+      () => registryLock.removeServer("dsh-project", projBack, "behind"),
+      /这个工作区当前不能改/
+    );
+    assert.equal(await readFile(ymlBack, "utf8"), before, "a background workspace is not rewritten");
+    for (const disposer of ctxLock.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    pass("a background workspace cannot be enabled or removed");
+  } finally {
+    process.chdir(savedCwdLock);
+    await rmRetry(dirLock);
+  }
+}
+
+{
+  const dirRel = await mkdtemp(join(tmpdir(), "dsh-mcp-release-"));
+  const homeRel = join(dirRel, "home");
+  const projRel = join(dirRel, "proj");
+  const projOther = join(dirRel, "other");
+  await mkdir(join(homeRel, ".dsh"), { recursive: true });
+  await mkdir(projRel, { recursive: true });
+  await mkdir(projOther, { recursive: true });
+  await writeManagedRows(projectMcpFile(projRel), [stdioRow("alpha")], { createIfMissing: true });
+  const savedCwdRel = process.cwd();
+  let ctxRel;
+  try {
+    process.chdir(dirRel);
+    ctxRel = fakeCtx();
+    const agentRel = fakeAgent("session-rel", projRel);
+    const agentOther = fakeAgent("session-rel-other", projOther);
+    ctxRel.agentsList.push(agentRel, agentOther);
+    const registryRel = new ProjectMcpRegistry(ctxRel, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(homeRel, ".dsh", "mcp.yml"), mcpJson: join(homeRel, ".dsh", "mcp.json"), profilesDir: join(homeRel, ".dsh", "profiles") }
+    });
+    await registryRel.reconcileNow();
+    ctxRel.emit("agent/created", { agent: agentRel, source: "resume" });
+    assert.ok(await registryRel.waitForState(projRel, "alpha", (state) => state?.phase === "active"), "alpha mounts before the switch");
+    const mountedName = ctxRel.mounts.at(-1).serverName;
+    const mountsBefore = ctxRel.mounts.length;
+    ctxRel.holdDispose = true;
+    ctxRel.emit("session/event", { id: "session-rel-other", header: { cwd: projOther } }, { type: "user/message" });
+    ctxRel.emit("session/event", { id: "session-rel", header: { cwd: projRel } }, { type: "user/message" });
+    const disposeStarted = Date.now();
+    while (!ctxRel.disposals.includes(mountedName) && Date.now() - disposeStarted < 3000) {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+    }
+    assert.ok(ctxRel.disposals.includes(mountedName), "leaving the workspace starts dispose: " + ctxRel.disposals.join(","));
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+    assert.equal(ctxRel.mounts.length, mountsBefore, "the same server is not mounted again while dispose is still running");
+    const release = ctxRel.releaseDispose.shift();
+    assert.equal(typeof release, "function");
+    release();
+    assert.ok(await registryRel.waitForState(projRel, "alpha", (state) => state?.phase === "active", 5000), "alpha remounts after dispose finishes");
+    assert.equal(ctxRel.mounts.length, mountsBefore + 1, "remount happens once dispose resolves");
+    pass("switching away and back waits for the previous fiber dispose");
+  } finally {
+    process.chdir(savedCwdRel);
+    for (const release of ctxRel?.releaseDispose ?? []) release();
+    for (const disposer of ctxRel?.disposers ?? []) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    await rmRetry(dirRel);
+  }
+}
+
+{
+  const dirChain = await mkdtemp(join(tmpdir(), "dsh-mcp-unmount-chain-"));
+  const homeChain = join(dirChain, "home");
+  const projChain = join(dirChain, "proj");
+  const projAway = join(dirChain, "away");
+  await mkdir(join(homeChain, ".dsh"), { recursive: true });
+  await mkdir(projChain, { recursive: true });
+  await mkdir(projAway, { recursive: true });
+  await writeManagedRows(projectMcpFile(projChain), [stdioRow("alpha")], { createIfMissing: true });
+  const savedCwdChain = process.cwd();
+  let ctxChain;
+  try {
+    process.chdir(dirChain);
+    ctxChain = fakeCtx();
+    const agentChain = fakeAgent("session-chain", projChain);
+    const agentAway = fakeAgent("session-away", projAway);
+    ctxChain.agentsList.push(agentChain);
+    const registryChain = new ProjectMcpRegistry(ctxChain, {
+      globalNames: async () => [],
+      healthRemountBackoffMs: 0,
+      userLayerPaths: { mcpYml: join(homeChain, ".dsh", "mcp.yml"), mcpJson: join(homeChain, ".dsh", "mcp.json"), profilesDir: join(homeChain, ".dsh", "profiles") }
+    });
+    await registryChain.reconcileNow();
+    const effective = ctxChain.mounts[0].serverName;
+    ctxChain.schemas.push({ name: "mcp__" + effective + "__ping" });
+    await registryChain.reconcileNow();
+    ctxChain.schemas.length = 0;
+    await registryChain.reconcileNow();
+    ctxChain.holdDispose = true;
+    const remounting = registryChain.reconcileNow();
+    const started = Date.now();
+    while (ctxChain.disposals.length === 0 && Date.now() - started < 3000) {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+    }
+    assert.equal(ctxChain.disposals.length, 1, "health remount disposes the dead fiber");
+    const mountsAtHold = ctxChain.mounts.length;
+    ctxChain.agentsList.push(agentAway);
+    ctxChain.emit("session/event", { id: "session-away", header: { cwd: projAway } }, { type: "user/message" });
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+    assert.equal(ctxChain.mounts.length, mountsAtHold, "the server is not mounted again while dispose is still running");
+    const release = ctxChain.releaseDispose.shift();
+    assert.equal(typeof release, "function");
+    release();
+    await remounting;
+    assert.ok(
+      await registryChain.waitForState(projChain, "alpha", (state) => state == null || state.phase !== "active", 5000),
+      "leaving during dispose does not leave the server mounted"
+    );
+    assert.equal(registryChain.focusedProjectRoot(), projAway);
+    pass("health remount shares the dispose chain with a workspace switch");
+  } finally {
+    process.chdir(savedCwdChain);
+    for (const release of ctxChain?.releaseDispose ?? []) release();
+    for (const disposer of ctxChain?.disposers ?? []) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    await rmRetry(dirChain);
+  }
+}
+
+{
+  const dirHost = await mkdtemp(join(tmpdir(), "dsh-mcp-host-focus-"));
+  const homeHost = join(dirHost, "home");
+  const projVisible = join(dirHost, "visible");
+  const projLast = join(dirHost, "last");
+  await mkdir(join(homeHost, ".dsh"), { recursive: true });
+  await mkdir(projVisible, { recursive: true });
+  await mkdir(projLast, { recursive: true });
+  await writeManagedRows(projectMcpFile(projVisible), [stdioRow("shown")], { createIfMissing: true });
+  await writeManagedRows(projectMcpFile(projLast), [stdioRow("hidden")], { createIfMissing: true });
+  const savedCwdHost = process.cwd();
+  let ctxHost;
+  try {
+    process.chdir(dirHost);
+    ctxHost = fakeCtx();
+    const agentVisible = fakeAgent("session-visible", projVisible);
+    const agentLast = fakeAgent("session-last", projLast);
+    ctxHost.agentsList.push(agentVisible, agentLast);
+    ctxHost.sessions = {
+      current: () => ({ header: { cwd: projLast } }),
+      list: () => ({ current: { header: { cwd: projVisible } } })
+    };
+    const registryHost = new ProjectMcpRegistry(ctxHost, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(homeHost, ".dsh", "mcp.yml"), mcpJson: join(homeHost, ".dsh", "mcp.json"), profilesDir: join(homeHost, ".dsh", "profiles") }
+    });
+    ctxHost.emit("agent/created", { agent: agentVisible, source: "resume" });
+    ctxHost.emit("agent/created", { agent: agentLast, source: "resume" });
+    assert.ok(await registryHost.waitForState(projVisible, "shown", (state) => state?.phase === "active", 5000), "visible session mounts its project");
+    assert.equal(registryHost.focusedProjectRoot(), projVisible, "cold start follows the visible session, not the session being restored");
+    const hidden = await registryHost.serverView(projLast, "hidden");
+    assert.ok(hidden == null || hidden.fiberPhase !== "active", "the last resumed workspace is not the running one");
+    const projOpened = join(dirHost, "opened");
+    await mkdir(projOpened, { recursive: true });
+    await writeManagedRows(projectMcpFile(projOpened), [stdioRow("fresh")], { createIfMissing: true });
+    ctxHost.emit("session/created", { id: "session-opened", header: { cwd: projOpened } });
+    assert.ok(await registryHost.waitForState(projOpened, "fresh", (state) => state?.phase === "active", 5000), "a workspace opened during recovery mounts");
+    assert.equal(registryHost.focusedProjectRoot(), projOpened, "session/created is not pulled back to the visible session");
+    const agentOpened = fakeAgent("session-clicked", join(dirHost, "clicked"));
+    const projClicked = agentOpened.session.header.cwd;
+    await mkdir(projClicked, { recursive: true });
+    await writeManagedRows(projectMcpFile(projClicked), [stdioRow("clicked")], { createIfMissing: true });
+    ctxHost.agentsList.push(agentOpened);
+    ctxHost.emit("agent/created", { agent: agentOpened, source: "resume" });
+    assert.ok(await registryHost.waitForState(projClicked, "clicked", (state) => state?.phase === "active", 5000), "a workspace the user opens mounts");
+    assert.equal(registryHost.focusedProjectRoot(), projClicked, "agent/created after cold start is not rewritten");
+    ctxHost.emit("session/event", { id: "session-last", header: { cwd: projLast } }, { type: "tool/result" });
+    await registryHost.reconcileNow();
+    assert.equal(registryHost.focusedProjectRoot(), projClicked, "a background tool result still does not move focus");
+    pass("cold start uses the visible session and later opens keep focus");
+  } finally {
+    process.chdir(savedCwdHost);
+    for (const disposer of ctxHost?.disposers ?? []) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    await rmRetry(dirHost);
+  }
+}
+
+{
+  const dirOff = await mkdtemp(join(tmpdir(), "dsh-mcp-unsubscribe-"));
+  const homeOff = join(dirOff, "home");
+  const projOff = join(dirOff, "proj");
+  await mkdir(join(homeOff, ".dsh"), { recursive: true });
+  await mkdir(projOff, { recursive: true });
+  const ctxOff = fakeCtx();
+  const registryOff = new ProjectMcpRegistry(ctxOff, {
+    globalNames: async () => [],
+    userLayerPaths: { mcpYml: join(homeOff, ".dsh", "mcp.yml"), mcpJson: join(homeOff, ".dsh", "mcp.json"), profilesDir: join(homeOff, ".dsh", "profiles") }
+  });
+  try {
+    let hits = 0;
+    const off = registryOff.subscribeUpdated(() => { hits += 1; });
+    await registryOff.reconcileNow();
+    assert.ok(hits >= 1, "subscribeUpdated hears projectMcp/updated");
+    const after = hits;
+    off();
+    await registryOff.reconcileNow();
+    assert.equal(hits, after, "the disposer from ctx.on removes the listener");
+    pass("subscribeUpdated returns the cordis disposer");
+  } finally {
+    for (const disposer of ctxOff.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    await rmRetry(dirOff);
   }
 }
 

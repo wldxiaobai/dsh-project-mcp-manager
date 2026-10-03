@@ -20,7 +20,7 @@ import { mkdir, readdir, readFile } from "node:fs/promises";
 import { extractManagedRows, readPatchFile, updateManagedRows, type PatchRow } from "./mcp-file.js";
 import { byCodeUnit, inputFromPatchRow, mcpServerInputSchema, parseCliTransport, patchRowToView, rowNameOf, toPatchRow, type McpServerInput } from "./model.js";
 import { CC_PROJECT_FILE, FOREIGN_MCP_FORMAT_HINT, IGNORE_MCP_JSON_ENV, JSON_MCP_FILE, mcpJsonLayerEnabled, parseJsonServersValue, readDshJsonFile, readMcpJsonFile, type JsonReadResult, type McpRowSource, type SourcedRow } from "./json-file.js";
-import { MCP_YML_FILE, DIAG_FILE, dshHomeFor, profileMcpJsonFile, userLayerPathsIn } from "./dsh-paths.js";
+import { MCP_YML_FILE, DIAG_FILE, dshHomeFor, profileMcpJsonFile, profileMcpYmlFile, projectDiagFile, userLayerPathsIn } from "./dsh-paths.js";
 import { readJsonServers, toJsonEntry, updateJsonServers } from "./json-write.js";
 import { mergeSourcedRows, parseDiagDocument, projectDshJsonFile, projectMcpFile, projectMcpJsonFile, type DiagDocument, type DiagSummary, type IdentityShadow } from "./registry.js";
 import { findProjectRoot } from "./project-root.js";
@@ -84,12 +84,12 @@ const HELP = `dsh-mcp —— 项目/用户/profile 级 MCP 服务器管理（原
 写入位置：
   project（缺省）  <项目根>/.dsh/mcp.yml（--format json → <项目根>/.dsh/mcp.json）
   user             ~/.dsh/mcp.yml（--format json → ~/.dsh/mcp.json）
-  profile          ~/.dsh/profiles/<name>/mcp.json（须配 --profile <name>；只支持 json）
+  profile          ~/.dsh/profiles/<name>/mcp.yml（须配 --profile <name>；--format json → mcp.json）
   --format 缺省取 \${${CLI_FORMAT_ENV}}（yml|json），未设时按 yml；两者都不写时以 yml 为准。
   JSON 文件由本 CLI 独占：写入保留其他顶层键，但不保留注释与排版。
 
 读取与优先序（逐行先到先得，同名/同服务只装载高优先层一条）：
-  .dsh/mcp.yml > .dsh/mcp.json > .mcp.json（遗留只读） > profile json > ~/.dsh/mcp.yml > ~/.dsh/mcp.json
+  .dsh/mcp.yml > .dsh/mcp.json > .mcp.json（遗留只读） > profile yml > profile json > ~/.dsh/mcp.yml > ~/.dsh/mcp.json
   用户层为全局装载（宿主级一条连接，所有项目可见）；项目层按会话隔离。
 
 其他：
@@ -220,6 +220,7 @@ const SOURCE_LABEL: Record<McpRowSource, string> = {
   "dsh-project": "project (.dsh/mcp.yml)",
   "dsh-project-json": "project (.dsh/mcp.json)",
   "cc-project": `project (${CC_PROJECT_FILE}, read-only)`,
+  "dsh-profile-user-yml": "profile (mcp.yml)",
   "dsh-profile-user": "profile (mcp.json)",
   "dsh-user-yml": "user (~/.dsh/mcp.yml)",
   "dsh-user": "user (~/.dsh/mcp.json)"
@@ -255,7 +256,7 @@ async function resolveProjectRootFor(deps: CliDeps): Promise<string> {
 }
 
 /** 读一个原生受管 yml 层：ENOENT 视为空层，其余错误转成 note（不抛）。 */
-async function readNativeLayer(path: string, source: McpRowSource): Promise<LayerRows> {
+async function readNativeLayer(path: string, source: McpRowSource, label?: string): Promise<LayerRows> {
   const rows: { name: string; row: PatchRow }[] = [];
   let note: string | undefined;
   try {
@@ -267,7 +268,7 @@ async function readNativeLayer(path: string, source: McpRowSource): Promise<Laye
     const message = error instanceof Error ? error.message : String(error);
     if (!message.includes("ENOENT")) note = `读取失败：${message}`;
   }
-  return makeLayer(source, path, rows, note);
+  return makeLayer(source, path, rows, note, label);
 }
 
 /** JSON 层（DSH 方言与遗留只读层同用）的错误注记：文件级优先，坏条目次之，两者皆无则 undefined。 */
@@ -286,7 +287,7 @@ async function readJsonLayer(path: string, source: McpRowSource, cwdPolicy: "pro
   return makeLayer(source, path, result.rows.map((r) => ({ name: r.rawName, row: r.row })), layerNote(result), label);
 }
 
-/** 枚举 `<dshHome>/profiles/<name>/mcp.json`：每个存在的 profile 各一层。 */
+/** 枚举 `<dshHome>/profiles/<name>/mcp.yml|mcp.json`：每个存在的 profile 各两层（yml 在前）。 */
 async function collectProfileLayers(profilesDir: string): Promise<LayerRows[]> {
   let names: string[] = [];
   try {
@@ -298,6 +299,9 @@ async function collectProfileLayers(profilesDir: string): Promise<LayerRows[]> {
   // profile 名按码元序排（byCodeUnit）：与 Array#sort 默认等价，比较器显式化声明口径。
   names.sort(byCodeUnit);
   for (const name of names) {
+    const ymlPath = profileMcpYmlFile(profilesDir, name);
+    const yml = await readNativeLayer(ymlPath, "dsh-profile-user-yml", `profile (${name})`);
+    if (yml.rows.length > 0 || yml.note !== undefined) out.push(yml);
     const path = profileMcpJsonFile(profilesDir, name);
     const layer = await readJsonLayer(path, "dsh-profile-user", "host", "", `profile (${name})`);
     if (layer.rows.length === 0 && layer.note === undefined) continue;
@@ -443,7 +447,8 @@ async function resolveProfileTarget(parsed: ParsedArgs, deps: CliDeps): Promise<
     const list = available.length === 0 ? "（未发现任何 profile）" : available.join("、");
     return { error: `profile "${name}" 不存在于 ${profilesDir}；可用：${list}` };
   }
-  if (parsed.format === "yml") return { error: "--scope profile 只支持 json（profile 层没有 yml 文件）" };
+  const format = parsed.format ?? "yml";
+  if (format === "yml") return { path: profileMcpYmlFile(profilesDir, name), format: "yml", scope: "profile" };
   return { path: profileMcpJsonFile(profilesDir, name), format: "json", scope: "profile" };
 }
 
@@ -455,7 +460,7 @@ function targetIn(dir: string, format: "yml" | "json", scope: WriteTarget["scope
 async function resolveWriteTarget(parsed: ParsedArgs, deps: CliDeps): Promise<WriteTarget | { error: string }> {
   const resolved = resolveFormat(parsed);
   if ("error" in resolved) return resolved;
-  if (parsed.scope === "profile") return resolveProfileTarget(parsed, deps);
+  if (parsed.scope === "profile") return resolveProfileTarget({ ...parsed, format: resolved.format }, deps);
   if (parsed.scope === "user") return targetIn(dshHomeOf(deps), resolved.format, "user");
   return targetIn(join(await resolveProjectRootFor(deps), ".dsh"), resolved.format, "project");
 }
@@ -645,8 +650,15 @@ async function cmdGet(rest: string[], io: CliIo, deps: CliDeps): Promise<number>
 /** remove 的候选目标：显式 --format 只查一个文件；否则按优先序查 yml 再查 json。 */
 async function removeTargets(parsed: ParsedArgs, deps: CliDeps): Promise<WriteTarget[] | { error: string }> {
   if (parsed.scope === "profile") {
-    const target = await resolveProfileTarget(parsed, deps);
-    return "error" in target ? target : [target];
+    if (parsed.format !== undefined) {
+      const target = await resolveProfileTarget(parsed, deps);
+      return "error" in target ? target : [target];
+    }
+    const yml = await resolveProfileTarget({ ...parsed, format: "yml" }, deps);
+    if ("error" in yml) return yml;
+    const json = await resolveProfileTarget({ ...parsed, format: "json" }, deps);
+    if ("error" in json) return json;
+    return [yml, json];
   }
   const scope = parsed.scope ?? "project";
   const dir = parsed.scope === "user" ? dshHomeOf(deps) : join(await resolveProjectRootFor(deps), ".dsh");
@@ -721,7 +733,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function sourceOfWriteTarget(target: WriteTarget): McpRowSource {
-  if (target.scope === "profile") return "dsh-profile-user";
+  if (target.scope === "profile") return target.format === "json" ? "dsh-profile-user" : "dsh-profile-user-yml";
   if (target.scope === "user") return target.format === "json" ? "dsh-user" : "dsh-user-yml";
   return target.format === "json" ? "dsh-project-json" : "dsh-project";
 }
@@ -1012,7 +1024,7 @@ async function printDiagStatus(path: string, io: CliIo): Promise<boolean> {
     return true;
   }
   const doc: DiagDocument = parseDiagDocument(loaded.value);
-  io.out(`诊断 ${path}`);
+  io.out(doc.project === undefined ? `诊断 ${path}` : `诊断 ${path}（${doc.project}）`);
   if (doc.summary !== undefined) printDiagSummary(doc.summary, io);
   printDiagForeignEvents(doc.events, io);
   return true;
@@ -1029,7 +1041,7 @@ function layersForStatusScope(layers: LayerRows[], scope: string | undefined, pr
   if (scope === undefined) return layers;
   if (scope === "project") return layers.filter((layer) => isProjectSource(layer.source));
   if (scope === "profile") {
-    const profileLayers = layers.filter((layer) => layer.source === "dsh-profile-user");
+    const profileLayers = layers.filter((layer) => layer.source === "dsh-profile-user" || layer.source === "dsh-profile-user-yml");
     if (profile === undefined || profile === "") return profileLayers;
     const needle = `/profiles/${profile}/`.replaceAll("\\", "/");
     return profileLayers.filter((layer) => {
@@ -1052,7 +1064,7 @@ async function cmdStatus(parsed: ParsedArgs, io: CliIo, deps: CliDeps): Promise<
   const projectRoot = await resolveProjectRootFor(deps);
   const printedProject = parsed.scope === "user" || parsed.scope === "profile"
     ? false
-    : await printDiagStatus(join(projectRoot, ".dsh", DIAG_FILE), io);
+    : await printDiagStatus(projectDiagFile(dshHomeOf(deps), projectRoot), io);
   const printedGlobal = parsed.scope === "project"
     ? false
     : await printDiagStatus(join(dshHomeOf(deps), DIAG_FILE), io);

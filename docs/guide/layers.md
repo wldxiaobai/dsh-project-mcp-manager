@@ -1,25 +1,29 @@
-# Configuration sources and layers (six layers)
+# Configuration sources and layers (seven layers)
 
 English | [中文](layers.zh.md)
 
 [← README](../../README.md) ｜ Related: [configuration format](format.md) · [`${VAR}` expansion](env-expansion.md) · [CLI `dsh-mcp`](cli.md)
 
-The plugin reads six sources and merges them **first-come-first-served**. The
+The plugin reads seven sources and merges them **first-come-first-served**. The
 first three are **project layers** (mounted per project, isolated per session);
-the last three are **user layers** (host-level **global mounting**):
+the last four are **user layers** (host-level **global mounting**):
 
 | # | Source | Path | Semantics |
 |---|---|---|---|
-| 1 | `dsh-project` | `<projectRoot>/.dsh/mcp.yml` | project layer (native managed block, the CLI's default target) |
+| 1 | `dsh-project` | `<projectRoot>/.dsh/mcp.yml` | project layer (native managed block, the default target of the CLI and the settings page) |
 | 2 | `dsh-project-json` | `<projectRoot>/.dsh/mcp.json` | project layer (JSON dialect) |
 | 3 | `cc-project` | `<projectRoot>/.mcp.json` | project layer, **legacy read-only** (Claude Code project file) |
-| 4 | `dsh-profile-user` | `~/.dsh/profiles/<active profile>/mcp.json` | **global** (when the running profile name can be resolved) |
-| 5 | `dsh-user-yml` | `~/.dsh/mcp.yml` | **global** (native user layer) |
-| 6 | `dsh-user` | `~/.dsh/mcp.json` | **global** (JSON user layer) |
+| 4 | `dsh-profile-user-yml` | `~/.dsh/profiles/<active profile>/mcp.yml` | **global** (profile native managed block, when the running profile name can be resolved) |
+| 5 | `dsh-profile-user` | `~/.dsh/profiles/<active profile>/mcp.json` | **global** (when the running profile name can be resolved) |
+| 6 | `dsh-user-yml` | `~/.dsh/mcp.yml` | **global** (native user layer) |
+| 7 | `dsh-user` | `~/.dsh/mcp.json` | **global** (JSON user layer) |
 
-Layer 4 is dynamic: the profile name is resolved at runtime, so no profile name
-is ever hardcoded. The file syntax of layers 1/2 and of the JSON user layers is
-described in [configuration format](format.md).
+Layers 4/5 are dynamic: the profile name is resolved at runtime, so no profile
+name is ever hardcoded. The file syntax of layers 1/2 and of the JSON user
+layers is described in [configuration format](format.md). The
+[settings page](settings-ui.md) writes only the three managed yml files
+(layers 1, 4, and 6); a change to a row from another layer lands in the
+managed yml of the same scope and leaves the original file unchanged.
 
 **Global mounting vs project mounting**:
 
@@ -39,13 +43,17 @@ described in [configuration format](format.md).
   `skipReason: "name-taken"` in the snapshot (no renaming, to avoid
   `serverName` reservation conflicts).
 - **On-demand project mounts** (v0.6.0): the catalog and effective names are
-  still computed for every known project. Project-layer fibers are created
-  only for projects with a live session or the process cwd. After the last
-  session leaves (and the project is not cwd) servers unmount after a
-  5 minute grace; the project entry and file watcher remain, and the row is
-  listed in `summary.idle` with `skipReason: "idle"` (more specific skips
-  such as `env-missing` are preserved). Idle is not `unhealthy`. User-layer
-  globals stay resident.
+  still computed for every known project. Before any workspace is focused,
+  project-layer fibers are created only for projects with a live session or
+  the process cwd, and they unmount after a 5 minute grace once the last
+  session leaves. After the user focuses a workspace (opening its session,
+  or continuing to work in it), only that project stays mounted; every other
+  workspace unmounts immediately. Desktop does not dispose the previous
+  session on switch, so leaving those servers up would leak their tools into
+  the global tool list. The project entry and file watcher remain, and the
+  row is listed in `summary.idle` with `skipReason: "idle"` (more specific
+  skips such as `env-missing` are preserved). Idle is not `unhealthy`.
+  User-layer globals stay resident.
 
 A server that registers more than `DSH_MCP_TOOL_BUDGET_WARN` tools or
 description/schema bytes (default 200 / 256KiB) is warned once per crossing
@@ -53,7 +61,7 @@ and listed in the diagnostic `summary.toolBudget`. Dropping back under the
 threshold clears the gate so the same overage warns again. Tools are never
 clipped.
 
-**Shadow priority** — layers merge first-come-first-served (1 → 6 above), and
+**Shadow priority** — layers merge first-come-first-served (1 → 7 above), and
 a row is shadowed when it collides with an earlier row on **any** of three
 keys: the exact `serverName`; the *normalized name* (lowercased with
 non-alphanumerics stripped — `unityMCP` and `unity-mcp` are one service
@@ -67,11 +75,11 @@ are *not* part of the key: two genuinely different servers sharing one command
 line (but e.g. different env) still collapse to the winner, while the same
 server written once with a `${VAR}` and once as a literal does not match. If a
 drop was unintended, rename the loser (past normalization) or adjust its
-command line. Losers are reported in `.dsh/.mcp-diag.json`
+command line. Losers are reported in `$DSH_HOME/mcp-diag/<hash>.json`
 (`shadowedByYml` / `shadowedByProject` / `shadowedIdentity`) and every
 identity/normalized-name drop warns in the host log ("skipping duplicate
 service definition"). User-layer row diagnostics are written to
-`~/.dsh/.mcp-diag.json`.
+`~/.dsh/.mcp-diag.json`. Neither file is written into a workspace.
 
 When a project-layer row and a user-layer row collide on the same name, the
 project row is renamed to `p<hash>_<name>` per the effective-name rules while
@@ -107,7 +115,7 @@ global row's tools (project-side suppression).
   (`url` = MCP SSE); see [configuration format](format.md#httpurl-transport-and-url-inference).
 - Broken files/entries never take down the valid ones, and they fail **per
   source**: an unreadable `.mcp.json` cannot unmount the same project's yml
-  rows (and vice versa). Entry errors land in `.dsh/.mcp-diag.json` and the
+  rows (and vice versa). Entry errors land in `$DSH_HOME/mcp-diag/<hash>.json` and the
   host log (diagnostics never carry file content).
 - `enabled: false` is skipped silently and holds **no name** (the ecosystem
   convention); `disabled: true` **holds its shadow keys but does not mount** —

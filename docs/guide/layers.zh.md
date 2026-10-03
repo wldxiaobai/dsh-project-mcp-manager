@@ -1,23 +1,26 @@
-# 配置来源与分层（六层）
+# 配置来源与分层（七层）
 
 [English](layers.md) | 中文
 
 [← 返回 README](../README.zh.md) ｜ 相关：[配置格式](format.zh.md) · [`${VAR}` 展开](env-expansion.zh.md) · [CLI `dsh-mcp`](cli.zh.md)
 
-插件读取六个来源，按**先到先得**合并。前三层属于**项目层**（按项目装载、按会话
-隔离），后三层属于**用户层**（宿主级**全局装载**）：
+插件读取七个来源，按**先到先得**合并。前三层属于**项目层**（按项目装载、按会话
+隔离），后四层属于**用户层**（宿主级**全局装载**）：
 
 | 序 | 来源 | 路径 | 语义 |
 |---|---|---|---|
-| 1 | `dsh-project` | `<projectRoot>/.dsh/mcp.yml` | 项目层（原生受管块，CLI 默认写入） |
+| 1 | `dsh-project` | `<projectRoot>/.dsh/mcp.yml` | 项目层（原生受管块，CLI 与设置页默认写入） |
 | 2 | `dsh-project-json` | `<projectRoot>/.dsh/mcp.json` | 项目层（JSON 方言） |
 | 3 | `cc-project` | `<projectRoot>/.mcp.json` | 项目层，**遗留只读**（Claude Code 项目文件） |
-| 4 | `dsh-profile-user` | `~/.dsh/profiles/<当前 profile>/mcp.json` | **全局**（能解析出运行中的 profile 名时） |
-| 5 | `dsh-user-yml` | `~/.dsh/mcp.yml` | **全局**（原生用户层） |
-| 6 | `dsh-user` | `~/.dsh/mcp.json` | **全局**（JSON 用户层） |
+| 4 | `dsh-profile-user-yml` | `~/.dsh/profiles/<当前 profile>/mcp.yml` | **全局**（profile 原生受管块，能解析出运行中的 profile 名时） |
+| 5 | `dsh-profile-user` | `~/.dsh/profiles/<当前 profile>/mcp.json` | **全局**（能解析出运行中的 profile 名时） |
+| 6 | `dsh-user-yml` | `~/.dsh/mcp.yml` | **全局**（原生用户层） |
+| 7 | `dsh-user` | `~/.dsh/mcp.json` | **全局**（JSON 用户层） |
 
-第 4 层是动态层：profile 名在运行时解析，插件里不硬编码任何 profile 名。第
-1/2 层与 JSON 用户层的文件写法见 [配置格式](format.zh.md)。
+第 4/5 层是动态层：profile 名在运行时解析，插件里不硬编码任何 profile 名。第
+1/2 层与 JSON 用户层的文件写法见 [配置格式](format.zh.md)。[设置页](settings-ui.zh.md)
+只写第 1、4、6 层这三份受管 yml；对其它层的改动落到同一作用域的受管 yml 里，
+原文件不动。
 
 **全局装载 vs 项目装载**：
 
@@ -30,9 +33,11 @@
   仍然只有一条。
 - 与 profile patch 行里的全局 mcp-client 服务器同名时，用户层行**跳过**并在快照里记
   `skipReason: "name-taken"`（不改名，避免 `serverName` 预留冲突）。
-- **按需挂载**（v0.6.0）：扫描与生效名仍按全量已知项目计算；项目层只给有活跃会话
-  或进程 cwd 的项目发起装载。最后一次会话离开且该项目不是 cwd 后，宽限 5 分钟再
-  卸载服务器，条目与文件监听保留，行记 `skipReason: "idle"` 并进入
+- **按需挂载**（v0.6.0）：扫描与生效名仍按全量已知项目计算。尚未聚焦时，项目层只给
+  有活跃会话或进程 cwd 的项目发起装载，最后一次会话离开且该项目不是 cwd 后宽限
+  5 分钟再卸载。用户聚焦某个工作区之后（打开会话，或在该会话里继续活动），项目层
+  只保留这一处，其它工作区立刻卸载——桌面端切走不会销毁上一个会话，不能让它的
+  MCP 继续留在全局工具层。条目与文件监听保留，行记 `skipReason: "idle"` 并进入
   `summary.idle`（已有更具体的 `env-missing` 等不覆盖）。idle **不算**
   `unhealthy`。用户层仍常驻。
 
@@ -40,7 +45,7 @@
 256KiB）时每次越过阈值告警一次，并写入诊断摘要 `summary.toolBudget`；回落到
 阈值以下会清门控，同样的超量会再告警。**永不裁剪**。
 
-**影子优先序**——按上表 1→6 先到先得合并，后到行与已收录行命中**三把键中的任何
+**影子优先序**——按上表 1→7 先到先得合并，后到行与已收录行命中**三把键中的任何
 一把**即被遮蔽：精确 `serverName`；*归一化名称*（转小写去掉非字母数字后相同
 ——`unityMCP` 与 `unity-mcp` 就是一台服务器的两种写法）；*服务身份*
 （`stdio` 取 command + args，Windows 下路径大小写不敏感；`streamable-http`
@@ -50,9 +55,9 @@
 `cwd` **不参与**身份键：同一命令行、仅 env 不同的两台真不同服务器仍会被去重
 （只留高优先级一条），同一台服务器一条写 `${VAR}`、一条写字面量则**不**互认。
 误剔时的处置：给被剔行改名（归一化后不同）或调整命令与参数。被遮蔽方写入
-`.dsh/.mcp-diag.json`（`shadowedByYml` / `shadowedByProject` /
+`$DSH_HOME/mcp-diag/<hash>.json`（`shadowedByYml` / `shadowedByProject` /
 `shadowedIdentity`），身份/归一名去重剔除的每行还会在宿主日志告警「跳过重复
-服务定义」。用户层行的诊断写入 `~/.dsh/.mcp-diag.json`。
+服务定义」。用户层行的诊断写入 `~/.dsh/.mcp-diag.json`。诊断都不进工作区。
 
 项目层同名行与用户层行撞名时，项目行按生效名规则改为 `p<hash>_<名>`，全局行保持
 原名；该项目的会话同时 deny 掉全局那条的工具（项目侧压制）。
@@ -79,7 +84,7 @@
   **裸 `url` 在本插件按 Streamable HTTP 解释**，与 Gemini CLI（`url` = MCP SSE）
   相反；见 [配置格式](format.zh.md#httpurltransport-与-url-推断)。
 - 坏文件/坏条目不影响其他服务器，且**按源隔离**：`.mcp.json` 坏了不会卸掉
-  同项目的 yml 行（反之亦然）；条目错误写入 `.dsh/.mcp-diag.json` 与宿主
+  同项目的 yml 行（反之亦然）；条目错误写入 `$DSH_HOME/mcp-diag/<hash>.json` 与宿主
   日志（诊断从不带文件内容）。
 - `enabled: false` 静默跳过、**不占名**（生态通行写法）；`disabled: true` **占住
   影子键但不装载**——禁用意味着"这个名字不许跑"，而不是"让位给别的副本"。

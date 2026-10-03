@@ -4,11 +4,13 @@
 
 [← 返回 README](../README.zh.md) ｜ 相关：[配置来源与分层](layers.zh.md) · [`${VAR}` 展开](env-expansion.zh.md) · [CLI `dsh-mcp`](cli.zh.md)
 
-插件读取两种方言：**原生 YAML 受管块**（`<projectRoot>/.dsh/mcp.yml`）与
+插件读取两种方言：**原生 YAML 受管块**（`<projectRoot>/.dsh/mcp.yml`、
+`~/.dsh/mcp.yml`、`~/.dsh/profiles/<name>/mcp.yml`）与
 **JSON 方言**（`<projectRoot>/.dsh/mcp.json`、`~/.dsh/mcp.json`、
 `~/.dsh/profiles/<name>/mcp.json`，以及只读的遗留 Claude Code 项目文件
 `<projectRoot>/.mcp.json`）。哪个文件属于哪一层见
-[配置来源与分层](layers.zh.md)。
+[配置来源与分层](layers.zh.md)。[设置页](settings-ui.zh.md)只写受管 yml，
+经过与 CLI 相同的受管块和锁。
 
 ## 原生 YAML：`<projectRoot>/.dsh/mcp.yml`
 
@@ -59,7 +61,7 @@ insert 列表），每行一个 MCP 服务器：
 **与原生 cordis 方言的差异**：`!!js` 标签（profile 的 `cordis.patch.yml` 由
 Loader 求值的 js-yaml 表达式，如官方 README 示例 `env: { TOKEN: !!js
 process.env.GITHUB_TOKEN }`）在项目文件里**不支持**——受管块内出现未解析
-标签会使该文件整体报错跳过（写入 `.dsh/.mcp-diag.json` 并打日志），不会把
+标签会使该文件整体报错跳过（写入 `$DSH_HOME/mcp-diag/<hash>.json` 并打日志），不会把
 表达式当字面量字符串静默装载。`env`/`headers` 的值其余情况下是字面量，仅
 `${VAR}` 引用会在装载时做串内插值（见 [`${VAR}` 展开](env-expansion.zh.md)）；
 `disabled` 只能是 `true`/`false`。可选 `maxInstructionBytes`（整数 ≥ 1）是官方对
@@ -97,7 +99,8 @@ process.env.GITHUB_TOKEN }`）在项目文件里**不支持**——受管块内�
   （静默跳过、不占名）与 `disabled: true`（占名但不装载）。
 - 未知键容忍忽略；名字须匹配 `[A-Za-z0-9_-]{1,32}`；坏条目逐条报错、不影响其余。
 - **JSON 文件由 `dsh-mcp` CLI 独占**：写入保留其他顶层键与键序，但 JSON 没有注释，
-  排版与注释不被保留。插件本身**只读**，宿主永不写这些文件。
+  排版与注释不被保留。宿主侧（装载器与设置页）对 JSON **只读**，从不写这些文件；
+  在设置页改 JSON 来源的行，会写到同一作用域的受管 yml。
 - `${VAR}` 与其他来源同语义（装载时展开，见 [`${VAR}` 展开](env-expansion.zh.md)）。
 
 ### `httpUrl`、`transport` 与 `url` 推断
