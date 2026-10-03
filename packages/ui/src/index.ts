@@ -24,8 +24,8 @@ import {
 } from "./wire.js";
 
 export const name = "dsh-project-mcp-ui";
-/** connection 必须注入：浏览器路由挂在它的 /api Fetch 表上。headless 没有这条服务时，本插件行停在等待，装载器不受影响。 */
-export const inject = ["projectMcp", "connection"];
+/** projectMcp 是硬依赖；connection 在子作用域里等待，headless 下 UI 行仍可 active。 */
+export const inject = ["projectMcp"];
 
 const YML_SOURCES = new Set<McpRowSource>(["dsh-project", "dsh-profile-user-yml", "dsh-user-yml"]);
 
@@ -166,6 +166,11 @@ function optionalStringMap(value: unknown, label: string): Record<string, string
 }
 
 export function apply(ctx: Context) {
+  // 不返回或等待子 fiber：connection 缺席时只让子作用域 pending，不阻塞 UI bundle 行。
+  ctx.inject(["connection"], (scopedCtx) => applyConnected(scopedCtx));
+}
+
+function applyConnected(ctx: Context) {
   const mcp = ctx.projectMcp;
   let revision = 0;
   const unsubscribe = mcp.subscribeUpdated(() => {
@@ -295,11 +300,16 @@ export function apply(ctx: Context) {
   for (const route of routes) {
     ctx.effect(() => connection.fetch.register({ path: route.path, methods: route.methods, requestBody: "buffered", fetch: guarded(route.fetch) }), `dsh-project-mcp-ui: ${route.path}`);
   }
+  const events: EventStreamScope = { disposed: false, streams: new Set() };
+  ctx.effect(() => () => {
+    events.disposed = true;
+    for (const close of events.streams) close();
+  }, "dsh-project-mcp-ui: close event streams");
   ctx.effect(() => connection.fetch.register({
     path: MCP_UI_EVENTS_PATH,
     methods: ["GET"],
     requestBody: "buffered",
-    fetch: (request) => Promise.resolve(eventStream(request, mcp))
+    fetch: (request) => Promise.resolve(eventStream(request, mcp, events))
   }), "dsh-project-mcp-ui: events");
 }
 
@@ -355,37 +365,64 @@ function runWindows(
   });
 }
 
-/** 对账结束推一条 SSE。浏览器关页时 abort 退订。 */
-function eventStream(request: Request, mcp: Context["projectMcp"]): Response {
+interface EventStreamScope {
+  disposed: boolean;
+  streams: Set<() => void>;
+}
+
+/** 对账结束推一条 SSE；请求终止或 connection 子作用域卸载时退订、清 timer 并关流。 */
+function eventStream(request: Request, mcp: Context["projectMcp"], scope: EventStreamScope): Response {
   const encoder = new TextEncoder();
-  let unsubscribe = (): void => {};
-  let ping: ReturnType<typeof setInterval> | undefined;
+  let close = (): void => {};
   const stream = new ReadableStream({
     start(controller) {
-      const write = (chunk: string) => {
-        try {
-          controller.enqueue(encoder.encode(chunk));
-        } catch {
-          // 对端已关闭
-        }
-      };
-      const close = () => {
-        unsubscribe();
+      let closed = false;
+      let unsubscribe = (): void => {};
+      let ping: ReturnType<typeof setInterval> | undefined;
+      close = () => {
+        if (closed) return;
+        closed = true;
+        scope.streams.delete(close);
+        request.signal.removeEventListener("abort", close);
         if (ping !== undefined) clearInterval(ping);
         try {
           controller.close();
         } catch {
-          // 已经关闭
+          // 已经关闭或被 cancel
+        }
+        unsubscribe();
+      };
+      if (request.signal.aborted || scope.disposed) {
+        close();
+        return;
+      }
+      scope.streams.add(close);
+      request.signal.addEventListener("abort", close, { once: true });
+      const write = (chunk: string) => {
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(chunk));
+        } catch {
+          close();
         }
       };
-      write("event: ready\ndata: 0\n\n");
-      unsubscribe = mcp.subscribeUpdated(() => write("event: updated\ndata: 1\n\n"));
-      ping = setInterval(() => write(": ping\n\n"), 20000);
-      request.signal.addEventListener("abort", close);
+      try {
+        write("event: ready\ndata: 0\n\n");
+        if (closed) return;
+        const subscription = mcp.subscribeUpdated(() => write("event: updated\ndata: 1\n\n"));
+        if (closed) {
+          subscription();
+          return;
+        }
+        unsubscribe = subscription;
+        ping = setInterval(() => write(": ping\n\n"), 20000);
+      } catch (error) {
+        close();
+        throw error;
+      }
     },
     cancel() {
-      unsubscribe();
-      if (ping !== undefined) clearInterval(ping);
+      close();
     }
   });
   return new Response(stream, {
