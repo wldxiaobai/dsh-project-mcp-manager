@@ -1,6 +1,6 @@
 {
   "name": "dsh-project-mcp-ui",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "private": false,
   "description": "Settings component included by dsh-project-mcp-manager. Same-version peer of the loader; disable mcp-project-ui to hide the page.",
   "type": "module",
@@ -36,7 +36,7 @@
     "prepack": "npm run build"
   },
   "peerDependencies": {
-    "dsh-project-mcp-manager": "0.7.2"
+    "dsh-project-mcp-manager": "0.8.0"
   },
   "dependencies": {
     "@deepseek-ai/dsh-native-command": "^0.2.0-rc.2",
@@ -52,7 +52,7 @@
     "@deepseek-ai/dsh-client-ui-settings-plugins": "0.2.0-rc.2",
     "@deepseek-ai/dsh-client-ui-slots": "0.2.0-rc.2",
     "@types/react": "~18.3.1",
-    "dsh-project-mcp-manager": "workspace:0.7.2",
+    "dsh-project-mcp-manager": "workspace:0.8.0",
     "esbuild": "^0.25.0",
     "react": "^18.3.1",
     "typescript": "^7.0.2"

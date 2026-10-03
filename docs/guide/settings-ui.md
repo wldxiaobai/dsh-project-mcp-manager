@@ -27,8 +27,8 @@ the UI is installed automatically. Its default bundle contains `mcp-project`
 manager peer dependency but no longer declares a standalone `dsh.bundle`;
 do not select it as a separate bundle. The two packages must be released
 together ([version contract](service.md#semver-for-the-companion-ui)). This
-layout is currently **Unreleased**; the npm examples apply after that
-coordinated release is published, not to an already-published layout.
+layout is included in source version **0.8.0**; the npm examples apply after
+both 0.8.0 packages are published. A Git tag does not publish to npm.
 
 For local development, run these commands in the source checkout and link
 only the root manager package:

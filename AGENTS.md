@@ -2,7 +2,7 @@
 
 ## 项目概览
 
-`dsh-project-mcp-manager`（v0.7.2）是一个 **DSH 插件**（默认 bundle 含核心装载器与 `packages/ui/` 的设置页；UI 可单独停用）：为每个项目自动装载 MCP 服务器。项目配置放 `<projectRoot>/.dsh/mcp.yml`（原生受管块）或 `<projectRoot>/.dsh/mcp.json`（JSON 方言），dsh 会话在该项目开启时自动经 `@deepseek-ai/dsh-mcp-client` 装载，文件改动热重载，工具可见性按会话 cwd 隔离。用户层（`~/.dsh/mcp.yml`、`~/.dsh/mcp.json`、`~/.dsh/profiles/<name>/mcp.yml`、`~/.dsh/profiles/<name>/mcp.json`）为**全局装载**（宿主级一条连接）。遗留 Claude Code 项目文件 `<projectRoot>/.mcp.json` 只读兼容；`~/.claude.json` 自 v0.4.0 起不再读取。`dsh-mcp` CLI 可写原生 yml 或 DSH JSON。
+`dsh-project-mcp-manager`（v0.8.0）是一个 **DSH 插件**（默认 bundle 含核心装载器与 `packages/ui/` 的设置页；UI 可单独停用）：为每个项目自动装载 MCP 服务器。项目配置放 `<projectRoot>/.dsh/mcp.yml`（原生受管块）或 `<projectRoot>/.dsh/mcp.json`（JSON 方言），dsh 会话在该项目开启时自动经 `@deepseek-ai/dsh-mcp-client` 装载，文件改动热重载，工具可见性按会话 cwd 隔离。用户层（`~/.dsh/mcp.yml`、`~/.dsh/mcp.json`、`~/.dsh/profiles/<name>/mcp.yml`、`~/.dsh/profiles/<name>/mcp.json`）为**全局装载**（宿主级一条连接）。遗留 Claude Code 项目文件 `<projectRoot>/.mcp.json` 只读兼容；`~/.claude.json` 自 v0.4.0 起不再读取。`dsh-mcp` CLI 可写原生 yml 或 DSH JSON。
 
 - 语言：TypeScript（ESM，`"type": "module"`），`target ES2022` / `module NodeNext`，`strict: true`（`noImplicitAny: false`）。
 - 编译产物：`src/` → `lib/`（`main: lib/index.js`，`types: lib/index.d.ts`；`declaration: true`）。包入口再导出查询面视图类型；`exports` 不开放 `lib/` 深导入。
@@ -37,7 +37,7 @@ pnpm test              # 依次 node 跑 test/ 下的 .mjs（pretest 先 build�
 npx tsc --noEmit       # 仅类型检查
 ```
 
-本地联调：先在仓库根目录 `pnpm install`、`pnpm run build`（核心后 UI），再只执行 `dsh plugin --profile <p> add link:<本仓库路径>`，无需另外链接 UI 包。junction 指向仓库，改源码后重建编译产物。dsh ≥ 0.1.2 只把 `dsh.profile.bundles` 里的包当作 profile 层，单纯 pnpm link 不会激活插件。根 manager 是唯一应选择的 bundle；从旧的独立 UI 安装迁移时，先安装 manager bundle，再从 profile 的 bundles 选择中移除 `dsh-project-mcp-ui`，可选用 `dsh plugin --profile <p> remove dsh-project-mcp-ui` 移除旧的直接依赖（manager 的 UI 依赖保留），不承诺自动清理。这些 bundle 变更仍为 Unreleased，不表示当前 npm 发布物已包含。
+本地联调：先在仓库根目录 `pnpm install`、`pnpm run build`（核心后 UI），再只执行 `dsh plugin --profile <p> add link:<本仓库路径>`，无需另外链接 UI 包。junction 指向仓库，改源码后重建编译产物。dsh ≥ 0.1.2 只把 `dsh.profile.bundles` 里的包当作 profile 层，单纯 pnpm link 不会激活插件。根 manager 是唯一应选择的 bundle；从旧的独立 UI 安装迁移时，先安装 manager bundle，再从 profile 的 bundles 选择中移除 `dsh-project-mcp-ui`，可选用 `dsh plugin --profile <p> remove dsh-project-mcp-ui` 移除旧的直接依赖（manager 的 UI 依赖保留），不承诺自动清理。这些 bundle 变更已纳入源码版本 0.8.0；Git 标签不表示 npm 已发布。
 
 ## 关键行为约定（改动前必读）
 
