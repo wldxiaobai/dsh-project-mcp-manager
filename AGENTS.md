@@ -26,6 +26,7 @@
 - `test/`：`test-model.mjs`、`test-mcp-file.mjs`、`test-json-file.mjs`、`test-json-write.mjs`、`test-registry.mjs`、`test-cli.mjs`、`test-ui-collapse.mjs`、`test-ui-paste.mjs`、`test-ui-display.mjs`、`test-bundle.mjs`、`test-ui-lifecycle.mjs`（node 直接跑，无测试框架）。
 - `README.md` / `docs/README.zh.md`：项目介绍、安装/构建、工作原理与安全边界（中英双版，各自链接同语言文档）。
 - `docs/`：按用途分目录——`guide/`（功能文档中英双版：`format.md`/`.zh.md` 配置格式、`layers.md`/`.zh.md` 七层来源与影子优先序、`env-expansion.md`/`.zh.md` `${VAR}` 展开、`cli.md`/`.zh.md` `dsh-mcp` CLI、`service.md`/`.zh.md` 查询面、`settings-ui.md`/`.zh.md` 设置页使用指南）、`releases/`（`v0.3.1.md`、`v0.4.0.md`、`v0.4.1.md`、`v0.4.2.md`、`v0.4.3.md`、`v0.6.0.md`、`v0.7.0.md`、`v0.7.1.md`、`v0.7.2.md` 发布说明）、`design/`（`adaptation-dsh-0.1.5-rc2.md` / `adaptation-dsh-0.1.5-rc1.md` / `adaptation-dsh-0.1.2-rc1.md` 宿主适配记录、`proposal-json-mcp-config.md` JSON 层设计提案、`proposal-runtime-robustness-and-json-interop.md` 运行时稳健性与 JSON 互通提案）；`docs/README.zh.md` 为中文 README。
+- `docs/testing/`：归档 npm 下载与实机验证结果、本地测试产物说明。一次性联调使用隔离临时目录，结束后清理；可复用脚本进入 `test/`，长期文档进入 `docs/`，不要将认证日志、安装依赖与浏览器缓存长期留在 `.dsh/`。`.dsh/skills/` 为 DSH 固定位置发现的 skill 定义，不因 Markdown 后缀移入文档目录。
 - `CHANGELOG.md`：版本变更记录（`[Unreleased]` 起累积）。
 
 ## 常用命令
