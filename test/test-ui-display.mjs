@@ -90,4 +90,16 @@ const home = "C:\\Users\\haima";
   pass("locale keys match and terms stay consistent");
 }
 
+{
+  assert.equal(displayHomePath("/Users/haima///", "/Users/haima//"), "~");
+  assert.equal(displayHomePath("/Users/haima/.dsh/mcp.yml///", "/Users/haima///"), "~/.dsh/mcp.yml");
+  assert.equal(displayHomePath("///", "/"), "///");
+  assert.equal(displayHomePath("", "/Users/haima"), "");
+  const slashes = "/".repeat(100_000);
+  assert.equal(displayHomePath("/Users/haima" + slashes, "/Users/haima"), "~");
+  const nonTrailing = "/Users/haima/" + slashes + "mcp.yml";
+  assert.equal(displayHomePath(nonTrailing, "/Users/haima"), "~/" + slashes + "mcp.yml");
+  pass("home path normalization handles trailing and long slash runs");
+}
+
 console.log(passed + " passed");

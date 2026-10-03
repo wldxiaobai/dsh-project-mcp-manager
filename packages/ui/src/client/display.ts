@@ -17,7 +17,12 @@ export function serverActionsOpen(
 export function displayHomePath(path: string, homeDir: string | undefined): string {
   if (homeDir === undefined || homeDir === "" || path === "") return path;
   const windows = /\\/.test(path) || /\\/.test(homeDir) || /^[A-Za-z]:/.test(path) || /^[A-Za-z]:/.test(homeDir);
-  const norm = (value: string) => value.replaceAll("\\", "/").replace(/\/+$/, "");
+  const norm = (value: string) => {
+    const normalized = value.replaceAll("\\", "/");
+    let end = normalized.length;
+    while (end > 0 && normalized[end - 1] === "/") end -= 1;
+    return normalized.slice(0, end);
+  };
   const file = norm(path);
   const home = norm(homeDir);
   if (home === "") return path;
