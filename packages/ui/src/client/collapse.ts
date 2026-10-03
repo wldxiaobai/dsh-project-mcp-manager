@@ -40,6 +40,43 @@ function scopeOf(row: CollapseServer): string {
   return row.layer === "project" ? row.projectRoot : "";
 }
 
+interface CollapseKeys {
+  nameKey: string;
+  normKey: string | undefined;
+  idKey: string | undefined;
+}
+
+interface ShadowState<T extends CollapseServer> {
+  byName: Map<string, T>;
+  byNorm: Map<string, T>;
+  shadowed: Map<T, T[]>;
+  anchor: Map<T, number>;
+}
+
+function collapseKeys(row: CollapseServer): CollapseKeys {
+  const scope = scopeOf(row);
+  const nameKey = scope + "\0" + row.serverName;
+  const norm = normServerName(row.serverName);
+  const normKey = norm === "" ? undefined : scope + "\0n\0" + norm;
+  const idKey = row.serviceKey == null || row.serviceKey === "" ? undefined : scope + "\0i\0" + row.serviceKey;
+  return { nameKey, normKey, idKey };
+}
+
+function recordShadowed<T extends CollapseServer>(
+  row: T, index: number, winner: T, sameName: boolean, keys: CollapseKeys, state: ShadowState<T>
+): void {
+  if (!sameName && row.needsYmlTakeover) return;
+  const notes = state.shadowed.get(winner);
+  if (notes !== undefined) notes.push(row);
+  // 同名、归一名的覆盖已经记在 byName / byNorm。身份相同但名字不同时只追加说明，
+  // 不能把这个名字改记到胜出者头上，否则另一条同名、命令不同的行会被收进这张卡。
+  if (!sameName) return;
+  const at = state.anchor.get(winner);
+  if (at !== undefined && index < at) state.anchor.set(winner, index);
+  state.byName.set(keys.nameKey, winner);
+  if (keys.normKey !== undefined) state.byNorm.set(keys.normKey, winner);
+}
+
 export function collapseServers<T extends CollapseServer>(rows: T[]): LogicalServer<T>[] {
   const ranked = rows.map((row, index) => ({ row, index }));
   ranked.sort((a, b) => {
@@ -53,28 +90,17 @@ export function collapseServers<T extends CollapseServer>(rows: T[]): LogicalSer
   const shadowed = new Map<T, T[]>();
   const anchor = new Map<T, number>();
 
+  const state: ShadowState<T> = { byName, byNorm, shadowed, anchor };
+
   for (const { row, index } of ranked) {
-    const scope = scopeOf(row);
-    const nameKey = scope + "\0" + row.serverName;
-    const norm = normServerName(row.serverName);
-    const normKey = norm === "" ? undefined : scope + "\0n\0" + norm;
-    const idKey = row.serviceKey == null || row.serviceKey === "" ? undefined : scope + "\0i\0" + row.serviceKey;
+    const keys = collapseKeys(row);
+    const { nameKey, normKey, idKey } = keys;
     const nameWinner = byName.get(nameKey);
     const normWinner = normKey === undefined ? undefined : byNorm.get(normKey);
     const idWinner = idKey === undefined ? undefined : byIdentity.get(idKey);
     const winner = nameWinner ?? normWinner ?? idWinner;
     if (winner !== undefined) {
-      const sameName = nameWinner !== undefined || normWinner !== undefined;
-      if (!sameName && row.needsYmlTakeover) continue;
-      const notes = shadowed.get(winner);
-      if (notes !== undefined) notes.push(row);
-      // 同名、归一名的覆盖已经记在 byName / byNorm。身份相同但名字不同时只追加说明，
-      // 不能把这个名字改记到胜出者头上，否则另一条同名、命令不同的行会被收进这张卡。
-      if (!sameName) continue;
-      const at = anchor.get(winner);
-      if (at !== undefined && index < at) anchor.set(winner, index);
-      byName.set(nameKey, winner);
-      if (normKey !== undefined) byNorm.set(normKey, winner);
+      recordShadowed(row, index, winner, nameWinner !== undefined || normWinner !== undefined, keys, state);
       continue;
     }
     byName.set(nameKey, row);

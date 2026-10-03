@@ -82,5 +82,75 @@ const names = (logical) => logical.map((item) => item.winner.serverName);
   pass("a same-named json row with a different command stays its own card");
 }
 
+{
+  const named = row({ serverName: "unityMCP", source: "dsh-project", serviceKey: "named-command" });
+  const identity = row({ serverName: "other", source: "dsh-project", serviceKey: "other-command" });
+  const exact = row({ serverName: "unityMCP", source: "dsh-project-json", serviceKey: "other-command" });
+  const normalized = row({ serverName: "unity-mcp", source: "cc-project", serviceKey: "other-command" });
+  const logical = collapseServers([named, identity, exact, normalized]);
+  assert.deepEqual(logical.map((item) => item.winner), [named, identity]);
+  assert.deepEqual(logical[0].shadowed, [exact, normalized]);
+  assert.deepEqual(logical[1].shadowed, []);
+  pass("exact and normalized name matches both take precedence over identity");
+}
+
+{
+  const kept = row({ serverName: "kept", source: "dsh-project", serviceKey: "shared" });
+  const omitted = row({ serverName: "alias", source: "dsh-project-json", serviceKey: "shared" });
+  const independent = row({ serverName: "alias", source: "cc-project", serviceKey: "different" });
+  const logical = collapseServers([kept, omitted, independent]);
+  assert.deepEqual(logical.map((item) => item.winner), [kept, independent]);
+  assert.deepEqual(logical[0].shadowed, []);
+  pass("omitted identity alias does not register its name");
+}
+
+{
+  const kept = row({ serverName: "unityMCP", source: "dsh-project", serviceKey: "original" });
+  const covered = row({ serverName: "unity-mcp", source: "dsh-project-json", serviceKey: "different" });
+  const independent = row({ serverName: "independent", source: "cc-project", serviceKey: "different" });
+  const logical = collapseServers([kept, covered, independent]);
+  assert.deepEqual(logical.map((item) => item.winner), [kept, independent]);
+  assert.deepEqual(logical[0].shadowed, [covered]);
+  pass("name shadow registers no new identity alias");
+}
+
+{
+  const covered = row({ serverName: "unity-mcp", source: "dsh-project-json" });
+  const middle = row({ serverName: "middle", source: "dsh-project" });
+  const kept = row({ serverName: "unityMCP", source: "dsh-project" });
+  const logical = collapseServers([covered, middle, kept]);
+  assert.deepEqual(logical.map((item) => item.winner), [kept, middle]);
+  assert.deepEqual(logical[0].shadowed, [covered]);
+  pass("name shadow moves the anchor to its original input position");
+}
+
+{
+  const alias = row({ serverName: "alias", source: "dsh-user-yml", layer: "user", serviceKey: "shared" });
+  const middle = row({ serverName: "middle", source: "dsh-profile-user-yml", layer: "user" });
+  const kept = row({ serverName: "kept", source: "dsh-profile-user-yml", layer: "user", serviceKey: "shared" });
+  const logical = collapseServers([alias, middle, kept]);
+  assert.deepEqual(logical.map((item) => item.winner), [middle, kept]);
+  assert.deepEqual(logical[1].shadowed, [alias]);
+  pass("identity-only yml shadow leaves the winner anchor unchanged");
+}
+
+{
+  const a = row({ serverName: "---", source: "dsh-project", serviceKey: "" });
+  const b = row({ serverName: "!!!", source: "dsh-project", serviceKey: "" });
+  const exact = row({ serverName: "---", source: "dsh-project-json" });
+  const logical = collapseServers([a, b, exact]);
+  assert.deepEqual(logical.map((item) => item.winner), [a, b]);
+  assert.deepEqual(logical[0].shadowed, [exact]);
+  pass("empty normalized name and empty identity create no keys, but exact names still match");
+}
+
+{
+  const project = row({ serverName: "same", source: "dsh-project", serviceKey: "shared" });
+  const user = row({ serverName: "same", source: "dsh-user-yml", layer: "user", serviceKey: "shared" });
+  const logical = collapseServers([project, user]);
+  assert.deepEqual(logical.map((item) => item.winner), [project, user]);
+  pass("name and identity keys do not cross project and user scopes");
+}
+
 console.log("\n" + passed + " passed, 0 failed");
 console.log("ALL UI COLLAPSE TESTS PASSED");
