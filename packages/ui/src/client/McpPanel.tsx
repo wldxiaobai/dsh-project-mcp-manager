@@ -18,8 +18,9 @@ import {
 } from "../wire.ts";
 import type { McpUiLocaleKey } from "./locales.ts";
 import { collapseServers, partitionShadowed, type LogicalServer } from "./collapse.ts";
-import { displayHomePath, isProfileSource, profileEndKind, profileNameFromFile, serverActionsOpen } from "./display.ts";
+import { displayHomePath, profileEndKind, profileNameFromFile, serverActionsOpen } from "./display.ts";
 import { parsePastedConfig, type PasteConfigFailure } from "./paste-config.ts";
+import { addPathForTarget, confirmationCopy, emptyDraft, partitionRows, validateAddDraft, type AddDraft, type AddScope } from "./panel-helpers.ts";
 import { PANEL_CSS } from "./style.ts";
 
 export interface McpPanelProps {
@@ -29,51 +30,6 @@ export interface McpPanelProps {
 type Pending =
   | { kind: "server"; action: "enable" | "disable" | "remove"; row: McpUiServer }
   | { kind: "tool"; row: McpUiServer; tool: string; enabled: boolean };
-
-type AddScope = McpUiWriteTarget["id"];
-type AddKind = "stdio" | "http";
-
-interface AddDraft {
-  scope: AddScope;
-  name: string;
-  transport: AddKind;
-  command: string;
-  args: string;
-  url: string;
-  env: string;
-  headers: string;
-}
-
-const NAME_RE = /^[A-Za-z0-9_-]{1,32}$/;
-const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-function linesOf(text: string): string[] {
-  return text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "");
-}
-
-function defaultScope(targets: McpUiWriteTarget[]): AddScope {
-  if (targets.some((item) => item.id === "project")) return "project";
-  if (targets.some((item) => item.id === "user")) return "user";
-  return "profile";
-}
-
-function emptyDraft(targets: McpUiWriteTarget[]): AddDraft {
-  return { scope: defaultScope(targets), name: "", transport: "stdio", command: "", args: "", url: "", env: "", headers: "" };
-}
-
-/** 每行 KEY=值，或请求头的「名称: 值」。失败时带回原行，方便指出是哪一行。 */
-function pairsOf(text: string, kind: "env" | "header"): { map: Record<string, string> } | { line: string } {
-  const map: Record<string, string> = {};
-  for (const line of linesOf(text)) {
-    const index = kind === "header" && line.includes(":") ? line.indexOf(":") : line.indexOf("=");
-    if (index <= 0) return { line };
-    const key = line.slice(0, index).trim();
-    const value = line.slice(index + 1).trim();
-    if (key === "" || (kind === "env" && !ENV_KEY_RE.test(key))) return { line };
-    map[key] = value;
-  }
-  return { map };
-}
 
 const SOURCE_LABEL: Record<string, string> = {
   "dsh-project": "mcp.yml",
@@ -375,53 +331,19 @@ export function McpPanel({ t }: McpPanelProps) {
   };
 
   const submitAdd = async () => {
-    const target = addTargets.find((item) => item.id === draft.scope);
-    if (target === undefined) {
-      setFormError(t("addNoTarget"));
+    const validation = validateAddDraft(draft, addTargets);
+    if (!validation.ok) {
+      const error = validation.error;
+      if (error.kind === "target") setFormError(t("addNoTarget"));
+      else if (error.kind === "name") setFormError(t("addNameInvalid"));
+      else if (error.kind === "command") setFormError(t("addCommandRequired"));
+      else if (error.kind === "url") setFormError(t("addUrlRequired"));
+      else setFormError(t("addPairInvalid", { line: error.line }));
       return;
-    }
-    const name = draft.name.trim();
-    if (!NAME_RE.test(name)) {
-      setFormError(t("addNameInvalid"));
-      return;
-    }
-    const body: Record<string, unknown> = {
-      source: target.source,
-      projectRoot: target.projectRoot,
-      serverName: name,
-      transport: draft.transport === "http" ? "streamable-http" : "stdio"
-    };
-    if (draft.transport === "stdio") {
-      const command = draft.command.trim();
-      if (command === "") {
-        setFormError(t("addCommandRequired"));
-        return;
-      }
-      const env = pairsOf(draft.env, "env");
-      if ("line" in env) {
-        setFormError(t("addPairInvalid", { line: env.line }));
-        return;
-      }
-      body.command = command;
-      body.args = linesOf(draft.args);
-      if (Object.keys(env.map).length > 0) body.env = env.map;
-    } else {
-      const url = draft.url.trim();
-      if (url === "") {
-        setFormError(t("addUrlRequired"));
-        return;
-      }
-      const headers = pairsOf(draft.headers, "header");
-      if ("line" in headers) {
-        setFormError(t("addPairInvalid", { line: headers.line }));
-        return;
-      }
-      body.url = url;
-      if (Object.keys(headers.map).length > 0) body.headers = headers.map;
     }
     setBusy(true);
     try {
-      const result = await post(MCP_UI_ADD_PATH, body);
+      const result = await post(MCP_UI_ADD_PATH, validation.body);
       if (!result.ok) {
         setFormError("message" in result ? result.message : t("error"));
         return;
@@ -447,18 +369,7 @@ export function McpPanel({ t }: McpPanelProps) {
 
   const homeDir = state?.homeDir;
   const showUserPath = (path: string) => displayHomePath(path, homeDir);
-  const projectRows: McpUiServer[] = [];
-  const userRows: McpUiServer[] = [];
-  const profileBuckets: Array<[string, McpUiServer[]]> = [];
-  for (const row of state?.servers ?? []) {
-    if (row.layer === "user" && isProfileSource(row.source)) {
-      const name = profileNameFromFile(row.filePath) ?? "";
-      const bucket = profileBuckets.find((item) => item[0] === name);
-      if (bucket === undefined) profileBuckets.push([name, [row]]);
-      else bucket[1].push(row);
-    } else if (row.layer === "user") userRows.push(row);
-    else projectRows.push(row);
-  }
+  const { projectRows, userRows, profileBuckets } = partitionRows(state?.servers ?? []);
   const projectGroups = groupedLogical(projectRows, (server) => server.winner.projectRoot);
   const userGroups = groupedLogical(userRows, (server) => showUserPath(server.winner.filePath));
   const profileEnd = (name: string) => {
@@ -478,17 +389,25 @@ export function McpPanel({ t }: McpPanelProps) {
 
   const addTarget = addTargets.find((item) => item.id === draft.scope);
   const scopeReady = (id: AddScope) => addTargets.some((item) => item.id === id);
-  const addPath = addTarget === undefined ? "" : addTarget.id === "project" ? addTarget.path : showUserPath(addTarget.path);
+  const addPath = addPathForTarget(addTarget, showUserPath);
 
   const pendingRemoves = pending?.kind === "server" && pending.action === "remove";
-  const pendingFile = pending === null ? "" : pending.row.layer === "user" ? showUserPath(pending.row.filePath) : pending.row.filePath;
-  const pendingYml = pending === null ? "" : pending.row.layer === "user" ? showUserPath(pending.row.managedPath ?? "") : (pending.row.managedPath ?? "");
-  const pendingWill = pending === null ? "" : pending.kind === "server" && pending.action === "remove" && !pending.row.needsYmlTakeover
-    ? t("removeWill", { name: pending.row.serverName })
-    : t("takeoverWill");
-  const pendingWont = pending === null ? "" : pending.kind === "server" && pending.action === "remove" && !pending.row.needsYmlTakeover
-    ? t("removeWont")
-    : t("takeoverWont", { file: pendingFile, yml: pendingYml });
+  let pendingFile = "";
+  let pendingYml = "";
+  if (pending !== null) {
+    pendingFile = pending.row.layer === "user" ? showUserPath(pending.row.filePath) : pending.row.filePath;
+    pendingYml = pending.row.layer === "user" ? showUserPath(pending.row.managedPath ?? "") : (pending.row.managedPath ?? "");
+  }
+  const pendingCopy = pending === null ? null : confirmationCopy(pending, pendingFile, pendingYml);
+  let pendingWill = "";
+  let pendingWont = "";
+  if (pendingCopy?.kind === "remove") {
+    pendingWill = t("removeWill", { name: pendingCopy.name });
+    pendingWont = t("removeWont");
+  } else if (pendingCopy !== null) {
+    pendingWill = t("takeoverWill");
+    pendingWont = t("takeoverWont", { file: pendingCopy.file, yml: pendingCopy.yml });
+  }
 
   return (
     <div className="dsh-mcp-ui">
