@@ -81,6 +81,7 @@ export type McpUiLocaleKey =
   | "badgeTakeover"
   | "badgeTakeoverHint"
   | "shadowedNote"
+  | "shadowedIdentityNote"
   | "endpointCmd"
   | "endpointUrl"
   | "tools"
@@ -184,6 +185,7 @@ export const en: Record<McpUiLocaleKey, string> = {
   badgeTakeover: "{file} · unmanaged",
   badgeTakeoverHint: "Changes ask for confirmation first, then write to the mcp.yml managed by the mcp-manager plugin.",
   shadowedNote: "The same name in {files} is overridden by {winner} and does not start.",
+  shadowedIdentityNote: "{names} uses the same command or address and does not start. {winner} is the one that runs.",
   endpointCmd: "Command:",
   endpointUrl: "URL:",
   tools: "Manage tools",
@@ -288,6 +290,7 @@ export const zh: Record<McpUiLocaleKey, string> = {
   badgeTakeover: "{file} · 待接管",
   badgeTakeoverHint: "改动前会先确认，再写入受 mcp-manager 插件管理的 mcp.yml。",
   shadowedNote: "{files} 里还有同名配置，已被 {winner} 覆盖，不会启动。",
+  shadowedIdentityNote: "{names} 的命令或地址相同，不会启动。实际装载的是 {winner}。",
   endpointCmd: "命令：",
   endpointUrl: "地址：",
   tools: "管理工具",

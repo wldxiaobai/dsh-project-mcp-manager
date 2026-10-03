@@ -60,5 +60,14 @@ const names = (logical) => logical.map((item) => item.winner.serverName);
   pass("user-layer http alias is omitted when the url matches");
 }
 
+{
+  const kept = row({ serverName: "godot", source: "dsh-project", serviceKey: "s\0node\0a.js" });
+  const other = row({ serverName: "godot2", source: "dsh-project", serviceKey: "s\0node\0a.js" });
+  const logical = collapseServers([kept, other]);
+  assert.deepEqual(names(logical), ["godot"]);
+  assert.deepEqual(logical[0].shadowed.map((item) => item.serverName), ["godot2"]);
+  pass("two yml rows with the same command share one card");
+}
+
 console.log("\n" + passed + " passed, 0 failed");
 console.log("ALL UI COLLAPSE TESTS PASSED");

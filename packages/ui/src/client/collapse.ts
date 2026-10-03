@@ -2,8 +2,8 @@
  * 设置页把多份配置收成一张卡。优先序与装载器七层影子序一致；
  * 同一作用域里原名、归一名、服务身份三把键先到先得。
  * 同名的低优先级行留在卡片上作「已被覆盖」说明。
- * 异名、但服务身份相同（stdio 的命令加参数，或 http 的地址）的非 yml 行不占卡片，也不写出它的名字：
- * 装载器不会启动它，单独成卡会停在「已启用 · 等待会话启动」。
+ * 异名、但服务身份相同（stdio 的命令加参数，或 http 的地址）的非 yml 行不占卡片。
+ * 同样情况的 yml 行并进胜出者的卡片：装载器只启动高优先级那条，单独成卡会停在等待启动。
  */
 
 export interface CollapseServer {
@@ -66,17 +66,12 @@ export function collapseServers<T extends CollapseServer>(rows: T[]): LogicalSer
     if (winner !== undefined) {
       const sameName = nameWinner !== undefined || normWinner !== undefined;
       if (!sameName && row.needsYmlTakeover) continue;
-      if (!sameName) {
-        byName.set(nameKey, row);
-        if (normKey !== undefined) byNorm.set(normKey, row);
-        shadowed.set(row, []);
-        anchor.set(row, index);
-        continue;
-      }
       const notes = shadowed.get(winner);
       if (notes !== undefined) notes.push(row);
       const at = anchor.get(winner);
       if (at !== undefined && index < at) anchor.set(winner, index);
+      byName.set(nameKey, winner);
+      if (normKey !== undefined) byNorm.set(normKey, winner);
       continue;
     }
     byName.set(nameKey, row);
@@ -89,4 +84,17 @@ export function collapseServers<T extends CollapseServer>(rows: T[]): LogicalSer
   const winners = [...anchor.keys()];
   winners.sort((a, b) => (anchor.get(a) ?? 0) - (anchor.get(b) ?? 0));
   return winners.map((winner) => ({ winner, shadowed: shadowed.get(winner) ?? [] }));
+}
+
+/** 同名（含归一名）留在「已被覆盖」说明里；异名同命令或同地址单独说明它没有被装载。 */
+export function partitionShadowed<T extends CollapseServer>(server: LogicalServer<T>): { named: T[]; identity: T[] } {
+  const winnerNorm = normServerName(server.winner.serverName);
+  const named: T[] = [];
+  const identity: T[] = [];
+  for (const row of server.shadowed) {
+    const norm = normServerName(row.serverName);
+    if (winnerNorm !== "" && norm === winnerNorm) named.push(row);
+    else identity.push(row);
+  }
+  return { named, identity };
 }

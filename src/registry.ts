@@ -874,6 +874,13 @@ export class ProjectMcpRegistry {
   /** 上一轮对账结束时的在线目录签名；补扫发现变化才再对账。 */
   private liveWatchSig = "";
   private liveWatchTimer: ReturnType<typeof setInterval> | undefined;
+  /**
+   * 用户已经用消息选定工作区。在此之前，冷启动连续 resume 时用宿主当前会话校正焦点；
+   * 之后不再用宿主状态把焦点拽回去。
+   */
+  private userChoseFocus = false;
+  /** 生效名 → 尚未结束的 fiber.dispose。同名重挂必须等它落地，避免预留被晚到的 dispose 清掉。 */
+  private readonly nameRelease = new Map<string, Promise<void>>();
 
   constructor(ctx: any, providers: ProjectMcpRegistryOptions) {
     this.ctx = ctx;
@@ -889,6 +896,7 @@ export class ProjectMcpRegistry {
       // 避免模型先看到上一个工作区的工具。
       return this.enqueue(async () => {
         await this.rememberAgent(agent, true);
+        await this.alignForegroundToHost();
         await this.reconcileAll();
       }).catch((error) => {
         this.ctx.logger.warn(`项目 MCP 后台任务失败：${error instanceof Error ? error.message : String(error)}`);
@@ -905,6 +913,7 @@ export class ProjectMcpRegistry {
     ctx.on("session/created", (session: any) => {
       this.schedule(async () => {
         await this.rememberSession(session);
+        await this.alignForegroundToHost();
         await this.reconcileAll();
       });
     }, watchOpts);
@@ -929,6 +938,7 @@ export class ProjectMcpRegistry {
       for (const agent of this.liveAgents()) {
         this.agentProjects.set(agent.id, await this.resolveProject(agent));
       }
+      await this.alignForegroundToHost();
       await this.reconcileAll();
     });
 
@@ -1104,6 +1114,7 @@ export class ProjectMcpRegistry {
   private onSessionActivity(session: any): void {
     const cwd = session?.header?.cwd;
     if (typeof cwd !== "string" || cwd === "") return;
+    this.userChoseFocus = true;
     const cached = this.cwdKey.get(projectKeyOf(resolve(cwd)));
     if (cached === undefined) {
       this.schedule(async () => {
@@ -1136,20 +1147,81 @@ export class ProjectMcpRegistry {
     }
   }
 
-  /** 同步拆掉非当前工作区的项目服务器，让全局工具层立刻失去这些名字。 */
+  /**
+   * 立刻从装载表拿掉非当前工作区的服务器（全局工具层不再看见这些名字）。
+   * dispose 记在生效名上，同名重挂要等它结束；不能在这里裸调且不等待。
+   */
   private detachProjectsExcept(keep: string): void {
     for (const [key, entry] of this.projects) {
       if (key === keep) continue;
       for (const state of [...entry.servers.values()]) {
         entry.servers.delete(state.rawName);
         state.phase = "unloading";
-        try {
-          state.fiber?.dispose();
-        } catch {
-          // fiber 已随上下文销毁
-        }
+        this.releaseFiber(state);
       }
       this.idleSince.delete(key);
+    }
+  }
+
+  /** 把 fiber.dispose 串到该生效名的释放链上。后一次同名挂载会等到整条链结束。 */
+  private releaseFiber(state: ProjectServerState): void {
+    const name = state.effectiveName;
+    const previous = this.nameRelease.get(name) ?? Promise.resolve();
+    const current = previous.then(async () => {
+      try {
+        await state.fiber?.dispose();
+      } catch {
+        // fiber 已随上下文销毁
+      }
+    }).finally(() => {
+      if (this.nameRelease.get(name) === current) this.nameRelease.delete(name);
+    });
+    this.nameRelease.set(name, current);
+  }
+
+  private async waitForNameRelease(effectiveName: string): Promise<void> {
+    const pending = this.nameRelease.get(effectiveName);
+    if (pending !== undefined) await pending;
+  }
+
+  /**
+   * 宿主可见会话的 cwd。没有这条状态时返回 undefined，焦点仍按事件顺序。
+   * 认 `sessions.current()` / `sessions.current`，以及 `sessions.list()` 的 current id。
+   */
+  private hostVisibleCwd(): string | undefined {
+    try {
+      const sessions = this.ctx.sessions;
+      if (sessions == null || typeof sessions !== "object") return undefined;
+      const cwdOf = (value: any): string | undefined => {
+        const cwd = value?.header?.cwd ?? value?.session?.header?.cwd;
+        return typeof cwd === "string" && cwd !== "" ? cwd : undefined;
+      };
+      const current = typeof sessions.current === "function" ? sessions.current.call(sessions) : sessions.current;
+      const direct = cwdOf(current);
+      if (direct !== undefined) return direct;
+      const listed = typeof sessions.list === "function" ? sessions.list() : undefined;
+      const listedCwd = cwdOf(listed?.current);
+      if (listedCwd !== undefined) return listedCwd;
+      const id = typeof current === "string" ? current : typeof listed?.current === "string" ? listed.current : undefined;
+      if (id === undefined) return undefined;
+      const session = sessions.get?.(id) ?? sessions.binding?.(id)?.session ?? listed?.byId?.[id];
+      return cwdOf(session);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** 多个会话同时恢复时，可见工作区不一定是最后一条 agent/created。用户发消息后不再改写。 */
+  private async alignForegroundToHost(): Promise<void> {
+    if (this.userChoseFocus) return;
+    if (this.liveAgents().length < 2) return;
+    const cwd = this.hostVisibleCwd();
+    if (cwd === undefined) return;
+    try {
+      const root = await findProjectRoot(cwd);
+      this.foregroundKey = this.rememberCwdKey(cwd, root);
+    } catch {
+      // 当前会话目录不可解析：保持事件顺序决定的焦点
     }
   }
 
@@ -1696,10 +1768,10 @@ export class ProjectMcpRegistry {
 
   /** 订阅快照变更（对账结束，以及其后的装载 settle）。返回退订函数。 */
   subscribeUpdated(listener: () => void): () => void {
-    (this.ctx as Context).on(PROJECT_MCP_UPDATED_EVENT, listener);
+    const off = (this.ctx as Context).on(PROJECT_MCP_UPDATED_EVENT, listener);
     return () => {
       try {
-        (this.ctx as any).off?.(PROJECT_MCP_UPDATED_EVENT, listener);
+        off();
       } catch {
         // 宿主 ctx 已销毁时退订可能失败；静默即可。
       }
@@ -2151,6 +2223,8 @@ export class ProjectMcpRegistry {
       return "config-invalid";
     }
     if ("skip" in built) return built.skip;
+    await this.waitForNameRelease(effectiveName);
+    if (this.disposed) return undefined;
     let fiber: any;
     try {
       fiber = this.ctx.plugin(mcpClient as any, built.config);
@@ -2674,7 +2748,8 @@ export class ProjectMcpRegistry {
       if (this.activeProfileName === undefined) return undefined;
       return profileMcpYmlFile(paths.profilesDir, this.activeProfileName);
     }
-    return paths.mcpYml;
+    if (source === "dsh-user" || source === "dsh-user-yml") return paths.mcpYml;
+    return undefined;
   }
 
   /** 该行的受管 yml 路径；解析不出 profile 名时返回 undefined。遗留 `.mcp.json` 指向同项目的 `.dsh/mcp.yml`。 */
@@ -2770,21 +2845,97 @@ export class ProjectMcpRegistry {
     });
   }
 
+  /** 七层来源落到哪一个写入位置。项目层三条都写工作区 mcp.yml，profile 两条写 profile mcp.yml。 */
+  private writeSlot(source: McpRowSource): McpWriteTarget["id"] | undefined {
+    if (source === "dsh-project" || source === "dsh-project-json" || source === "cc-project") return "project";
+    if (source === "dsh-profile-user" || source === "dsh-profile-user-yml") return "profile";
+    if (source === "dsh-user" || source === "dsh-user-yml") return "user";
+    return undefined;
+  }
+
   /** 只接受当前 writeTargets() 里的位置，避免把行写到一个已经不是焦点的工作区。 */
   private assertWritableTarget(source: McpRowSource, projectRoot: string): void {
-    const ok = this.writeTargets().some((target) => {
-      if (target.source !== source) return false;
-      if (source !== "dsh-project") return true;
+    const slot = this.writeSlot(source);
+    const ok = slot !== undefined && this.writeTargets().some((target) => {
+      if (target.id !== slot) return false;
+      if (slot !== "project") return true;
       return projectRoot.trim() !== "" && projectKeyOf(target.projectRoot) === projectKeyOf(projectRoot);
     });
     if (!ok) throw new Error("这个写入位置当前不可用，请重新打开添加窗口");
   }
 
+  /** 内存目录里某一层的同名行。不跨层回退：调用方要改的是这一张卡，不是更高优先级的另一条。 */
+  private locateRowBySource(projectRoot: string, rawName: string, source: McpRowSource): PatchRow | undefined {
+    return this.layeredRows(projectRoot).find((row) => row.source === source && row.rawName === rawName)?.row;
+  }
+
+  /** 写操作要改的那一行。来源不在可写位置，或这一层没有这个名字，都在改文件之前拒绝。 */
+  private requireSourceRow(source: McpRowSource, projectRoot: string, rawName: string): PatchRow {
+    this.assertWritableTarget(source, projectRoot);
+    const row = this.locateRowBySource(projectRoot, rawName, source);
+    if (row === undefined) throw new Error(`找不到服务器 "${rawName}"（可能刚被移除；请刷新后重试）`);
+    return row;
+  }
+
+  /** 项目扫描目录加用户层四份文件。供按来源查找，以及判断受管 yml 下面是否还有同名或同身份行。 */
+  private layeredRows(projectRoot: string): SourcedRow[] {
+    const files = this.lastScanFiles.get(projectKeyOf(projectRoot));
+    const out: SourcedRow[] = [];
+    const pushPatch = (rows: PatchRow[], source: McpRowSource) => {
+      for (const row of rows) {
+        const rawName = rowNameOf(row);
+        if (rawName === undefined) continue;
+        out.push({ rawName, row, source, ...(row.disabled === true ? { disabled: true } : {}) });
+      }
+    };
+    if (files !== undefined && !files.skipYmlPartition) pushPatch(files.ymlRows, "dsh-project");
+    if (files !== undefined && !files.skipJsonPartition) out.push(...files.json.rows);
+    if (files?.ccEnabled === true) out.push(...files.cc.rows);
+    out.push(...this.userLayer.profileYmlRows, ...this.userLayer.profileRows, ...this.userLayer.ymlRows, ...this.userLayer.jsonRows);
+    return out;
+  }
+
+  /**
+   * 受管 yml 删除后，更低层是否还会把同名或同一服务装回来。
+   * 优先序数字更大的才是低层；profile 高于用户层，不能因为 profile 有同名就在用户文件里留占位。
+   */
+  private managedLayerOf(source: McpRowSource): McpRowSource | undefined {
+    const slot = this.writeSlot(source);
+    if (slot === "project") return "dsh-project";
+    if (slot === "profile") return "dsh-profile-user-yml";
+    if (slot === "user") return "dsh-user-yml";
+    return undefined;
+  }
+
+  private lowerLayerCovers(writeSource: McpRowSource, projectRoot: string, rawName: string, row: PatchRow): boolean {
+    const layer = this.managedLayerOf(writeSource);
+    if (layer === undefined) return false;
+    const floor = SOURCE_RANK[layer];
+    const identity = serviceIdentityKey({ rawName, row, source: layer });
+    const norm = normalizedNameKey(rawName);
+    for (const candidate of this.layeredRows(projectRoot)) {
+      if (SOURCE_RANK[candidate.source] <= floor) continue;
+      if (candidate.rawName === rawName) return true;
+      if (norm !== undefined && normalizedNameKey(candidate.rawName) === norm) return true;
+      if (identity !== undefined && serviceIdentityKey(candidate) === identity) return true;
+    }
+    return false;
+  }
+
+  private disabledTakeover(rawName: string, row: PatchRow): PatchRow {
+    return {
+      id: row.id ?? rowIdForServerName(rawName),
+      name: MCP_PLUGIN_NAME,
+      disabled: true,
+      ...(row.config === undefined ? {} : { config: row.config })
+    };
+  }
+
   /** 启用/停用：yml 行就地翻 disabled；其它来源在受管 yml 里落一条同身份行（启用=完整拷贝，停用=disabled 占位）。 */
   async setServerEnabled(source: McpRowSource, projectRoot: string, rawName: string, enabled: boolean): Promise<string> {
     return this.enqueue(async () => {
-      const located = this.locateRowFromMemory(projectRoot, rawName, undefined);
-      if (located.row === undefined) throw new Error(`找不到服务器 "${rawName}"（可能刚被移除；请刷新后重试）`);
+      const row = this.requireSourceRow(source, projectRoot, rawName);
+      const located = { row };
       return this.editManagedYml(source, projectRoot, (rows) => {
         const index = this.findManagedRowIndex(rows, rawName, located);
         if (index >= 0) {
@@ -2796,28 +2947,37 @@ export class ProjectMcpRegistry {
           return next;
         }
         if (enabled) {
-          const copy: PatchRow = { ...located.row! };
+          const copy: PatchRow = { ...row };
           delete copy.disabled;
           return [...rows, copy];
         }
-        return [...rows, { id: located.row!.id ?? rowIdForServerName(rawName), name: MCP_PLUGIN_NAME, disabled: true, ...(located.row!.config === undefined ? {} : { config: located.row!.config }) }];
+        return [...rows, this.disabledTakeover(rawName, row)];
       });
     });
   }
 
-  /** 删除：yml 行就地移除；其它来源在受管 yml 里落一条 disabled 占位行（遮蔽原层，不删原文件）。 */
+  /**
+   * 删除：受管 yml 是这条服务的唯一来源时摘掉该行。
+   * 低层还有同名或同一服务身份时留下 disabled 占位，避免摘掉占位后下层再次启动。
+   * 其它来源第一次删除则在受管 yml 里落一条占位，不改原文件。
+   */
   async removeServer(source: McpRowSource, projectRoot: string, rawName: string): Promise<string> {
     return this.enqueue(async () => {
-      const located = this.locateRowFromMemory(projectRoot, rawName, undefined);
-      if (located.row === undefined) throw new Error(`找不到服务器 "${rawName}"（可能刚被移除；请刷新后重试）`);
+      const row = this.requireSourceRow(source, projectRoot, rawName);
+      const located = { row };
       return this.editManagedYml(source, projectRoot, (rows) => {
         const index = this.findManagedRowIndex(rows, rawName, located);
-        if (index >= 0) {
+        if (index >= 0 && !this.lowerLayerCovers(source, projectRoot, rawName, rows[index]!)) {
           const next = [...rows];
           next.splice(index, 1);
           return next;
         }
-        return [...rows, { id: located.row!.id ?? rowIdForServerName(rawName), name: MCP_PLUGIN_NAME, disabled: true, ...(located.row!.config === undefined ? {} : { config: located.row!.config }) }];
+        if (index >= 0) {
+          const next = [...rows];
+          next[index] = { ...next[index], disabled: true };
+          return next;
+        }
+        return [...rows, this.disabledTakeover(rawName, row)];
       });
     });
   }
@@ -2828,11 +2988,11 @@ export class ProjectMcpRegistry {
       throw new Error(`工具名 ${JSON.stringify(tool)} 不是精确的已注册名（含 glob 字符），不能作为单项开关`);
     }
     return this.enqueue(async () => {
-      const located = this.locateRowFromMemory(projectRoot, rawName, undefined);
-      if (located.row === undefined) throw new Error(`找不到服务器 "${rawName}"（可能刚被移除；请刷新后重试）`);
+      const row = this.requireSourceRow(source, projectRoot, rawName);
+      const located = { row };
       return this.editManagedYml(source, projectRoot, (rows) => {
         const index = this.findManagedRowIndex(rows, rawName, located);
-        const base: PatchRow = index >= 0 ? { ...rows[index] } : { ...located.row! };
+        const base: PatchRow = index >= 0 ? { ...rows[index] } : { ...row };
         if (index < 0) delete base.disabled;
         const config = { ...(configFromPatchRow(base) ?? {}) };
         const filter = toolFilterFromConfig(config);
@@ -2864,7 +3024,7 @@ export class ProjectMcpRegistry {
     if (state === undefined || state.phase !== "active") return [];
     const prefix = `mcp__${state.effectiveName}__`;
     const ids = this.registeredToolIds().filter((id) => id.startsWith(prefix));
-    const filter = toolFilterFromConfig(configFromPatchRow(state.row.config));
+    const filter = toolFilterFromConfig(configFromPatchRow(state.row));
     const denied = new Set(deniedToolsForFilter(state.effectiveName, filter, ids));
     return ids.map((id) => ({ name: id.slice(prefix.length), enabled: !denied.has(id) }));
   }

@@ -110,12 +110,19 @@ function fakeCtx() {
     },
     holdFibers: false,
     held: [],
+    holdDispose: false,
+    releaseDispose: [],
     plugin(_plugin, config) {
       let resolved = false;
       const fiber = {
         config,
         dispose: async () => {
           disposals.push(config.serverName);
+          if (ctx.holdDispose) {
+            await new Promise((resolveDispose) => {
+              ctx.releaseDispose.push(resolveDispose);
+            });
+          }
         },
         then(onFulfilled) {
           if (!resolved) {
@@ -2258,6 +2265,257 @@ try {
       if (typeof cleanup === "function") cleanup();
     }
     await rmRetry(dirLate);
+  }
+}
+
+{
+  const dirTools = await mkdtemp(join(tmpdir(), "dsh-mcp-tool-states-"));
+  const homeTools = join(dirTools, "home");
+  const projTools = join(dirTools, "proj");
+  await mkdir(join(homeTools, ".dsh"), { recursive: true });
+  await mkdir(projTools, { recursive: true });
+  const denied = stdioRow("own");
+  denied.config.tools = { deny: ["read"] };
+  await writeManagedRows(projectMcpFile(projTools), [denied], { createIfMissing: true });
+  const ctxTools = fakeCtx();
+  ctxTools.agentsList.push(fakeAgent("session-tools", projTools));
+  const registryTools = new ProjectMcpRegistry(ctxTools, {
+    globalNames: async () => [],
+    userLayerPaths: { mcpYml: join(homeTools, ".dsh", "mcp.yml"), mcpJson: join(homeTools, ".dsh", "mcp.json"), profilesDir: join(homeTools, ".dsh", "profiles") }
+  });
+  try {
+    await registryTools.reconcileNow();
+    assert.ok(await registryTools.waitForState(projTools, "own", (state) => state?.phase === "active"), "denied row mounts");
+    const effective = (await registryTools.serverView(projTools, "own"))?.effectiveServerName ?? "own";
+    ctxTools.schemas.push({ name: `mcp__${effective}__read` }, { name: `mcp__${effective}__write` });
+    assert.deepEqual(registryTools.toolStates(projTools, "own"), [
+      { name: "read", enabled: false },
+      { name: "write", enabled: true }
+    ], "yml tools.deny is reflected as enabled: false");
+    pass("toolStates reads tools.deny from the mounted patch row");
+  } finally {
+    for (const disposer of ctxTools.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    await rmRetry(dirTools);
+  }
+}
+
+{
+  const dirMask = await mkdtemp(join(tmpdir(), "dsh-mcp-remove-mask-"));
+  const homeMask = join(dirMask, "home");
+  const projMask = join(dirMask, "proj");
+  await mkdir(join(homeMask, ".dsh"), { recursive: true });
+  await mkdir(join(projMask, ".dsh"), { recursive: true });
+  const ymlMask = projectMcpFile(projMask);
+  const kept = stdioRow("kept");
+  kept.config.args = ["same.js"];
+  await writeManagedRows(ymlMask, [stdioRow("both"), kept], { createIfMissing: true });
+  await writeFile(join(projMask, ".dsh", "mcp.json"), JSON.stringify({
+    mcpServers: {
+      both: { command: "node", args: ["from-json.js"] },
+      jsononly: { command: "node", args: ["only.js"] },
+      alias: { command: "node", args: ["same.js"] }
+    }
+  }), "utf8");
+  const ctxMask = fakeCtx();
+  ctxMask.agentsList.push(fakeAgent("session-mask", projMask));
+  const registryMask = new ProjectMcpRegistry(ctxMask, {
+    globalNames: async () => [],
+    userLayerPaths: { mcpYml: join(homeMask, ".dsh", "mcp.yml"), mcpJson: join(homeMask, ".dsh", "mcp.json"), profilesDir: join(homeMask, ".dsh", "profiles") }
+  });
+  try {
+    await registryMask.reconcileNow();
+    await registryMask.removeServer("dsh-project", projMask, "both");
+    let rows = extractManagedRows(await readFile(ymlMask, "utf8"));
+    const masked = rows.find((row) => row.id === "panel-mcp-both");
+    assert.equal(masked?.disabled, true, "same-name json keeps a disabled yml placeholder");
+    assert.equal(JSON.parse(await readFile(join(projMask, ".dsh", "mcp.json"), "utf8")).mcpServers.both.command, "node");
+
+    await registryMask.removeServer("dsh-project-json", projMask, "jsononly");
+    rows = extractManagedRows(await readFile(ymlMask, "utf8"));
+    assert.equal(rows.find((row) => row.id === "panel-mcp-jsononly")?.disabled, true, "json-only delete writes a placeholder");
+    await registryMask.reconcileNow();
+    await registryMask.removeServer("dsh-project", projMask, "jsononly");
+    rows = extractManagedRows(await readFile(ymlMask, "utf8"));
+    assert.equal(rows.find((row) => row.id === "panel-mcp-jsononly")?.disabled, true, "deleting the placeholder does not unmask the json row");
+
+    await registryMask.removeServer("dsh-project", projMask, "kept");
+    rows = extractManagedRows(await readFile(ymlMask, "utf8"));
+    const identityMask = rows.find((row) => row.id === "panel-mcp-kept");
+    assert.equal(identityMask?.disabled, true, "same command in a lower layer keeps the yml row disabled");
+    assert.deepEqual(identityMask?.config?.args, ["same.js"]);
+    pass("remove leaves a disabled placeholder while a lower layer still defines the server");
+  } finally {
+    for (const disposer of ctxMask.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    await rmRetry(dirMask);
+  }
+}
+
+{
+  const dirSrc = await mkdtemp(join(tmpdir(), "dsh-mcp-source-row-"));
+  const homeSrc = join(dirSrc, "home");
+  const profiles = join(homeSrc, ".dsh", "profiles", "desktop");
+  await mkdir(profiles, { recursive: true });
+  await writeManagedRows(join(profiles, "mcp.yml"), [stdioRow("shared")], { createIfMissing: true });
+  const profileRows = extractManagedRows(await readFile(join(profiles, "mcp.yml"), "utf8"));
+  profileRows[0].config.command = "profile-bin";
+  await writeManagedRows(join(profiles, "mcp.yml"), profileRows);
+  await writeFile(join(homeSrc, ".dsh", "mcp.json"), JSON.stringify({
+    mcpServers: { shared: { command: "user-bin", args: ["user.js"] } }
+  }), "utf8");
+  const ctxSrc = fakeCtx();
+  const registrySrc = new ProjectMcpRegistry(ctxSrc, {
+    globalNames: async () => [],
+    activeProfile: async () => "desktop",
+    userLayerPaths: { mcpYml: join(homeSrc, ".dsh", "mcp.yml"), mcpJson: join(homeSrc, ".dsh", "mcp.json"), profilesDir: join(homeSrc, ".dsh", "profiles") }
+  });
+  try {
+    await registrySrc.reconcileNow();
+    await assert.rejects(() => registrySrc.setToolEnabled("dsh-user-yml", "", "shared", "read", false), /找不到服务器/);
+    const written = await registrySrc.setServerEnabled("dsh-user", "", "shared", false);
+    const userRows = extractManagedRows(await readFile(written, "utf8"));
+    assert.equal(userRows.length, 1);
+    assert.equal(userRows[0].disabled, true);
+    assert.equal(userRows[0].config.command, "user-bin", "user-layer disable copies the user json row, not the profile row");
+    await assert.rejects(() => registrySrc.removeServer("no-such-layer", "", "shared"), /写入位置当前不可用/);
+    pass("writes use the requested source and reject an unknown layer");
+  } finally {
+    for (const disposer of ctxSrc.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    await rmRetry(dirSrc);
+  }
+}
+
+{
+  const dirRel = await mkdtemp(join(tmpdir(), "dsh-mcp-release-"));
+  const homeRel = join(dirRel, "home");
+  const projRel = join(dirRel, "proj");
+  const projOther = join(dirRel, "other");
+  await mkdir(join(homeRel, ".dsh"), { recursive: true });
+  await mkdir(projRel, { recursive: true });
+  await mkdir(projOther, { recursive: true });
+  await writeManagedRows(projectMcpFile(projRel), [stdioRow("alpha")], { createIfMissing: true });
+  const savedCwdRel = process.cwd();
+  let ctxRel;
+  try {
+    process.chdir(dirRel);
+    ctxRel = fakeCtx();
+    const agentRel = fakeAgent("session-rel", projRel);
+    const agentOther = fakeAgent("session-rel-other", projOther);
+    ctxRel.agentsList.push(agentRel, agentOther);
+    const registryRel = new ProjectMcpRegistry(ctxRel, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(homeRel, ".dsh", "mcp.yml"), mcpJson: join(homeRel, ".dsh", "mcp.json"), profilesDir: join(homeRel, ".dsh", "profiles") }
+    });
+    await registryRel.reconcileNow();
+    ctxRel.emit("agent/created", { agent: agentRel, source: "resume" });
+    assert.ok(await registryRel.waitForState(projRel, "alpha", (state) => state?.phase === "active"), "alpha mounts before the switch");
+    const mountedName = ctxRel.mounts.at(-1).serverName;
+    const mountsBefore = ctxRel.mounts.length;
+    ctxRel.holdDispose = true;
+    ctxRel.emit("session/event", { id: "session-rel-other", header: { cwd: projOther } }, { type: "user/message" });
+    ctxRel.emit("session/event", { id: "session-rel", header: { cwd: projRel } }, { type: "user/message" });
+    const disposeStarted = Date.now();
+    while (!ctxRel.disposals.includes(mountedName) && Date.now() - disposeStarted < 3000) {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+    }
+    assert.ok(ctxRel.disposals.includes(mountedName), "leaving the workspace starts dispose: " + ctxRel.disposals.join(","));
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+    assert.equal(ctxRel.mounts.length, mountsBefore, "the same server is not mounted again while dispose is still running");
+    const release = ctxRel.releaseDispose.shift();
+    assert.equal(typeof release, "function");
+    release();
+    assert.ok(await registryRel.waitForState(projRel, "alpha", (state) => state?.phase === "active", 5000), "alpha remounts after dispose finishes");
+    assert.equal(ctxRel.mounts.length, mountsBefore + 1, "remount happens once dispose resolves");
+    pass("switching away and back waits for the previous fiber dispose");
+  } finally {
+    process.chdir(savedCwdRel);
+    for (const release of ctxRel?.releaseDispose ?? []) release();
+    for (const disposer of ctxRel?.disposers ?? []) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    await rmRetry(dirRel);
+  }
+}
+
+{
+  const dirHost = await mkdtemp(join(tmpdir(), "dsh-mcp-host-focus-"));
+  const homeHost = join(dirHost, "home");
+  const projVisible = join(dirHost, "visible");
+  const projLast = join(dirHost, "last");
+  await mkdir(join(homeHost, ".dsh"), { recursive: true });
+  await mkdir(projVisible, { recursive: true });
+  await mkdir(projLast, { recursive: true });
+  await writeManagedRows(projectMcpFile(projVisible), [stdioRow("shown")], { createIfMissing: true });
+  await writeManagedRows(projectMcpFile(projLast), [stdioRow("hidden")], { createIfMissing: true });
+  const savedCwdHost = process.cwd();
+  let ctxHost;
+  try {
+    process.chdir(dirHost);
+    ctxHost = fakeCtx();
+    const agentVisible = fakeAgent("session-visible", projVisible);
+    const agentLast = fakeAgent("session-last", projLast);
+    ctxHost.agentsList.push(agentVisible, agentLast);
+    ctxHost.sessions = { current: () => ({ header: { cwd: projVisible } }) };
+    const registryHost = new ProjectMcpRegistry(ctxHost, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(homeHost, ".dsh", "mcp.yml"), mcpJson: join(homeHost, ".dsh", "mcp.json"), profilesDir: join(homeHost, ".dsh", "profiles") }
+    });
+    ctxHost.emit("agent/created", { agent: agentVisible, source: "resume" });
+    ctxHost.emit("agent/created", { agent: agentLast, source: "resume" });
+    assert.ok(await registryHost.waitForState(projVisible, "shown", (state) => state?.phase === "active", 5000), "host current session mounts its project");
+    assert.equal(registryHost.focusedProjectRoot(), projVisible, "focus follows the host session instead of the last agent/created");
+    const hidden = await registryHost.serverView(projLast, "hidden");
+    assert.ok(hidden == null || hidden.fiberPhase !== "active", "the last resumed workspace is not the running one");
+    ctxHost.emit("session/event", { id: "session-last", header: { cwd: projLast } }, { type: "tool/result" });
+    await registryHost.reconcileNow();
+    assert.equal(registryHost.focusedProjectRoot(), projVisible, "a background tool result still does not move focus");
+    pass("host current session corrects focus across a cold resume");
+  } finally {
+    process.chdir(savedCwdHost);
+    for (const disposer of ctxHost?.disposers ?? []) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    await rmRetry(dirHost);
+  }
+}
+
+{
+  const dirOff = await mkdtemp(join(tmpdir(), "dsh-mcp-unsubscribe-"));
+  const homeOff = join(dirOff, "home");
+  const projOff = join(dirOff, "proj");
+  await mkdir(join(homeOff, ".dsh"), { recursive: true });
+  await mkdir(projOff, { recursive: true });
+  const ctxOff = fakeCtx();
+  const registryOff = new ProjectMcpRegistry(ctxOff, {
+    globalNames: async () => [],
+    userLayerPaths: { mcpYml: join(homeOff, ".dsh", "mcp.yml"), mcpJson: join(homeOff, ".dsh", "mcp.json"), profilesDir: join(homeOff, ".dsh", "profiles") }
+  });
+  try {
+    let hits = 0;
+    const off = registryOff.subscribeUpdated(() => { hits += 1; });
+    await registryOff.reconcileNow();
+    assert.ok(hits >= 1, "subscribeUpdated hears projectMcp/updated");
+    const after = hits;
+    off();
+    await registryOff.reconcileNow();
+    assert.equal(hits, after, "the disposer from ctx.on removes the listener");
+    pass("subscribeUpdated returns the cordis disposer");
+  } finally {
+    for (const disposer of ctxOff.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    await rmRetry(dirOff);
   }
 }
 

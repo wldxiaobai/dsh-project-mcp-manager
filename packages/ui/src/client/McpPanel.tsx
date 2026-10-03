@@ -17,7 +17,7 @@ import {
   type McpUiWriteTarget
 } from "../wire.ts";
 import type { McpUiLocaleKey } from "./locales.ts";
-import { collapseServers, type LogicalServer } from "./collapse.ts";
+import { collapseServers, partitionShadowed, type LogicalServer } from "./collapse.ts";
 import { displayHomePath, isProfileSource, profileEndKind, profileNameFromFile } from "./display.ts";
 import { parsePastedConfig, type PasteConfigFailure } from "./paste-config.ts";
 import { PANEL_CSS } from "./style.ts";
@@ -199,6 +199,7 @@ export function McpPanel({ t }: McpPanelProps) {
   const [formError, setFormError] = useState<string | null>(null);
   const [pasteNote, setPasteNote] = useState<string | null>(null);
   const loadRef = useRef<() => void>(() => {});
+  const loadSeq = useRef(0);
   const settleTimer = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
   /** 连接多在对账结束之后才变成 active。事件若没送到，这里继续读，直到没有「正在启动」。 */
@@ -216,6 +217,8 @@ export function McpPanel({ t }: McpPanelProps) {
   };
 
   const load = () => {
+    const seq = loadSeq.current + 1;
+    loadSeq.current = seq;
     fetch(MCP_UI_STATE_PATH, { credentials: "same-origin", headers: { accept: "application/json" } })
       .then(async (response) => {
         const text = await readBody(response);
@@ -229,11 +232,13 @@ export function McpPanel({ t }: McpPanelProps) {
         if (!Array.isArray(payload.servers) || !Array.isArray(payload.openTargets) || !Array.isArray(payload.writeTargets)) {
           throw new Error(`响应缺少 servers/openTargets/writeTargets：${text.slice(0, 400)}`);
         }
+        if (loadSeq.current !== seq) return;
         setState(payload);
         setError(null);
         watchStartup(payload.servers);
       })
       .catch((error: unknown) => {
+        if (loadSeq.current !== seq) return;
         const detail = error instanceof Error ? error.message : String(error);
         setError(`${t("error")} ${detail}`);
       });
@@ -729,7 +734,9 @@ function ServerCard({ server, busy, t, homeDir, onToggle, onRemove, onTools }: {
   const fileLabel = row.layer === "user" ? displayHomePath(row.filePath, homeDir) : row.filePath;
   const endpointKind = row.endpoint.startsWith("http://") || row.endpoint.startsWith("https://") ? t("endpointUrl") : t("endpointCmd");
   const badgeTone = row.needsYmlTakeover ? "warning" : row.active ? "success" : "neutral";
-  const shadowedFiles = [...new Set(server.shadowed.map((item) => sourceFileLabel(item)))].join(", ");
+  const shadows = partitionShadowed(server);
+  const shadowedFiles = [...new Set(shadows.named.map((item) => sourceFileLabel(item)))].join(", ");
+  const identityNames = shadows.identity.map((item) => item.serverName).join(", ");
   return (
     <article className="card">
       <div className="head">
@@ -754,6 +761,7 @@ function ServerCard({ server, busy, t, homeDir, onToggle, onRemove, onTools }: {
         )}
         {status.detail !== null && <p className="detail">{status.detail}</p>}
         {shadowedFiles !== "" && <p className="shadow-note">{t("shadowedNote", { files: shadowedFiles, winner: source })}</p>}
+        {identityNames !== "" && <p className="shadow-note">{t("shadowedIdentityNote", { names: identityNames, winner: row.serverName })}</p>}
       </div>
       <div className="actions">
         <Button variant="outline" size="sm" disabled={busy} onClick={onTools}>{t("tools")}</Button>

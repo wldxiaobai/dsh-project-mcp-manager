@@ -107,8 +107,19 @@ async function readJson(request: Request): Promise<Record<string, unknown>> {
   return body as Record<string, unknown>;
 }
 
+const MCP_ROW_SOURCES: readonly McpRowSource[] = [
+  "dsh-project",
+  "dsh-project-json",
+  "cc-project",
+  "dsh-profile-user-yml",
+  "dsh-profile-user",
+  "dsh-user-yml",
+  "dsh-user"
+];
+
 function asSource(value: unknown): McpRowSource {
   if (typeof value !== "string" || value === "") throw new Error("缺少 source");
+  if (!MCP_ROW_SOURCES.includes(value as McpRowSource)) throw new Error("未知 source");
   return value as McpRowSource;
 }
 
