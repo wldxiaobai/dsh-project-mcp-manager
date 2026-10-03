@@ -299,6 +299,16 @@ try {
       const capFlag = io();
       assert.equal(await runCli(["add", "flagyml", "node", "y.js", "--format", "yml"], capFlag.io, deps), 0, capFlag.errs.join("\n"));
       assert.ok((await readFile(projectYml, "utf8")).includes("serverName: flagyml"), "--format beats the environment variable");
+      const profileJsonPath = join(home, ".dsh", "profiles", "web", "mcp.json");
+      const profileYmlPath = join(home, ".dsh", "profiles", "web", "mcp.yml");
+      const capProfileEnv = io();
+      assert.equal(await runCli(["add", "profileenv", "node", "env.js", "--scope", "profile", "--profile", "web"], capProfileEnv.io, deps), 0, capProfileEnv.errs.join("\n"));
+      assert.deepEqual(JSON.parse(await readFile(profileJsonPath, "utf8")).mcpServers.profileenv, { type: "stdio", command: "node", args: ["env.js"] });
+      assert.equal(await pathExists(profileYmlPath), false, "profile env json does not create yml");
+      const capProfileFlag = io();
+      assert.equal(await runCli(["add", "profileflag", "node", "flag.js", "--scope", "profile", "--profile", "web", "--format", "yml"], capProfileFlag.io, deps), 0, capProfileFlag.errs.join("\n"));
+      assert.ok((await readFile(profileYmlPath, "utf8")).includes("serverName: profileflag"), "profile --format beats env");
+      assert.equal(JSON.parse(await readFile(profileJsonPath, "utf8")).mcpServers.profileflag, undefined);
       process.env.DSH_MCP_CLI_FORMAT = "toml";
       const capBad = io();
       assert.equal(await runCli(["add", "bad", "node", "b.js"], capBad.io, deps), 1, "unknown format value is rejected");

@@ -460,7 +460,7 @@ function targetIn(dir: string, format: "yml" | "json", scope: WriteTarget["scope
 async function resolveWriteTarget(parsed: ParsedArgs, deps: CliDeps): Promise<WriteTarget | { error: string }> {
   const resolved = resolveFormat(parsed);
   if ("error" in resolved) return resolved;
-  if (parsed.scope === "profile") return resolveProfileTarget(parsed, deps);
+  if (parsed.scope === "profile") return resolveProfileTarget({ ...parsed, format: resolved.format }, deps);
   if (parsed.scope === "user") return targetIn(dshHomeOf(deps), resolved.format, "user");
   return targetIn(join(await resolveProjectRootFor(deps), ".dsh"), resolved.format, "project");
 }
