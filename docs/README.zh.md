@@ -65,6 +65,9 @@ client 决定。** v0.7.x 与 v0.8.x 面向 dsh `0.2.0` 线（从 0.2.0-rc.2 起
 [7e0088d 至 804662f（审查落地复查）](code-review/ts-review-7e0088d-to-804662f.zh.md) ·
 [feat/adapt-dsh-0.2.0-rc.2（v0.7.0）](code-review/review-feat-adapt-dsh-0.2.0-rc.2.zh.md)。
 
+本地测试与维护记录：[v0.8.0 npm Web 下载验证](testing/v0.8.0-npm-web.zh.md) ·
+[本地测试产物与目录说明](testing/local-artifacts.zh.md)。
+
 ## 安装（挂载到 profile）
 
 插件通过 **bundle patch** 挂载：把包加入 `dsh.profile.bundles` 后，dsh 启动时
