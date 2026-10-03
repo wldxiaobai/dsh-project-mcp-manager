@@ -1719,22 +1719,7 @@ export class ProjectMcpRegistry {
     const hostTaken = new Set(hostGlobalNames);
     const globalMountable = new Set(globalMerged.rows.map((row) => row.rawName).filter((rawName) => !hostTaken.has(rawName)));
 
-    const desiredByProject = new Map<string, { projectRoot: string; rows: DesiredProjectRow[] }>();
-    if (skipReread) {
-      for (const projectRoot of roots) {
-        const key = projectKeyOf(projectRoot);
-        const cached = this.lastScanDesired.get(key);
-        if (cached !== undefined) desiredByProject.set(key, cached);
-        else desiredByProject.set(key, await this.scanProject(projectRoot, globalMountable));
-      }
-    } else {
-      for (const projectRoot of roots) {
-        desiredByProject.set(projectKeyOf(projectRoot), await this.scanProject(projectRoot, globalMountable));
-      }
-      this.lastScanDesired = new Map(desiredByProject);
-      this.lastFingerprintSig = signature;
-      this.lastFingerprintEpoch = this.configEpoch;
-    }
+    const desiredByProject = await this.collectDesiredProjects(roots, globalMountable, skipReread, signature);
     await this.reportGlobalShadows(globalMerged.shadowedGlobal, globalMerged.shadowedIdentity);
 
     const catalogProjects = [...desiredByProject.values()].map((entry) => ({
@@ -1756,6 +1741,28 @@ export class ProjectMcpRegistry {
     this.inspectToolBudgets();
     await this.writeSummaries();
     this.scheduleGraceUnmount();
+    await this.refreshWatchersAfterReconcile();
+    this.emitUpdated();
+  }
+
+  /** 项目扫描和缓存提交保持原有顺序；跳过重读时不提交新的指纹。 */
+  private async collectDesiredProjects(roots: string[], globalMountable: Set<string>, skipReread: boolean, signature: string): Promise<Map<string, { projectRoot: string; rows: DesiredProjectRow[] }>> {
+    const desired = new Map<string, { projectRoot: string; rows: DesiredProjectRow[] }>();
+    for (const projectRoot of roots) {
+      const key = projectKeyOf(projectRoot);
+      const cached = skipReread ? this.lastScanDesired.get(key) : undefined;
+      desired.set(key, cached ?? await this.scanProject(projectRoot, globalMountable));
+    }
+    if (!skipReread) {
+      this.lastScanDesired = new Map(desired);
+      this.lastFingerprintSig = signature;
+      this.lastFingerprintEpoch = this.configEpoch;
+    }
+    return desired;
+  }
+
+  /** 监听失败不影响本轮已完成的装载，也不阻止成功事件。 */
+  private async refreshWatchersAfterReconcile(): Promise<void> {
     try {
       this.liveWatchSig = await this.liveDirectorySignature();
     } catch {
@@ -1767,7 +1774,6 @@ export class ProjectMcpRegistry {
     } catch (error) {
       this.ctx.logger.warn(`项目 MCP 文件监听更新失败：${error instanceof Error ? error.message : String(error)}（本轮装载不受影响）`);
     }
-    this.emitUpdated();
   }
 
   /**
@@ -2694,6 +2700,12 @@ export class ProjectMcpRegistry {
     const key = projectKeyOf(projectRoot);
     const files = this.lastScanFiles.get(key);
     const userPaths = this.resolveUserLayerPaths();
+    return this.locateProjectRowFromMemory(files, rawName)
+      ?? this.locateUserRowFromMemory(rawName, userPaths)
+      ?? (state?.row !== undefined ? { row: state.row, source: state.source } : {});
+  }
+
+  private locateProjectRowFromMemory(files: ProjectScanFiles | undefined, rawName: string): { row: PatchRow; source: McpRowSource; path?: string } | undefined {
     if (files !== undefined && !files.skipYmlPartition) {
       const ymlRow = files.ymlRows.find((candidate) => rowNameOf(candidate) === rawName);
       if (ymlRow !== undefined) return { row: ymlRow, source: "dsh-project", path: files.ymlPath };
@@ -2706,6 +2718,10 @@ export class ProjectMcpRegistry {
       const found = files.cc.rows.find((candidate) => candidate.rawName === rawName);
       if (found !== undefined) return { row: found.row, source: "cc-project", path: files.ccPath };
     }
+    return undefined;
+  }
+
+  private locateUserRowFromMemory(rawName: string, userPaths: UserLayerPaths): { row: PatchRow; source: McpRowSource; path?: string } | undefined {
     const profileYmlRow = this.userLayer.profileYmlRows.find((candidate) => candidate.rawName === rawName);
     if (profileYmlRow !== undefined) return { row: profileYmlRow.row, source: "dsh-profile-user-yml", path: this.userLayer.profileYml ?? undefined };
     const profileRow = this.userLayer.profileRows.find((candidate) => candidate.rawName === rawName);
@@ -2714,8 +2730,7 @@ export class ProjectMcpRegistry {
     if (uy !== undefined) return { row: uy.row, source: "dsh-user-yml", path: userPaths.mcpYml };
     const uj = this.userLayer.jsonRows.find((candidate) => candidate.rawName === rawName);
     if (uj !== undefined) return { row: uj.row, source: "dsh-user", path: userPaths.mcpJson };
-    if (state?.row !== undefined) return { row: state.row, source: state.source };
-    return {};
+    return undefined;
   }
 
   /** 行级 view；未装载时 phase 按行状态推导。行查找按影子优先序走内存目录。 */
