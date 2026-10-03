@@ -18,9 +18,9 @@ import {
 } from "../wire.ts";
 import type { McpUiLocaleKey } from "./locales.ts";
 import { collapseServers, partitionShadowed, type LogicalServer } from "./collapse.ts";
-import { displayHomePath, profileEndKind, profileNameFromFile, serverActionsOpen } from "./display.ts";
+import { displayHomePath, profileNameFromFile, serverActionsOpen } from "./display.ts";
 import { parsePastedConfig, type PasteConfigFailure } from "./paste-config.ts";
-import { addPathForTarget, confirmationCopy, emptyDraft, partitionRows, validateAddDraft, type AddDraft, type AddScope } from "./panel-helpers.ts";
+import { addPathForTarget, badgeTone, confirmationDisplay, emptyDraft, partitionRows, profileEnd, validateAddDraft, type AddDraft, type AddScope } from "./panel-helpers.ts";
 import { PANEL_CSS } from "./style.ts";
 
 export interface McpPanelProps {
@@ -372,16 +372,12 @@ export function McpPanel({ t }: McpPanelProps) {
   const { projectRows, userRows, profileBuckets } = partitionRows(state?.servers ?? []);
   const projectGroups = groupedLogical(projectRows, (server) => server.winner.projectRoot);
   const userGroups = groupedLogical(userRows, (server) => showUserPath(server.winner.filePath));
-  const profileEnd = (name: string) => {
-    const kind = profileEndKind(name);
-    return kind === "desktop" ? t("profileDesktop") : kind === "web" ? t("profileWeb") : t("profileNamed", { name });
-  };
-  const profileTitle = (name: string) => name === "" ? t("profileLayerPlain") : t("profileLayer", { end: profileEnd(name) });
+  const profileTitle = (name: string) => name === "" ? t("profileLayerPlain") : t("profileLayer", { end: profileEnd(name, t) });
   const openLabel = (target: McpUiState["openTargets"][number]) => {
     if (target.source === "dsh-user-yml") return t("userFile");
     if (target.source === "dsh-profile-user-yml") {
       const name = profileNameFromFile(target.path);
-      return name === undefined ? t("profileFile") : t("profileFileNamed", { end: profileEnd(name) });
+      return name === undefined ? t("profileFile") : t("profileFileNamed", { end: profileEnd(name, t) });
     }
     if (target.source === "dsh-project") return t("projectFile");
     return target.label;
@@ -391,23 +387,7 @@ export function McpPanel({ t }: McpPanelProps) {
   const scopeReady = (id: AddScope) => addTargets.some((item) => item.id === id);
   const addPath = addPathForTarget(addTarget, showUserPath);
 
-  const pendingRemoves = pending?.kind === "server" && pending.action === "remove";
-  let pendingFile = "";
-  let pendingYml = "";
-  if (pending !== null) {
-    pendingFile = pending.row.layer === "user" ? showUserPath(pending.row.filePath) : pending.row.filePath;
-    pendingYml = pending.row.layer === "user" ? showUserPath(pending.row.managedPath ?? "") : (pending.row.managedPath ?? "");
-  }
-  const pendingCopy = pending === null ? null : confirmationCopy(pending, pendingFile, pendingYml);
-  let pendingWill = "";
-  let pendingWont = "";
-  if (pendingCopy?.kind === "remove") {
-    pendingWill = t("removeWill", { name: pendingCopy.name });
-    pendingWont = t("removeWont");
-  } else if (pendingCopy !== null) {
-    pendingWill = t("takeoverWill");
-    pendingWont = t("takeoverWont", { file: pendingCopy.file, yml: pendingCopy.yml });
-  }
+  const { removes: pendingRemoves, title: pendingTitle, will: pendingWill, wont: pendingWont } = confirmationDisplay(pending, showUserPath, t);
 
   return (
     <div className="dsh-mcp-ui">
@@ -463,7 +443,7 @@ export function McpPanel({ t }: McpPanelProps) {
       <Modal
         open={pending !== null}
         onClose={() => setPending(null)}
-        title={pending?.kind === "server" && pending.action === "remove" && !pending.row.needsYmlTakeover ? t("removeTitle", { name: pending.row.serverName }) : t("takeoverTitle")}
+        title={pendingTitle}
         closeLabel={t("cancel")}
         description={pendingWill}
         footer={(
@@ -659,7 +639,7 @@ function ServerCard({ server, busy, locked, t, homeDir, onToggle, onRemove, onTo
   const source = sourceFileLabel(row);
   const fileLabel = row.layer === "user" ? displayHomePath(row.filePath, homeDir) : row.filePath;
   const endpointKind = row.endpoint.startsWith("http://") || row.endpoint.startsWith("https://") ? t("endpointUrl") : t("endpointCmd");
-  const badgeTone = row.needsYmlTakeover ? "warning" : row.active ? "success" : "neutral";
+  const tone = badgeTone(row);
   const shadows = partitionShadowed(server);
   const shadowedFiles = [...new Set(shadows.named.map((item) => sourceFileLabel(item)))].join(", ");
   const identityNames = shadows.identity.map((item) => item.serverName).join(", ");
@@ -669,7 +649,7 @@ function ServerCard({ server, busy, locked, t, homeDir, onToggle, onRemove, onTo
         <div className="identity">
           <span className="name">{row.serverName}</span>
           <span className="badge" title={row.needsYmlTakeover ? `${t("badgeTakeoverHint")} ${fileLabel}` : fileLabel}>
-            <Tag tone={badgeTone}>{row.needsYmlTakeover ? t("badgeTakeover", { file: source }) : source}</Tag>
+            <Tag tone={tone}>{row.needsYmlTakeover ? t("badgeTakeover", { file: source }) : source}</Tag>
           </span>
         </div>
         <span title={locked ? t("workspaceLocked") : undefined}>

@@ -1,4 +1,5 @@
-import { isProfileSource, profileNameFromFile } from "./display.ts";
+import { isProfileSource, profileEndKind, profileNameFromFile } from "./display.ts";
+import type { McpUiLocaleKey } from "./locales.ts";
 import type { McpUiServer, McpUiWriteTarget } from "../wire.ts";
 
 export type AddScope = McpUiWriteTarget["id"];
@@ -122,6 +123,50 @@ export function confirmationCopy(pending: {
     return { kind: "remove", name: pending.row.serverName };
   }
   return { kind: "takeover", file, yml };
+}
+
+type PanelTranslate = (key: McpUiLocaleKey, params?: Record<string, unknown>) => string;
+
+export interface ConfirmationPending {
+  readonly kind: "server" | "tool";
+  readonly action?: "enable" | "disable" | "remove";
+  readonly row: Pick<McpUiServer, "serverName" | "needsYmlTakeover" | "layer" | "filePath" | "managedPath">;
+}
+
+export interface ConfirmationDisplay {
+  readonly removes: boolean;
+  readonly title: string;
+  readonly will: string;
+  readonly wont: string;
+}
+
+export function confirmationDisplay(pending: ConfirmationPending | null, showUserPath: (path: string) => string, t: PanelTranslate): ConfirmationDisplay {
+  if (pending === null) return { removes: false, title: t("takeoverTitle"), will: "", wont: "" };
+  const removes = pending.kind === "server" && pending.action === "remove";
+  let file = pending.row.filePath;
+  let yml = pending.row.managedPath ?? "";
+  if (pending.row.layer === "user") {
+    file = showUserPath(file);
+    yml = showUserPath(yml);
+  }
+  const copy = confirmationCopy(pending, file, yml);
+  if (copy.kind === "remove") {
+    return { removes, title: t("removeTitle", { name: copy.name }), will: t("removeWill", { name: copy.name }), wont: t("removeWont") };
+  }
+  return { removes, title: t("takeoverTitle"), will: t("takeoverWill"), wont: t("takeoverWont", { file: copy.file, yml: copy.yml }) };
+}
+
+export function profileEnd(name: string, t: PanelTranslate): string {
+  const kind = profileEndKind(name);
+  if (kind === "desktop") return t("profileDesktop");
+  if (kind === "web") return t("profileWeb");
+  return t("profileNamed", { name });
+}
+
+export function badgeTone(row: Pick<McpUiServer, "needsYmlTakeover" | "active">): "warning" | "success" | "neutral" {
+  if (row.needsYmlTakeover) return "warning";
+  if (row.active) return "success";
+  return "neutral";
 }
 
 export function addPathForTarget(target: McpUiWriteTarget | undefined, showUserPath: (path: string) => string): string {
