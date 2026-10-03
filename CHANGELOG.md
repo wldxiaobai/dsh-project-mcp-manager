@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Disabling the UI component or removing `connection` closes already-open SSE
+  responses and releases their update subscriptions, ping timers, and abort
+  listeners. Request abort/cancel cleanup remains idempotent.
+
 - The settings page kept showing "Starting" after the MCP server had connected,
   until the page was closed and opened again. A mount that becomes active or
   failed after reconcile emits `projectMcp/updated`, and the page keeps
@@ -41,6 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Settings page guide (`docs/guide/settings-ui.md`, Chinese `settings-ui.zh.md`),
+  linked from both READMEs. The README, layer, format, CLI, and query-surface
+  docs no longer describe the plugin as UI-less, and count seven layers.
 - The Add MCP dialog can fill its fields from a JSON or YAML server on the
   clipboard (`mcpServers`, `servers`, one entry, or a managed yml row). The
   save location stays whatever is selected in the dialog. A clipboard with
@@ -58,13 +65,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   readable server, opens the managed yml for the user layer, the active profile,
   or a project, and toggles or removes servers and individual tools. A non-yml
   source asks before a higher-priority yml row is written. Disable the
-  `mcp-project-ui` bundle row to hide the page.
+  `mcp-project-ui` component in the manager bundle to hide the page.
 - The settings page adds a server from a form. Confirm writes one managed
   `mcp.yml` row for the current workspace, the user layer, or the active
   profile. MCP config stays beside that button as a file menu.
 
 ### Changed
 
+- The root `dsh-project-mcp-manager` is the default bundle for both the core
+  (`mcp-project`) and UI (`mcp-project-ui`) rows, enabled by default. One
+  manager install supplies the UI through a same-exact-version dependency;
+  the UI retains its exact manager peer but no longer declares a standalone
+  `dsh.bundle`. The packages must be versioned and published together.
+- The UI can be disabled individually through the manager bundle's component
+  controls without stopping the core. In headless mode it has no browser
+  page; without `connection` it registers no routes.
+  Connection-scoped integration waits independently of the core loader,
+  registers on service arrival, and cleans up on disposal.
+- Root `pnpm run build` now builds core first, then the UI host code and
+  browser bundle. Local development needs only the root manager link.
+- Migration from a separately installed UI is explicit: install the manager
+  bundle first, remove `dsh-project-mcp-ui` from the profile bundle selection,
+  then optionally remove the direct UI dependency with `dsh plugin remove`.
+  The manager's UI dependency remains; old selection and dependency cleanup
+  are not promised to happen automatically.
 - MCP settings cards say whether a server is running ("Running · N tools") or
   only switched on ("On · waiting for a session"). Each card shows its source
   file, and a warning badge when an edit must take over into the managed yml.

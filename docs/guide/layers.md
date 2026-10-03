@@ -1,16 +1,16 @@
-# Configuration sources and layers (six layers)
+# Configuration sources and layers (seven layers)
 
 English | [中文](layers.zh.md)
 
 [← README](../../README.md) ｜ Related: [configuration format](format.md) · [`${VAR}` expansion](env-expansion.md) · [CLI `dsh-mcp`](cli.md)
 
-The plugin reads six sources and merges them **first-come-first-served**. The
+The plugin reads seven sources and merges them **first-come-first-served**. The
 first three are **project layers** (mounted per project, isolated per session);
 the last four are **user layers** (host-level **global mounting**):
 
 | # | Source | Path | Semantics |
 |---|---|---|---|
-| 1 | `dsh-project` | `<projectRoot>/.dsh/mcp.yml` | project layer (native managed block, the CLI's default target) |
+| 1 | `dsh-project` | `<projectRoot>/.dsh/mcp.yml` | project layer (native managed block, the default target of the CLI and the settings page) |
 | 2 | `dsh-project-json` | `<projectRoot>/.dsh/mcp.json` | project layer (JSON dialect) |
 | 3 | `cc-project` | `<projectRoot>/.mcp.json` | project layer, **legacy read-only** (Claude Code project file) |
 | 4 | `dsh-profile-user-yml` | `~/.dsh/profiles/<active profile>/mcp.yml` | **global** (profile native managed block, when the running profile name can be resolved) |
@@ -20,7 +20,10 @@ the last four are **user layers** (host-level **global mounting**):
 
 Layers 4/5 are dynamic: the profile name is resolved at runtime, so no profile
 name is ever hardcoded. The file syntax of layers 1/2 and of the JSON user
-layers is described in [configuration format](format.md).
+layers is described in [configuration format](format.md). The
+[settings page](settings-ui.md) writes only the three managed yml files
+(layers 1, 4, and 6); a change to a row from another layer lands in the
+managed yml of the same scope and leaves the original file unchanged.
 
 **Global mounting vs project mounting**:
 
@@ -58,7 +61,7 @@ and listed in the diagnostic `summary.toolBudget`. Dropping back under the
 threshold clears the gate so the same overage warns again. Tools are never
 clipped.
 
-**Shadow priority** — layers merge first-come-first-served (1 → 6 above), and
+**Shadow priority** — layers merge first-come-first-served (1 → 7 above), and
 a row is shadowed when it collides with an earlier row on **any** of three
 keys: the exact `serverName`; the *normalized name* (lowercased with
 non-alphanumerics stripped — `unityMCP` and `unity-mcp` are one service

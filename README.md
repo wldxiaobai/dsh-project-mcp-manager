@@ -6,8 +6,10 @@ A project-level MCP auto-loading plugin for DSH: write MCP server configs in
 `<projectRoot>/.dsh/mcp.yml` or `.dsh/mcp.json` and they are mounted
 automatically (via the official `@deepseek-ai/dsh-mcp-client`) whenever a dsh
 session opens in that project. Changes to the file hot-reload into the running
-dsh process, and tool visibility is scoped per session cwd. No UI — core
-functionality only.
+dsh process, and tool visibility is scoped per session cwd. The default
+`dsh-project-mcp-manager` bundle includes the loader and the companion
+`dsh-project-mcp-ui` settings page for the web and desktop apps. The UI is
+enabled by default and can be disabled independently; the loader keeps working.
 
 **Capability boundary** (dsh ≥ 0.2.0-rc.2): the official client owns the
 protocol, reconnect, tool names, resources, and server instructions. Shipped
@@ -18,7 +20,7 @@ a profile-layer Cordis patch (with that layer's own HMR) plus
 1. Project-level discovery of `<projectRoot>/.dsh/mcp.yml`, `.dsh/mcp.json`,
    and the read-only legacy `.mcp.json`.
 2. Tool visibility isolated by session cwd.
-3. The MCP file format and the `dsh-mcp` CLI.
+3. The MCP file format, the `dsh-mcp` CLI, and the settings page.
 
 Project-file hot reload is this plugin's file watcher. It does not replace
 official profile HMR. **Transport types are decided by the official client.**
@@ -37,8 +39,11 @@ Feature documentation lives in `docs/`, English and Chinese side by side:
 
 - [Configuration format](docs/guide/format.md) — native YAML managed
   block, JSON dialect, divergences from the cordis dialect.
+- [Settings page](docs/guide/settings-ui.md) — use the bundled UI, read
+  the server list, add servers (with fill from clipboard), switch, remove, and
+  manage tools.
 - [Configuration sources and layers](docs/guide/layers.md) — the
-  six-layer source model, shadow priority, global vs project mounting, and the
+  seven-layer source model, shadow priority, global vs project mounting, and the
   read-only legacy Claude Code layer.
 - [`${VAR}` expansion](docs/guide/env-expansion.md) — mount-time interpolation and
   its diagnostics.
@@ -74,7 +79,14 @@ Code review records (Chinese): [TypeScript changes since v0.3.1](docs/code-revie
 The plugin is mounted through a **bundle patch**: once the package is added to
 `dsh.profile.bundles`, dsh synthesizes each bundle's patch (the
 `cordis.patch.yml` pointed to by `dsh.bundle.patch`) into plugin lines at
-startup, in order.
+startup, in order. The manager's default bundle contains two rows:
+`mcp-project` (core loader) and `mcp-project-ui` (settings page). The manager
+installs its same-exact-version UI dependency automatically; the UI package is
+not a standalone `dsh.bundle` and should not be selected separately.
+
+> The core-plus-UI bundle is currently an **Unreleased** change. The npm
+> examples below provide that layout once the coordinated manager/UI release
+> is published; they do not imply it is already available on npm.
 
 **Prerequisite: install dsh itself** (for users who don't have dsh yet):
 
@@ -88,13 +100,14 @@ pnpm inside the profile directory and handles installing/upgrading
 dependencies:
 
 ```powershell
-# Install the latest version (web profile shown as an example;
-# substitute the name of any other profile, e.g. headless)
+# Install the latest version with the UI included (choose your profile)
 dsh plugin --profile web add dsh-project-mcp-manager@latest
+dsh plugin --profile desktop add dsh-project-mcp-manager@latest
+# For other profiles, e.g. headless, substitute the profile name.
 
-# Install a specific version (check available versions with
-# npm view dsh-project-mcp-manager versions)
-dsh plugin --profile web add dsh-project-mcp-manager@0.7.2
+# Pin a release version (check available versions with
+# npm view dsh-project-mcp-manager versions; bundled UI needs the coordinated release)
+dsh plugin --profile web add dsh-project-mcp-manager@<version>
 ```
 
 **Option 2: install directly with pnpm** (equivalent to option 1):
@@ -105,32 +118,66 @@ cd $env:USERPROFILE\.dsh\profiles\web
 pnpm add dsh-project-mcp-manager@latest
 ```
 
-**Option 3: local development install** (a junction that live-syncs your
-source, so code changes take effect immediately):
+**Option 3: local development install** — build the checkout, then link only
+its root manager package. The workspace dependency supplies the matching UI;
+no separate UI link or bundle selection is needed:
 
 ```powershell
-cd $env:USERPROFILE\.dsh\profiles\web
-pnpm add link:<path-to-your-dsh-mcp-project-source>   # e.g. D:\dev\dsh-mcp-project
+# Run in the source checkout
+pnpm install
+pnpm run build     # core first, then UI (host code + browser bundle)
+dsh plugin --profile web add link:<path-to-your-dsh-mcp-project-source>
+# e.g. link:D:\dev\dsh-mcp-project; use --profile desktop for the desktop app
 ```
 
+The link points at the checkout; rebuild after source changes so the host sees
+updated compiled output.
+
 > **dsh ≥ 0.1.2 note**: whether the plugin loads depends on the profile's
-> `dsh.profile.bundles` list, and a plain `pnpm add link:` does **not** add the
-> package to it. Options 1 and 2 reconcile it automatically; if you ran pnpm by
-> hand, run any `dsh plugin --profile web list` once (or check
-> `dsh --profile web --dump-config` for a `dsh-project-mcp-manager` row) to
-> trigger the bundle reconcile.
+> `dsh.profile.bundles` list, not just installed dependencies. The recommended
+> `dsh plugin ... add` command handles bundle reconcile. If you installed with
+> pnpm directly, run `dsh plugin --profile web list` once to trigger it (use
+> `desktop` for that profile). In the web or desktop app's Plugins page, inspect
+> the manager's two contained components. The desktop profile is managed by
+> Electron; do not use a desktop CLI `--dump-config` command to inspect it.
+> Select only `dsh-project-mcp-manager`, not its UI dependency.
 
 **Upgrading / pinning versions**: re-run the `add` command from option 1 with
-the desired version suffix — `@latest` upgrades to the newest release, `@0.7.2`
-pins to a specific version. v0.7.x needs dsh 0.2.0-rc.2 (the `0.2.0` line).
+the desired version suffix — `@latest` upgrades to the newest release,
+`@<version>` pins a specific release. For the bundled UI, choose the coordinated
+manager/UI release described above. v0.7.x needs dsh 0.2.0-rc.2 (the `0.2.0` line).
 dsh 0.1.5 keeps working with plugin `@0.6.0`.
+
+**Settings page (included by default)**: the manager install above supplies
+the UI automatically in web and desktop profiles. Open Settings → Built-in plugins →
+Plugin: MCP Manager. To hide the page without stopping the loader, turn off
+only the manager bundle's `mcp-project-ui` component in the plugin manager's
+contained-components controls (or disable that row with a profile patch
+override). Keep `mcp-project` enabled.
+
+A headless profile installs the same bundle but has no browser page. Without
+the dsh `connection` service, the UI registers no routes;
+its connection integration waits without blocking the core loader or MCP
+mounting.
+
+**Migrating from a separate UI install**: after installing the manager bundle,
+remove `dsh-project-mcp-ui` from the profile's bundle selection
+(`dsh.profile.bundles`), keeping the manager selected. You may then remove the
+direct UI dependency with `dsh plugin --profile web remove dsh-project-mcp-ui`
+(use `desktop` for the desktop profile); the manager still supplies its own UI
+dependency. Before running the new bundle, remove an old direct UI dependency
+(recommended) or align it to the manager's exact version; it can take precedence
+over transitive resolution. If the old UI bundle was disabled, transfer that
+intent to a `mcp-project-ui` row override with `disabled: true` before loading
+the manager. Neither old bundle selection nor direct dependencies are promised
+to be removed automatically. Details: [settings page](docs/guide/settings-ui.md#migrating-from-a-separately-installed-ui).
 
 ## Build & test
 
 ```powershell
 pnpm install
-pnpm run build     # tsc → lib/
-pnpm test          # node test/test-model.mjs / test-mcp-file / test-json-file / test-json-write / test-registry / test-cli
+pnpm run build     # core: tsc → lib/; then UI: tsc + browser bundle → packages/ui/lib/
+pnpm test          # node test/*.mjs (loader, CLI, and settings-page helpers)
 ```
 
 ## How it works
@@ -159,7 +206,8 @@ pnpm test          # node test/test-model.mjs / test-mcp-file / test-json-file /
   reconciliation after a 150 ms debounce: added rows are mounted, removed rows
   are unmounted, and config changes are remounted. A second watcher covers the
   user layer as **exact file paths** — `~/.dsh/mcp.yml`,
-  `~/.dsh/mcp.json`, `~/.dsh/profiles/<active profile>/mcp.json`, and
+  `~/.dsh/mcp.json`, `~/.dsh/profiles/<active profile>/mcp.yml` and
+  `mcp.json`, and
   `$DSH_HOME/dsh-mcp.json` (the other plugin's global store; watched only so
   creating it can be diagnosed, never mounted). chokidar v5 can deliver an
   event for a watched missing file when it is created, as long as its parent
@@ -192,13 +240,18 @@ Other plugins and the companion UI read mount state from `ctx.projectMcp`
 (`snapshot`, `serverView`, `globalState`, `reload`). Queries are the previous
 reconcile's memory; they do not read disk. A successful reconcile emits
 `projectMcp/updated` with no payload. The listener calls `snapshot()` and
-diffs. This package does not open a browser SSE channel.
+diffs. The core loader does not open a browser SSE channel; the bundled UI
+owns that channel. The same service has
+the write methods the settings page uses (`addServer`, `setServerEnabled`,
+`removeServer`, `setToolEnabled`); they only write a managed `mcp.yml`.
 
 That surface — the methods, the event, and the view types re-exported from the
 package entry (`ProjectFileState`, `McpServerRuntimeView`, `McpServerView`,
 `McpRowSource`, and the types those views name) — follows semantic versioning
-for the companion UI. The UI package peer-depends on
-`dsh-project-mcp-manager` at the **same exact version** (no `^` or `~`).
+for the companion UI. The manager depends on `dsh-project-mcp-ui` at the
+**same exact version**, and the UI peer-depends on `dsh-project-mcp-manager`
+at that exact version (no `^` or `~` in either published contract). Both packages
+must be versioned and released together; users install only the manager.
 Details: [query surface](docs/guide/service.md).
 
 ## Security boundary
@@ -206,13 +259,18 @@ Details: [query surface](docs/guide/service.md).
 `stdio` lines in `.dsh/mcp.yml`, `.dsh/mcp.json` and `.mcp.json` spawn their
 `command` inside the dsh host process — config files are **executable code
 carriers**, so only add them in projects you trust. The user layers
-(`~/.dsh/mcp.yml`, `~/.dsh/mcp.json`, the profile json) are executable code
+(`~/.dsh/mcp.yml`, `~/.dsh/mcp.json`, the profile yml and json) are executable code
 carriers too, they just belong to your own machine: user-layer rows mount
 **globally** (one host-level connection, visible to every project) and are no
 longer fanned out per project. Lines that fail to mount or are invalid are
 skipped with a warning and do not affect other servers. Claude user-state
 monoliths such as `~/.claude.json` (mixing credentials with project history)
 are **no longer read at all** as of v0.4.0.
+
+The settings page writes the same managed files, so adding a local-command
+server there spawns that command on the host. Its routes
+(`/api/project-mcp/*`) are served on the dsh connection: whoever can use the
+dsh web GUI can add and start servers through it.
 
 ## Coexistence with other MCP manager plugins
 

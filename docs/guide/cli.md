@@ -5,15 +5,17 @@ English | [中文](cli.zh.md)
 [← README](../../README.md) ｜ Related: [configuration format](format.md) · [configuration sources and layers](layers.md) · [`${VAR}` expansion](env-expansion.md)
 
 Command-line management for the **native** config files (writes only
-`.dsh/mcp.yml` or `.dsh/mcp.json` — never the legacy `.mcp.json`; it does not
-connect to a running dsh host, which converges via the file watchers):
+`mcp.yml` or `mcp.json` — never the legacy `.mcp.json`; it does not
+connect to a running dsh host, which converges via the file watchers). In the
+web and desktop apps the [settings page](settings-ui.md) covers adding,
+switching, and removing too:
 
 ```powershell
 dsh-mcp add gitlab npx -y @modelcontextprotocol/server-gitlab -e GITLAB_TOKEN=${GITLAB_TOKEN}
 dsh-mcp add --transport http sentry https://mcp.sentry.dev/mcp -H "Authorization: Bearer ${SENTRY_TOKEN}"
 dsh-mcp add --scope user shared node ./tools/shared.js        # writes ~/.dsh/mcp.yml
 dsh-mcp add --format json jsonproj node ./tools/p.js          # writes <projectRoot>/.dsh/mcp.json
-dsh-mcp add --scope profile --profile web shared node ./s.js   # writes ~/.dsh/profiles/web/mcp.json
+dsh-mcp add --scope profile --profile web shared node ./s.js   # writes ~/.dsh/profiles/web/mcp.yml
 dsh-mcp list          # all source layers, with shadow annotations
 dsh-mcp get gitlab    # winning-layer entry; secret values shown as key names only
 dsh-mcp remove gitlab # searches yml then json in priority order and deletes; read-only layers get edit guidance
@@ -37,7 +39,7 @@ the nearest `.git` ancestor), `--scope user` (writes `~/.dsh/mcp.yml`) and
 the config file or brought in with `dsh-mcp import`. `list` and `get` still
 show those filters (pattern text only).
 
-**`status`** reads the six source layers and the diagnostic files
+**`status`** reads the seven source layers and the diagnostic files
 (per-project `$DSH_HOME/mcp-diag/<hash>.json`, global `$DSH_HOME/.mcp-diag.json`;
 neither is written into a workspace). It
 prints each layer's row count and names, then the latest `summary`
@@ -71,10 +73,12 @@ next token as their value, so pass them to the spawned server command after `--`
 `--dry-run` and `--overwrite` are reserved for `import`. Any other unknown
 `-` token is still forwarded to the server command line verbatim.
 
-**Ownership contract**: JSON files belong exclusively to this CLI (the host
-plugin never writes them). Writes keep other top-level keys and key order,
+**Ownership contract**: JSON files belong exclusively to this CLI (neither the
+host plugin nor the settings page writes them). Writes keep other top-level keys and key order,
 refuse to overwrite a file that fails to parse, and are atomic; `${VAR}`
 references are written through literally so secrets stay in the environment
 (see [`${VAR}` expansion](env-expansion.md)). The yml side goes through the
 managed block, so content outside the begin/end markers is preserved
-byte-for-byte.
+byte-for-byte. The managed yml is shared with the
+[settings page](settings-ui.md); both read-modify-write it under the same file
+lock, so they can be mixed.
