@@ -42,26 +42,33 @@ function pushEntry(candidates: Candidate[], name: string, entry: unknown): void 
   candidates.push({ name: name.trim(), entry });
 }
 
-function collect(value: unknown, candidates: Candidate[]): void {
-  if (Array.isArray(value)) {
-    for (const item of value) collect(item, candidates);
-    return;
-  }
-  if (!isRecord(value)) return;
+function collectServerMap(map: unknown, candidates: Candidate[]): void {
+  if (!isRecord(map)) return;
+  for (const [name, entry] of Object.entries(map)) pushEntry(candidates, name, entry);
+}
+
+function managedCandidate(value: Record<string, unknown>): Candidate | undefined {
+  const config = value.config;
+  if (!isRecord(config) || (!looksLikeServer(config) && typeof config.serverName !== "string")) return undefined;
+  const serverName = typeof config.serverName === "string" ? config.serverName.trim() : "";
+  const id = typeof value.id === "string" && value.id.startsWith(MANAGED_ID_PREFIX) ? value.id.slice(MANAGED_ID_PREFIX.length) : "";
+  return { name: serverName !== "" ? serverName : id, entry: config };
+}
+
+function collectRecord(value: Record<string, unknown>, candidates: Candidate[]): void {
   if ("mcpServers" in value || "servers" in value) {
-    const map = isRecord(value.mcpServers) ? value.mcpServers : isRecord(value.servers) ? value.servers : undefined;
-    if (map === undefined) return;
-    for (const [name, entry] of Object.entries(map)) pushEntry(candidates, name, entry);
+    let map = value.mcpServers;
+    if (!isRecord(map)) map = value.servers;
+    collectServerMap(map, candidates);
     return;
   }
   if (Array.isArray(value.insert)) {
     collect(value.insert, candidates);
     return;
   }
-  if (isRecord(value.config) && (looksLikeServer(value.config) || typeof value.config.serverName === "string")) {
-    const serverName = typeof value.config.serverName === "string" ? value.config.serverName.trim() : "";
-    const id = typeof value.id === "string" && value.id.startsWith(MANAGED_ID_PREFIX) ? value.id.slice(MANAGED_ID_PREFIX.length) : "";
-    pushEntry(candidates, serverName !== "" ? serverName : id, value.config);
+  const managed = managedCandidate(value);
+  if (managed !== undefined) {
+    pushEntry(candidates, managed.name, managed.entry);
     return;
   }
   if (looksLikeServer(value)) {
@@ -71,8 +78,16 @@ function collect(value: unknown, candidates: Candidate[]): void {
   }
   const entries = Object.entries(value);
   if (entries.length > 0 && entries.every(([, entry]) => isRecord(entry) && looksLikeServer(entry))) {
-    for (const [name, entry] of entries) pushEntry(candidates, name, entry);
+    collectServerMap(value, candidates);
   }
+}
+
+function collect(value: unknown, candidates: Candidate[]): void {
+  if (Array.isArray(value)) {
+    for (const item of value) collect(item, candidates);
+    return;
+  }
+  if (isRecord(value)) collectRecord(value, candidates);
 }
 
 type Declared = "stdio" | "http" | "sse" | "conflict" | "unknown" | undefined;
@@ -95,7 +110,7 @@ function declaredTransport(entry: Record<string, unknown>): Declared {
   return fromTransport ?? fromType;
 }
 
-function remoteUrl(entry: Record<string, unknown>): string | "mismatch" {
+function remoteUrl(entry: Record<string, unknown>): string {
   const url = typeof entry.url === "string" ? entry.url.trim() : "";
   const httpUrl = typeof entry.httpUrl === "string" ? entry.httpUrl.trim() : "";
   if (url !== "" && httpUrl !== "" && url !== httpUrl) return "mismatch";
@@ -178,7 +193,7 @@ export function parsePastedConfig(text: string): PasteConfigResult {
   for (const candidate of candidates) {
     const result = convert(candidate);
     if (result.ok) filled.push(result.fields);
-    else if (firstFailure === undefined) firstFailure = result.reason;
+    else firstFailure ??= result.reason;
   }
   const fields = filled[0];
   if (fields === undefined) return { ok: false, reason: firstFailure ?? "none" };

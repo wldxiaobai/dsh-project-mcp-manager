@@ -124,5 +124,94 @@ mcpServers:
   pass("httpUrl alone is a remote URL");
 }
 
+{
+  const cases = [
+    [{ mcpServers: { preferred: { command: "first" } }, servers: { other: { command: "second" } } }, "preferred"],
+    [{ mcpServers: null, servers: { fallback: { command: "node" } } }, "fallback"],
+    [{ mcpServers: {}, servers: { ignored: { command: "node" } } }, undefined],
+    [{ mcpServers: null, command: "ignored" }, undefined],
+    [{ insert: [{ command: "nested", serverName: "insert" }], command: "ignored" }, "insert"],
+    [{ id: "panel-mcp-fallback", config: { serverName: "  ", command: "node" }, command: "ignored" }, "fallback"],
+    [{ id: "panel-mcp-ignored", config: { serverName: " named ", command: "node" } }, "named"],
+    [{ first: { command: "node" }, second: { url: "https://example.com" } }, "first"],
+    [{ first: { command: "node" }, metadata: "not a server" }, undefined],
+  ];
+  for (const [input, name] of cases) {
+    const parsed = parsePastedConfig(JSON.stringify(input));
+    if (name === undefined) assert.deepEqual(parsed, { ok: false, reason: "none" });
+    else {
+      assert.equal(parsed.ok, true);
+      assert.equal(parsed.fields.name, name);
+    }
+  }
+  pass("collection preserves wrapper priority, managed names, and bare-map detection");
+}
+
+{
+  const parsed = parsePastedConfig(JSON.stringify([
+    null,
+    [{ command: "disabled", enabled: false }, { type: "sse", url: "https://example.com" }],
+    { config: { serverName: "off", command: "disabled", enabled: false } },
+    { serverName: "first", command: " node ", args: ["srv.js", 42, false], env: { TOKEN: "value", PORT: 42, DEBUG: false, OMIT: null } },
+    { serverName: "second", command: "other" },
+  ]));
+  assert.deepEqual(parsed, {
+    ok: true,
+    fields: { name: "first", transport: "stdio", command: "node", args: "srv.js\n42\nfalse", url: "", env: "TOKEN=value\nPORT=42\nDEBUG=false", headers: "" },
+    skipped: 1,
+  });
+  pass("nested arrays keep the first valid candidate and only count other valid candidates");
+}
+
+{
+  const cases = [
+    [{ type: "sse", transport: "unknown", url: "a", httpUrl: "b" }, "sse"],
+    [{ type: "stdio", transport: "http", command: "node" }, "transport"],
+    [{ type: "unknown", command: "node" }, "transport"],
+    [{ url: "a", httpUrl: "b" }, "fields"],
+    [{ command: "node", url: "a", args: {} }, "both"],
+    [{ type: "http", args: {} }, "fields"],
+    [{ type: "http" }, "url"],
+    [{ type: "stdio", url: "a" }, "command"],
+    [{ command: "node", args: [{}] }, "fields"],
+    [{ command: "node", env: { KEY: [] } }, "fields"],
+    [{ command: "node", headers: [] }, "fields"],
+  ];
+  for (const [input, reason] of cases) {
+    assert.deepEqual(parsePastedConfig(JSON.stringify(input)), { ok: false, reason });
+  }
+  assert.deepEqual(parsePastedConfig(JSON.stringify([{ type: "sse" }, { type: "unknown" }])), { ok: false, reason: "sse" });
+  assert.deepEqual(parsePastedConfig(JSON.stringify([{ type: "unknown" }, { type: "sse" }])), { ok: false, reason: "transport" });
+  pass("validation preserves failure priority and the first failed candidate reason");
+}
+
+{
+  const http = parsePastedConfig(JSON.stringify({
+    type: " HTTP ", transport: "streamable-http", command: "ignored", args: ["ignored"],
+    url: " https://example.com/mcp ", httpUrl: "https://example.com/mcp", env: { IGNORED: true },
+    headers: { Authorization: "token", Count: 1, Debug: false, Omit: null },
+  }));
+  assert.deepEqual(http, {
+    ok: true,
+    fields: { name: "", transport: "http", command: "", args: "", url: "https://example.com/mcp", env: "", headers: "Authorization: token\nCount: 1\nDebug: false" },
+    skipped: 0,
+  });
+  const stdio = parsePastedConfig(JSON.stringify({ transport: "stdio", command: "node", args: "raw args", url: "https://example.com", headers: { Ignored: true } }));
+  assert.equal(stdio.ok, true);
+  assert.equal(stdio.fields.args, "raw args");
+  assert.equal(stdio.fields.url, "");
+  assert.equal(stdio.fields.headers, "");
+  pass("explicit transports select their fields and accept equivalent URL and transport aliases");
+}
+
+{
+  const parsed = parsePastedConfig("mcpServers: [\n---\ncommand: node\nserverName: valid\n");
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.fields.name, "valid");
+  assert.equal(parsed.skipped, 0);
+  assert.deepEqual(parsePastedConfig("mcpServers: [\n---\nplain text\n"), { ok: false, reason: "parse" });
+  pass("valid YAML documents survive another document parse error");
+}
+
 console.log("\n" + passed + " passed, 0 failed");
 console.log("ALL UI PASTE TESTS PASSED");
