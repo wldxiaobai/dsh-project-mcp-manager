@@ -68,6 +68,9 @@ export function collapseServers<T extends CollapseServer>(rows: T[]): LogicalSer
       if (!sameName && row.needsYmlTakeover) continue;
       const notes = shadowed.get(winner);
       if (notes !== undefined) notes.push(row);
+      // 同名、归一名的覆盖已经记在 byName / byNorm。身份相同但名字不同时只追加说明，
+      // 不能把这个名字改记到胜出者头上，否则另一条同名、命令不同的行会被收进这张卡。
+      if (!sameName) continue;
       const at = anchor.get(winner);
       if (at !== undefined && index < at) anchor.set(winner, index);
       byName.set(nameKey, winner);

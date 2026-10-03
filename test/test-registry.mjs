@@ -2394,6 +2394,51 @@ try {
 }
 
 {
+  const dirLock = await mkdtemp(join(tmpdir(), "dsh-mcp-workspace-lock-"));
+  const homeLock = join(dirLock, "home");
+  const projFocus = join(dirLock, "focus");
+  const projBack = join(dirLock, "back");
+  await mkdir(join(homeLock, ".dsh"), { recursive: true });
+  await mkdir(projFocus, { recursive: true });
+  await mkdir(projBack, { recursive: true });
+  const ymlBack = projectMcpFile(projBack);
+  await writeManagedRows(projectMcpFile(projFocus), [stdioRow("front")], { createIfMissing: true });
+  await writeManagedRows(ymlBack, [stdioRow("behind")], { createIfMissing: true });
+  const savedCwdLock = process.cwd();
+  try {
+    process.chdir(dirLock);
+    const ctxLock = fakeCtx();
+    const agentFocus = fakeAgent("session-lock-focus", projFocus);
+    ctxLock.agentsList.push(agentFocus);
+    const registryLock = new ProjectMcpRegistry(ctxLock, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(homeLock, ".dsh", "mcp.yml"), mcpJson: join(homeLock, ".dsh", "mcp.json"), profilesDir: join(homeLock, ".dsh", "profiles") }
+    });
+    ctxLock.emit("agent/created", { agent: agentFocus, source: "resume" });
+    await registryLock.reconcileNow();
+    assert.equal(registryLock.focusedProjectRoot(), projFocus);
+    const before = await readFile(ymlBack, "utf8");
+    await assert.rejects(
+      () => registryLock.setServerEnabled("dsh-project", projBack, "behind", false),
+      /这个工作区当前不能改/
+    );
+    await assert.rejects(
+      () => registryLock.removeServer("dsh-project", projBack, "behind"),
+      /这个工作区当前不能改/
+    );
+    assert.equal(await readFile(ymlBack, "utf8"), before, "a background workspace is not rewritten");
+    for (const disposer of ctxLock.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    pass("a background workspace cannot be enabled or removed");
+  } finally {
+    process.chdir(savedCwdLock);
+    await rmRetry(dirLock);
+  }
+}
+
+{
   const dirRel = await mkdtemp(join(tmpdir(), "dsh-mcp-release-"));
   const homeRel = join(dirRel, "home");
   const projRel = join(dirRel, "proj");
@@ -2447,6 +2492,67 @@ try {
 }
 
 {
+  const dirChain = await mkdtemp(join(tmpdir(), "dsh-mcp-unmount-chain-"));
+  const homeChain = join(dirChain, "home");
+  const projChain = join(dirChain, "proj");
+  const projAway = join(dirChain, "away");
+  await mkdir(join(homeChain, ".dsh"), { recursive: true });
+  await mkdir(projChain, { recursive: true });
+  await mkdir(projAway, { recursive: true });
+  await writeManagedRows(projectMcpFile(projChain), [stdioRow("alpha")], { createIfMissing: true });
+  const savedCwdChain = process.cwd();
+  let ctxChain;
+  try {
+    process.chdir(dirChain);
+    ctxChain = fakeCtx();
+    const agentChain = fakeAgent("session-chain", projChain);
+    const agentAway = fakeAgent("session-away", projAway);
+    ctxChain.agentsList.push(agentChain);
+    const registryChain = new ProjectMcpRegistry(ctxChain, {
+      globalNames: async () => [],
+      healthRemountBackoffMs: 0,
+      userLayerPaths: { mcpYml: join(homeChain, ".dsh", "mcp.yml"), mcpJson: join(homeChain, ".dsh", "mcp.json"), profilesDir: join(homeChain, ".dsh", "profiles") }
+    });
+    await registryChain.reconcileNow();
+    const effective = ctxChain.mounts[0].serverName;
+    ctxChain.schemas.push({ name: "mcp__" + effective + "__ping" });
+    await registryChain.reconcileNow();
+    ctxChain.schemas.length = 0;
+    await registryChain.reconcileNow();
+    ctxChain.holdDispose = true;
+    const remounting = registryChain.reconcileNow();
+    const started = Date.now();
+    while (ctxChain.disposals.length === 0 && Date.now() - started < 3000) {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+    }
+    assert.equal(ctxChain.disposals.length, 1, "health remount disposes the dead fiber");
+    const mountsAtHold = ctxChain.mounts.length;
+    ctxChain.agentsList.push(agentAway);
+    ctxChain.emit("session/event", { id: "session-away", header: { cwd: projAway } }, { type: "user/message" });
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+    assert.equal(ctxChain.mounts.length, mountsAtHold, "the server is not mounted again while dispose is still running");
+    const release = ctxChain.releaseDispose.shift();
+    assert.equal(typeof release, "function");
+    release();
+    await remounting;
+    assert.ok(
+      await registryChain.waitForState(projChain, "alpha", (state) => state == null || state.phase !== "active", 5000),
+      "leaving during dispose does not leave the server mounted"
+    );
+    assert.equal(registryChain.focusedProjectRoot(), projAway);
+    pass("health remount shares the dispose chain with a workspace switch");
+  } finally {
+    process.chdir(savedCwdChain);
+    for (const release of ctxChain?.releaseDispose ?? []) release();
+    for (const disposer of ctxChain?.disposers ?? []) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    await rmRetry(dirChain);
+  }
+}
+
+{
   const dirHost = await mkdtemp(join(tmpdir(), "dsh-mcp-host-focus-"));
   const homeHost = join(dirHost, "home");
   const projVisible = join(dirHost, "visible");
@@ -2464,21 +2570,38 @@ try {
     const agentVisible = fakeAgent("session-visible", projVisible);
     const agentLast = fakeAgent("session-last", projLast);
     ctxHost.agentsList.push(agentVisible, agentLast);
-    ctxHost.sessions = { current: () => ({ header: { cwd: projVisible } }) };
+    ctxHost.sessions = {
+      current: () => ({ header: { cwd: projLast } }),
+      list: () => ({ current: { header: { cwd: projVisible } } })
+    };
     const registryHost = new ProjectMcpRegistry(ctxHost, {
       globalNames: async () => [],
       userLayerPaths: { mcpYml: join(homeHost, ".dsh", "mcp.yml"), mcpJson: join(homeHost, ".dsh", "mcp.json"), profilesDir: join(homeHost, ".dsh", "profiles") }
     });
     ctxHost.emit("agent/created", { agent: agentVisible, source: "resume" });
     ctxHost.emit("agent/created", { agent: agentLast, source: "resume" });
-    assert.ok(await registryHost.waitForState(projVisible, "shown", (state) => state?.phase === "active", 5000), "host current session mounts its project");
-    assert.equal(registryHost.focusedProjectRoot(), projVisible, "focus follows the host session instead of the last agent/created");
+    assert.ok(await registryHost.waitForState(projVisible, "shown", (state) => state?.phase === "active", 5000), "visible session mounts its project");
+    assert.equal(registryHost.focusedProjectRoot(), projVisible, "cold start follows the visible session, not the session being restored");
     const hidden = await registryHost.serverView(projLast, "hidden");
     assert.ok(hidden == null || hidden.fiberPhase !== "active", "the last resumed workspace is not the running one");
+    const projOpened = join(dirHost, "opened");
+    await mkdir(projOpened, { recursive: true });
+    await writeManagedRows(projectMcpFile(projOpened), [stdioRow("fresh")], { createIfMissing: true });
+    ctxHost.emit("session/created", { id: "session-opened", header: { cwd: projOpened } });
+    assert.ok(await registryHost.waitForState(projOpened, "fresh", (state) => state?.phase === "active", 5000), "a workspace opened during recovery mounts");
+    assert.equal(registryHost.focusedProjectRoot(), projOpened, "session/created is not pulled back to the visible session");
+    const agentOpened = fakeAgent("session-clicked", join(dirHost, "clicked"));
+    const projClicked = agentOpened.session.header.cwd;
+    await mkdir(projClicked, { recursive: true });
+    await writeManagedRows(projectMcpFile(projClicked), [stdioRow("clicked")], { createIfMissing: true });
+    ctxHost.agentsList.push(agentOpened);
+    ctxHost.emit("agent/created", { agent: agentOpened, source: "resume" });
+    assert.ok(await registryHost.waitForState(projClicked, "clicked", (state) => state?.phase === "active", 5000), "a workspace the user opens mounts");
+    assert.equal(registryHost.focusedProjectRoot(), projClicked, "agent/created after cold start is not rewritten");
     ctxHost.emit("session/event", { id: "session-last", header: { cwd: projLast } }, { type: "tool/result" });
     await registryHost.reconcileNow();
-    assert.equal(registryHost.focusedProjectRoot(), projVisible, "a background tool result still does not move focus");
-    pass("host current session corrects focus across a cold resume");
+    assert.equal(registryHost.focusedProjectRoot(), projClicked, "a background tool result still does not move focus");
+    pass("cold start uses the visible session and later opens keep focus");
   } finally {
     process.chdir(savedCwdHost);
     for (const disposer of ctxHost?.disposers ?? []) {

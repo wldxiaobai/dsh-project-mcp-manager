@@ -203,8 +203,12 @@ export const PANEL_CSS = `
   padding-top: 6px;
   border-top: 0.5px solid var(--dsw-alias-border-l2);
 }
-.dsh-mcp-ui .danger {
+.dsh-mcp-ui .danger-wrap {
+  display: inline-flex;
   margin-left: auto;
+}
+.dsh-mcp-ui .danger {
+  margin-left: 0;
   color: var(--dsw-alias-state-error-primary);
 }
 

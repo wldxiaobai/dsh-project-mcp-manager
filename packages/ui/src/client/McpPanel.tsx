@@ -18,7 +18,7 @@ import {
 } from "../wire.ts";
 import type { McpUiLocaleKey } from "./locales.ts";
 import { collapseServers, partitionShadowed, type LogicalServer } from "./collapse.ts";
-import { displayHomePath, isProfileSource, profileEndKind, profileNameFromFile } from "./display.ts";
+import { displayHomePath, isProfileSource, profileEndKind, profileNameFromFile, serverActionsOpen } from "./display.ts";
 import { parsePastedConfig, type PasteConfigFailure } from "./paste-config.ts";
 import { PANEL_CSS } from "./style.ts";
 
@@ -535,11 +535,11 @@ export function McpPanel({ t }: McpPanelProps) {
       {state === null && error === null && <p className="empty">{t("loading")}</p>}
       {state !== null && state.servers.length === 0 && <p className="empty">{t("empty")}</p>}
 
-      <ServerGroups title={t("projectLayer")} groups={projectGroups} busy={busy} t={t} homeDir={homeDir} onToggle={(row, enabled) => askOrRun({ kind: "server", action: enabled ? "enable" : "disable", row })} onRemove={(row) => askOrRun({ kind: "server", action: "remove", row })} onTools={(row) => void openTools(row)} />
+      <ServerGroups title={t("projectLayer")} groups={projectGroups} busy={busy} t={t} homeDir={homeDir} writeTargets={state?.writeTargets ?? []} onToggle={(row, enabled) => askOrRun({ kind: "server", action: enabled ? "enable" : "disable", row })} onRemove={(row) => askOrRun({ kind: "server", action: "remove", row })} onTools={(row) => void openTools(row)} />
       {profileBuckets.map(([name, rows]) => (
-        <ServerGroups key={name === "" ? "profile" : name} title={profileTitle(name)} groups={groupedLogical(rows, (server) => showUserPath(server.winner.filePath))} busy={busy} t={t} homeDir={homeDir} onToggle={(row, enabled) => askOrRun({ kind: "server", action: enabled ? "enable" : "disable", row })} onRemove={(row) => askOrRun({ kind: "server", action: "remove", row })} onTools={(row) => void openTools(row)} />
+        <ServerGroups key={name === "" ? "profile" : name} title={profileTitle(name)} groups={groupedLogical(rows, (server) => showUserPath(server.winner.filePath))} busy={busy} t={t} homeDir={homeDir} writeTargets={state?.writeTargets ?? []} onToggle={(row, enabled) => askOrRun({ kind: "server", action: enabled ? "enable" : "disable", row })} onRemove={(row) => askOrRun({ kind: "server", action: "remove", row })} onTools={(row) => void openTools(row)} />
       ))}
-      <ServerGroups title={t("userLayer")} groups={userGroups} busy={busy} t={t} homeDir={homeDir} onToggle={(row, enabled) => askOrRun({ kind: "server", action: enabled ? "enable" : "disable", row })} onRemove={(row) => askOrRun({ kind: "server", action: "remove", row })} onTools={(row) => void openTools(row)} />
+      <ServerGroups title={t("userLayer")} groups={userGroups} busy={busy} t={t} homeDir={homeDir} writeTargets={state?.writeTargets ?? []} onToggle={(row, enabled) => askOrRun({ kind: "server", action: enabled ? "enable" : "disable", row })} onRemove={(row) => askOrRun({ kind: "server", action: "remove", row })} onTools={(row) => void openTools(row)} />
 
       <Modal
         open={pending !== null}
@@ -665,21 +665,26 @@ export function McpPanel({ t }: McpPanelProps) {
         {tools !== null && tools.length === 0 && <p className="dsh-mcp-tools-status">{t("toolsEmpty")}</p>}
         {tools !== null && tools.length > 0 && (
           <div className="dsh-mcp-tools-list" style={TOOL_LIST_STYLE}>
-            {tools.map((tool) => (
-              <div className="dsh-mcp-tools-row" key={tool.name} style={TOOL_ROW_STYLE}>
-                <span className="dsh-mcp-tools-name" title={tool.name} style={TOOL_NAME_STYLE}>{tool.name}</span>
-                <Switch
-                  className="dsh-mcp-tools-switch dsh-mcp-switch"
-                  checked={tool.enabled}
-                  disabled={busy || toolsFor === null}
-                  label={t("toolEnableLabel", { name: tool.name })}
-                  onChange={(enabled) => {
-                    if (toolsFor === null) return;
-                    askOrRun({ kind: "tool", row: toolsFor, tool: tool.name, enabled });
-                  }}
-                />
-              </div>
-            ))}
+            {tools.map((tool) => {
+              const toolsLocked = toolsFor !== null && !serverActionsOpen(toolsFor, state?.writeTargets ?? []);
+              return (
+                <div className="dsh-mcp-tools-row" key={tool.name} style={TOOL_ROW_STYLE}>
+                  <span className="dsh-mcp-tools-name" title={tool.name} style={TOOL_NAME_STYLE}>{tool.name}</span>
+                  <span title={toolsLocked ? t("workspaceLocked") : undefined}>
+                    <Switch
+                      className="dsh-mcp-tools-switch dsh-mcp-switch"
+                      checked={tool.enabled}
+                      disabled={busy || toolsFor === null || toolsLocked}
+                      label={toolsLocked ? t("workspaceLocked") : t("toolEnableLabel", { name: tool.name })}
+                      onChange={(enabled) => {
+                        if (toolsFor === null || toolsLocked) return;
+                        askOrRun({ kind: "tool", row: toolsFor, tool: tool.name, enabled });
+                      }}
+                    />
+                  </span>
+                </div>
+              );
+            })}
           </div>
         )}
       </Modal>
@@ -687,12 +692,13 @@ export function McpPanel({ t }: McpPanelProps) {
   );
 }
 
-function ServerGroups({ title, groups, busy, t, homeDir, onToggle, onRemove, onTools }: {
+function ServerGroups({ title, groups, busy, t, homeDir, writeTargets, onToggle, onRemove, onTools }: {
   title: string;
   groups: Array<[string, LogicalServer<McpUiServer>[]]>;
   busy: boolean;
   t: McpPanelProps["t"];
   homeDir: string | undefined;
+  writeTargets: McpUiState["writeTargets"];
   onToggle: (row: McpUiServer, enabled: boolean) => void;
   onRemove: (row: McpUiServer) => void;
   onTools: (row: McpUiServer) => void;
@@ -710,7 +716,7 @@ function ServerGroups({ title, groups, busy, t, homeDir, onToggle, onRemove, onT
               <span className="group-count">{t("serverCount", { count: servers.length })}</span>
             </div>
             {servers.map((server) => (
-              <ServerCard key={server.winner.source + server.winner.filePath + server.winner.serverName} server={server} busy={busy} t={t} homeDir={homeDir} onToggle={(enabled) => onToggle(server.winner, enabled)} onRemove={() => onRemove(server.winner)} onTools={() => onTools(server.winner)} />
+              <ServerCard key={server.winner.source + server.winner.filePath + server.winner.serverName} server={server} busy={busy} locked={!serverActionsOpen(server.winner, writeTargets)} t={t} homeDir={homeDir} onToggle={(enabled) => onToggle(server.winner, enabled)} onRemove={() => onRemove(server.winner)} onTools={() => onTools(server.winner)} />
             ))}
           </div>
         ))}
@@ -719,9 +725,10 @@ function ServerGroups({ title, groups, busy, t, homeDir, onToggle, onRemove, onT
   );
 }
 
-function ServerCard({ server, busy, t, homeDir, onToggle, onRemove, onTools }: {
+function ServerCard({ server, busy, locked, t, homeDir, onToggle, onRemove, onTools }: {
   server: LogicalServer<McpUiServer>;
   busy: boolean;
+  locked: boolean;
   t: McpPanelProps["t"];
   homeDir: string | undefined;
   onToggle: (enabled: boolean) => void;
@@ -746,7 +753,9 @@ function ServerCard({ server, busy, t, homeDir, onToggle, onRemove, onTools }: {
             <Tag tone={badgeTone}>{row.needsYmlTakeover ? t("badgeTakeover", { file: source }) : source}</Tag>
           </span>
         </div>
-        <Switch className={status.tone === "waiting" ? "dsh-mcp-switch dsh-mcp-switch-waiting" : "dsh-mcp-switch"} checked={row.enabled} disabled={busy} label={t("enableLabel")} onChange={onToggle} />
+        <span title={locked ? t("workspaceLocked") : undefined}>
+          <Switch className={status.tone === "waiting" ? "dsh-mcp-switch dsh-mcp-switch-waiting" : "dsh-mcp-switch"} checked={row.enabled} disabled={busy || locked} label={locked ? t("workspaceLocked") : t("enableLabel")} onChange={onToggle} />
+        </span>
       </div>
       <div className="meta">
         <p className={`status status-${status.tone}`}>
@@ -765,7 +774,9 @@ function ServerCard({ server, busy, t, homeDir, onToggle, onRemove, onTools }: {
       </div>
       <div className="actions">
         <Button variant="outline" size="sm" disabled={busy} onClick={onTools}>{t("tools")}</Button>
-        <Button className="danger" variant="ghost" size="sm" disabled={busy} icon={<IconTrashOutlineRegular size={16} />} onClick={onRemove}>{t("remove")}</Button>
+        <span className="danger-wrap" title={locked ? t("workspaceLocked") : undefined}>
+          <Button className="danger" variant="ghost" size="sm" disabled={busy || locked} icon={<IconTrashOutlineRegular size={16} />} onClick={onRemove}>{t("remove")}</Button>
+        </span>
       </div>
     </article>
   );

@@ -364,6 +364,20 @@ export function projectMcpJsonFile(projectRoot: string): string {
   return join(projectRoot, CC_PROJECT_FILE);
 }
 
+function cwdOfSessionRecord(value: any): string | undefined {
+  const cwd = value?.header?.cwd ?? value?.session?.header?.cwd ?? value?.cwd;
+  return typeof cwd === "string" && cwd !== "" ? cwd : undefined;
+}
+
+/** 会话列表当前选中项的 cwd。id 只在这份列表的 byId 里解析，不另查正在恢复的会话。 */
+function cwdOfListedSession(current: unknown, listed: any): string | undefined {
+  if (typeof current === "string") {
+    if (current === "") return undefined;
+    return cwdOfSessionRecord(listed?.byId?.[current]);
+  }
+  return cwdOfSessionRecord(current);
+}
+
 function normalizePathKey(path: string): string {
   const resolved = resolve(path);
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
@@ -875,10 +889,13 @@ export class ProjectMcpRegistry {
   private liveWatchSig = "";
   private liveWatchTimer: ReturnType<typeof setInterval> | undefined;
   /**
-   * 用户已经用消息选定工作区。在此之前，冷启动连续 resume 时用宿主当前会话校正焦点；
-   * 之后不再用宿主状态把焦点拽回去。
+   * 用户已经用消息选定工作区。冷启动那一轮校正之后也不再改写。
    */
   private userChoseFocus = false;
+  /** 冷启动校正已经做过，或用户已经点开工作区。之后不再用宿主可见会话改写焦点。 */
+  private hostFocusSealed = false;
+  /** 构造时已经在线的 agent。它们随后的 agent/created 是冷启动重放，不改焦点。 */
+  private readonly startupAgentIds = new Set<string>();
   /** 生效名 → 尚未结束的 fiber.dispose。同名重挂必须等它落地，避免预留被晚到的 dispose 清掉。 */
   private readonly nameRelease = new Map<string, Promise<void>>();
 
@@ -888,15 +905,26 @@ export class ProjectMcpRegistry {
 
     // dsh 0.2 的 agent/created 带 source（startup|resume|clear|compact），覆盖原 session-start 的补扫。
     // global：事件经会话作用域 carrier 派发，非 global 的监听可能被过滤掉，运行中新开的工作区就永远不会对账。
+    for (const agent of this.liveAgents()) {
+      const id = agent?.id;
+      if (typeof id === "string" && id !== "") this.startupAgentIds.add(id);
+    }
+
     const watchOpts = { global: true };
     ctx.on("agent/created", (payload: any) => {
       const agent = payload?.agent ?? payload;
       if (agent?.session === undefined && agent?.id === undefined) return;
+      const id = typeof agent?.id === "string" ? agent.id : undefined;
+      const replay = id !== undefined && this.startupAgentIds.delete(id);
       // serial 的 agent/created 会等这个 Promise：对账和 deny 落定后再开始这一回合，
       // 避免模型先看到上一个工作区的工具。
       return this.enqueue(async () => {
-        await this.rememberAgent(agent, true);
-        await this.alignForegroundToHost();
+        if (replay) {
+          await this.rememberAgent(agent, false);
+        } else {
+          await this.rememberAgent(agent, true);
+          this.hostFocusSealed = true;
+        }
         await this.reconcileAll();
       }).catch((error) => {
         this.ctx.logger.warn(`项目 MCP 后台任务失败：${error instanceof Error ? error.message : String(error)}`);
@@ -913,7 +941,7 @@ export class ProjectMcpRegistry {
     ctx.on("session/created", (session: any) => {
       this.schedule(async () => {
         await this.rememberSession(session);
-        await this.alignForegroundToHost();
+        this.hostFocusSealed = true;
         await this.reconcileAll();
       });
     }, watchOpts);
@@ -938,7 +966,8 @@ export class ProjectMcpRegistry {
       for (const agent of this.liveAgents()) {
         this.agentProjects.set(agent.id, await this.resolveProject(agent));
       }
-      await this.alignForegroundToHost();
+      if (!this.hostFocusSealed) await this.alignForegroundToHost();
+      this.hostFocusSealed = true;
       await this.reconcileAll();
     });
 
@@ -1115,6 +1144,7 @@ export class ProjectMcpRegistry {
     const cwd = session?.header?.cwd;
     if (typeof cwd !== "string" || cwd === "") return;
     this.userChoseFocus = true;
+    this.hostFocusSealed = true;
     const cached = this.cwdKey.get(projectKeyOf(resolve(cwd)));
     if (cached === undefined) {
       this.schedule(async () => {
@@ -1179,39 +1209,33 @@ export class ProjectMcpRegistry {
     this.nameRelease.set(name, current);
   }
 
+  /** 等到这个生效名上没有未完成的 dispose。等待期间新挂上的也要等完。 */
   private async waitForNameRelease(effectiveName: string): Promise<void> {
-    const pending = this.nameRelease.get(effectiveName);
-    if (pending !== undefined) await pending;
+    let pending = this.nameRelease.get(effectiveName);
+    while (pending !== undefined) {
+      const current = pending;
+      await current;
+      const next = this.nameRelease.get(effectiveName);
+      pending = next === current ? undefined : next;
+    }
   }
 
   /**
-   * 宿主可见会话的 cwd。没有这条状态时返回 undefined，焦点仍按事件顺序。
-   * 认 `sessions.current()` / `sessions.current`，以及 `sessions.list()` 的 current id。
+   * 冷启动用的可见工作区。只读会话列表上的当前选中项。
+   * `sessions.current()` 在恢复过程中指向正在恢复的会话，不能拿来校正焦点。
    */
   private hostVisibleCwd(): string | undefined {
     try {
       const sessions = this.ctx.sessions;
       if (sessions == null || typeof sessions !== "object") return undefined;
-      const cwdOf = (value: any): string | undefined => {
-        const cwd = value?.header?.cwd ?? value?.session?.header?.cwd;
-        return typeof cwd === "string" && cwd !== "" ? cwd : undefined;
-      };
-      const current = typeof sessions.current === "function" ? sessions.current.call(sessions) : sessions.current;
-      const direct = cwdOf(current);
-      if (direct !== undefined) return direct;
-      const listed = typeof sessions.list === "function" ? sessions.list() : undefined;
-      const listedCwd = cwdOf(listed?.current);
-      if (listedCwd !== undefined) return listedCwd;
-      const id = typeof current === "string" ? current : typeof listed?.current === "string" ? listed.current : undefined;
-      if (id === undefined) return undefined;
-      const session = sessions.get?.(id) ?? sessions.binding?.(id)?.session ?? listed?.byId?.[id];
-      return cwdOf(session);
+      const listed = typeof sessions.list === "function" ? sessions.list() : sessions.list;
+      return cwdOfListedSession(listed?.current, listed);
     } catch {
       return undefined;
     }
   }
 
-  /** 多个会话同时恢复时，可见工作区不一定是最后一条 agent/created。用户发消息后不再改写。 */
+  /** 多个会话同时恢复时，可见工作区不一定是最后一条 agent/created。只在冷启动那一轮调用。 */
   private async alignForegroundToHost(): Promise<void> {
     if (this.userChoseFocus) return;
     if (this.liveAgents().length < 2) return;
@@ -2335,11 +2359,8 @@ export class ProjectMcpRegistry {
     if (state === undefined) return;
     container.servers.delete(rawName);
     state.phase = "unloading";
-    try {
-      await state.fiber?.dispose();
-    } catch {
-      // fiber 已随上下文销毁
-    }
+    this.releaseFiber(state);
+    await this.waitForNameRelease(state.effectiveName);
   }
 
   private healthKey(containerKey: string, rawName: string): string {
@@ -2828,7 +2849,7 @@ export class ProjectMcpRegistry {
   /** 表单确认后追加一条受管 yml 行（没有文件就创建）。同名已存在则拒绝，不改文件。 */
   async addServer(source: McpRowSource, projectRoot: string, draft: McpAddDraft): Promise<string> {
     return this.enqueue(async () => {
-      this.assertWritableTarget(source, projectRoot);
+      this.assertWritableTarget(source, projectRoot, "add");
       const validated = mcpServerInputSchema.safeParse(inputFromAddDraft(source, draft));
       if (!validated.success) {
         const first = validated.error.issues[0];
@@ -2854,14 +2875,16 @@ export class ProjectMcpRegistry {
   }
 
   /** 只接受当前 writeTargets() 里的位置，避免把行写到一个已经不是焦点的工作区。 */
-  private assertWritableTarget(source: McpRowSource, projectRoot: string): void {
+  private assertWritableTarget(source: McpRowSource, projectRoot: string, notice: "add" | "edit" = "edit"): void {
     const slot = this.writeSlot(source);
     const ok = slot !== undefined && this.writeTargets().some((target) => {
       if (target.id !== slot) return false;
       if (slot !== "project") return true;
       return projectRoot.trim() !== "" && projectKeyOf(target.projectRoot) === projectKeyOf(projectRoot);
     });
-    if (!ok) throw new Error("这个写入位置当前不可用，请重新打开添加窗口");
+    if (ok) return;
+    if (notice === "edit" && slot === "project") throw new Error("这个工作区当前不能改");
+    throw new Error("这个写入位置当前不可用，请重新打开添加窗口");
   }
 
   /** 内存目录里某一层的同名行。不跨层回退：调用方要改的是这一张卡，不是更高优先级的另一条。 */

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { displayHomePath, isProfileSource, profileEndKind, profileNameFromFile } from "../packages/ui/src/client/display.ts";
+import { displayHomePath, isProfileSource, profileEndKind, profileNameFromFile, serverActionsOpen } from "../packages/ui/src/client/display.ts";
 import { en, zh } from "../packages/ui/src/client/locales.ts";
 
 let passed = 0;
@@ -54,6 +54,14 @@ const home = "C:\\Users\\haima";
 }
 
 {
+  const targets = [{ id: "project", projectRoot: "D:\\work" }, { id: "user", projectRoot: "" }];
+  assert.equal(serverActionsOpen({ layer: "project", projectRoot: "D:\\work" }, targets), true);
+  assert.equal(serverActionsOpen({ layer: "project", projectRoot: "D:\\other" }, targets), false);
+  assert.equal(serverActionsOpen({ layer: "user", projectRoot: "" }, targets), true);
+  pass("only the focused workspace can be edited");
+}
+
+{
   assert.deepEqual(Object.keys(en).sort(), Object.keys(zh).sort());
   assert.equal(zh.projectLayer, "工作区层");
   assert.equal(zh.addScopeProject, "工作区");
@@ -64,6 +72,7 @@ const home = "C:\\Users\\haima";
   assert.equal(zh.remove, "删除");
   assert.equal(zh.continueWrite, "写入 mcp.yml");
   assert.equal(zh.enableLabel, "启用");
+  assert.equal(zh.workspaceLocked, "这个工作区当前不能改");
   assert.equal(zh.statusIdle, "已启用 · 等待会话启动");
   assert.equal(zh.statusOff, "已禁用");
   for (const value of [zh.introHelp, zh.addDescription, zh.takeoverTitle, zh.removeWill, zh.badgeTakeoverHint]) {

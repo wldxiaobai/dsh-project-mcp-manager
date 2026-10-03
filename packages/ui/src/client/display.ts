@@ -4,6 +4,15 @@ export function isProfileSource(source: string): boolean {
   return source === "dsh-profile-user-yml" || source === "dsh-profile-user";
 }
 
+/** 工作区层只有当前焦点工作区能改。用户层和 profile 层不按工作区锁。 */
+export function serverActionsOpen(
+  row: { layer: string; projectRoot: string },
+  writeTargets: ReadonlyArray<{ id: string; projectRoot: string }>
+): boolean {
+  if (row.layer !== "project") return true;
+  return writeTargets.some((target) => target.id === "project" && target.projectRoot === row.projectRoot);
+}
+
 /** Replace a user-home prefix with `~`. Call this only for user and profile paths. */
 export function displayHomePath(path: string, homeDir: string | undefined): string {
   if (homeDir === undefined || homeDir === "" || path === "") return path;

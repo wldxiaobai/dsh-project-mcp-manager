@@ -98,6 +98,7 @@ export type McpUiLocaleKey =
   | "removeWill"
   | "removeWont"
   | "enableLabel"
+  | "workspaceLocked"
   | "toolEnableLabel"
   | "userFile"
   | "profileFile"
@@ -202,6 +203,7 @@ export const en: Record<McpUiLocaleKey, string> = {
   removeWill: "Removes “{name}” from the mcp.yml managed by the mcp-manager plugin.",
   removeWont: "If another file also has this server, that file is left unchanged, and a disabled placeholder needs to be written so it does not start again.",
   enableLabel: "Enabled",
+  workspaceLocked: "This workspace cannot be edited right now.",
   toolEnableLabel: "Tool {name}",
   userFile: "User mcp.yml",
   profileFile: "Profile mcp.yml",
@@ -307,6 +309,7 @@ export const zh: Record<McpUiLocaleKey, string> = {
   removeWill: "从受 mcp-manager 插件管理的 mcp.yml 里删除「{name}」。",
   removeWont: "如果其他文件里也有这个服务器，那份文件不会修改，需要写一条禁用占位，避免它再次启动。",
   enableLabel: "启用",
+  workspaceLocked: "这个工作区当前不能改",
   toolEnableLabel: "工具 {name}",
   userFile: "用户层 mcp.yml",
   profileFile: "profile 层 mcp.yml",
