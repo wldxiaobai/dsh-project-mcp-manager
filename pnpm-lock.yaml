@@ -115,6 +115,9 @@ importers:
       chokidar:
         specifier: ^5.0.0
         version: 5.0.0
+      dsh-project-mcp-ui:
+        specifier: workspace:0.7.2
+        version: link:packages/ui
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
@@ -169,7 +172,7 @@ importers:
         specifier: ~18.3.1
         version: 18.3.31
       dsh-project-mcp-manager:
-        specifier: workspace:*
+        specifier: workspace:0.7.2
         version: link:../..
       esbuild:
         specifier: ^0.25.0
