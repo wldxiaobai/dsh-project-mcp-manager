@@ -50,30 +50,39 @@ function layerOf(source: string): McpUiLayer {
   return source === "dsh-project" || source === "dsh-project-json" || source === "cc-project" ? "project" : "user";
 }
 
+function serverFrom(
+  file: ProjectFileState,
+  server: ProjectFileState["servers"][number],
+  source: McpRowSource,
+  mcp: Context["projectMcp"]
+): McpUiServer {
+  const projectRoot = file.kind === "global" ? "" : file.project;
+  const managedPath = mcp.managedPathFor(source, projectRoot === "" ? file.project : projectRoot) ?? null;
+  return {
+    serverName: server.serverName,
+    source,
+    projectRoot: projectRoot === "" ? file.project : projectRoot,
+    filePath: file.path,
+    managedPath,
+    needsYmlTakeover: !YML_SOURCES.has(source),
+    layer: layerOf(source),
+    enabled: server.enabled,
+    active: server.enabled && server.fiberPhase === "active" && (server.skipReason == null || server.skipReason === ""),
+    fiberPhase: server.fiberPhase,
+    skipReason: server.skipReason,
+    toolCount: server.toolCount,
+    endpoint: server.transport === "streamable-http" ? (server.url ?? "") : (server.command ?? ""),
+    serviceKey: serviceIdentityKeyOf(server) ?? null
+  };
+}
+
 function serversFrom(snapshot: ProjectFileState[], mcp: Context["projectMcp"]): McpUiServer[] {
   const out: McpUiServer[] = [];
   for (const file of snapshot) {
     const source = file.source;
     if (source === undefined) continue;
     for (const server of file.servers) {
-      const projectRoot = file.kind === "global" ? "" : file.project;
-      const managedPath = mcp.managedPathFor(source, projectRoot === "" ? file.project : projectRoot) ?? null;
-      out.push({
-        serverName: server.serverName,
-        source,
-        projectRoot: projectRoot === "" ? file.project : projectRoot,
-        filePath: file.path,
-        managedPath,
-        needsYmlTakeover: !YML_SOURCES.has(source),
-        layer: layerOf(source),
-        enabled: server.enabled,
-        active: server.enabled && server.fiberPhase === "active" && (server.skipReason == null || server.skipReason === ""),
-        fiberPhase: server.fiberPhase,
-        skipReason: server.skipReason,
-        toolCount: server.toolCount,
-        endpoint: server.transport === "streamable-http" ? (server.url ?? "") : (server.command ?? ""),
-        serviceKey: serviceIdentityKeyOf(server) ?? null
-      });
+      out.push(serverFrom(file, server, source, mcp));
     }
   }
   return out;
