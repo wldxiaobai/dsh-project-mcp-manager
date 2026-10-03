@@ -24,8 +24,8 @@ manager 以**同一精确版本**依赖 `dsh-project-mcp-ui`，会自动安装 U
 包含 `mcp-project`（核心）与 `mcp-project-ui`（UI）两行，均默认启用。UI 保留
 精确版本的 manager peer dependency，但不再单独声明 `dsh.bundle`，不要另选 UI
 bundle。两个包必须同步发布（[版本契约](service.zh.md#对配套-ui-的语义化版本)）。
-这个布局目前属于 **Unreleased**；npm 示例在同步发布后适用，不表示已有发布版
-已经提供这个布局。
+这个布局已纳入源码版本 **0.8.0**；npm 示例在两个 0.8.0 包同步发布后适用。
+Git 标签不会自动发布 npm。
 
 本地开发时，在源码仓库内执行以下命令，只链接根 manager 包：
 

@@ -24,7 +24,7 @@ a profile-layer Cordis patch (with that layer's own HMR) plus
 
 Project-file hot reload is this plugin's file watcher. It does not replace
 official profile HMR. **Transport types are decided by the official client.**
-v0.7.x targets the dsh `0.2.0` line starting at 0.2.0-rc.2. Hosts still on
+v0.7.x and v0.8.x target the dsh `0.2.0` line starting at 0.2.0-rc.2. Hosts still on
 dsh 0.1.5 should stay on plugin v0.6.0.
 
 If this plugin is useful, a GitHub
@@ -84,9 +84,9 @@ startup, in order. The manager's default bundle contains two rows:
 installs its same-exact-version UI dependency automatically; the UI package is
 not a standalone `dsh.bundle` and should not be selected separately.
 
-> The core-plus-UI bundle is currently an **Unreleased** change. The npm
-> examples below provide that layout once the coordinated manager/UI release
-> is published; they do not imply it is already available on npm.
+> The core-plus-UI bundle is included in source version **0.8.0**. The npm
+> examples below provide that layout once both 0.8.0 packages are published;
+> a Git tag alone does not publish packages or change npm's `latest` tag.
 
 **Prerequisite: install dsh itself** (for users who don't have dsh yet):
 
@@ -145,7 +145,7 @@ updated compiled output.
 **Upgrading / pinning versions**: re-run the `add` command from option 1 with
 the desired version suffix — `@latest` upgrades to the newest release,
 `@<version>` pins a specific release. For the bundled UI, choose the coordinated
-manager/UI release described above. v0.7.x needs dsh 0.2.0-rc.2 (the `0.2.0` line).
+manager/UI release described above. v0.7.x and v0.8.x need dsh 0.2.0-rc.2 (the `0.2.0` line).
 dsh 0.1.5 keeps working with plugin `@0.6.0`.
 
 **Settings page (included by default)**: the manager install above supplies

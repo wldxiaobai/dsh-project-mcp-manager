@@ -20,7 +20,7 @@ instructions 归官方 client。发行版 profile 已经装了共享的 MCP 资�
 3. MCP 专用配置格式、`dsh-mcp` CLI 和设置页。
 
 项目文件热重载是本插件自己的文件监听，不替代官方 profile HMR。**传输类型由官方
-client 决定。** v0.7.x 面向 dsh `0.2.0` 线（从 0.2.0-rc.2 起）。仍在 dsh 0.1.5
+client 决定。** v0.7.x 与 v0.8.x 面向 dsh `0.2.0` 线（从 0.2.0-rc.2 起）。仍在 dsh 0.1.5
 上的宿主继续用插件 v0.6.0。
 
 若这个插件对你有帮助，欢迎给仓库点一颗
@@ -73,8 +73,8 @@ client 决定。** v0.7.x 面向 dsh `0.2.0` 线（从 0.2.0-rc.2 起）。仍�
 `mcp-project-ui`（设置页）两行，自动安装同一精确版本的 UI 依赖；UI 包不再
 单独声明 `dsh.bundle`，不应再作为独立 bundle 选择。
 
-> 核心加 UI 的默认 bundle 目前属于 **Unreleased** 变更。下列 npm 示例在
-> manager/UI 同步发布后才提供这个布局，并不表示 npm 上已经可用。
+> 核心加 UI 的默认 bundle 已纳入源码版本 **0.8.0**。下列 npm 示例在两个
+> 0.8.0 包同步发布后才提供这个布局；Git 标签不会自动发布 npm 或更新 `latest`。
 
 **前置：安装 dsh 本体**（尚未安装 dsh 的用户）：
 
@@ -127,7 +127,7 @@ dsh plugin --profile web add link:<你的 dsh-mcp-project 源码目录>
 
 **升级/锁定版本**：重跑方式一的 `add` 命令并带上目标版本后缀——`@latest`
 升级到最新，`@<version>` 锁定指定发布版。默认 UI 需选择上文所述的 manager/UI
-同步发布版。v0.7.x 需要 dsh 0.2.0-rc.2（`0.2.0` 线）。
+同步发布版。v0.7.x 与 v0.8.x 需要 dsh 0.2.0-rc.2（`0.2.0` 线）。
 dsh 0.1.5 继续用插件 `@0.6.0`。
 
 **设置页（默认包含）**：上面的 manager 安装会自动带上 web 端和桌面端 UI。

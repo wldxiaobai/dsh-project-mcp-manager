@@ -116,7 +116,7 @@ importers:
         specifier: ^5.0.0
         version: 5.0.0
       dsh-project-mcp-ui:
-        specifier: workspace:0.7.2
+        specifier: workspace:0.8.0
         version: link:packages/ui
       yaml:
         specifier: ^2.9.0
@@ -172,7 +172,7 @@ importers:
         specifier: ~18.3.1
         version: 18.3.31
       dsh-project-mcp-manager:
-        specifier: workspace:0.7.2
+        specifier: workspace:0.8.0
         version: link:../..
       esbuild:
         specifier: ^0.25.0

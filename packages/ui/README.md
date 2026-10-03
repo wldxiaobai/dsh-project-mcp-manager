@@ -10,7 +10,7 @@ dsh plugin --profile web add dsh-project-mcp-manager@latest
 dsh plugin --profile desktop add dsh-project-mcp-manager@latest
 ```
 
-The core-plus-UI bundle is an **Unreleased** change; these npm examples apply after the coordinated release is published. The manager depends on this package at the same exact version, and this package keeps its exact-version manager peer dependency. Both packages must be versioned and published together. This package no longer declares a standalone `dsh.bundle` and should not be selected separately in a profile.
+The core-plus-UI bundle is included in source version **0.8.0**; these npm examples apply after both 0.8.0 packages are published. A Git tag does not publish to npm. The manager depends on this package at the same exact version, and this package keeps its exact-version manager peer dependency. Both packages must be versioned and published together. This package no longer declares a standalone `dsh.bundle` and should not be selected separately in a profile.
 
 The page is a Plugins settings tab, enabled by default. In the plugin manager, switch off the manager bundle's `mcp-project-ui` component to hide it, leaving `mcp-project` enabled; a profile patch override disabling that UI row also works. The loader keeps running. In headless mode there is no browser runtime or settings page. Without the dsh `connection` service, no UI routes are registered; its connection-scoped integration waits without blocking the core loader. The UI row itself can be active, and the connection integration is registered and cleaned up with that service's lifetime.
 

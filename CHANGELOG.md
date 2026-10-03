@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-03
+
+Versioned together with `dsh-project-mcp-ui` 0.8.0. This source version and
+Git tag do not imply that either package has been published to npm.
+
 ### Fixed
 
 - Disabling the UI component or removing `connection` closes already-open SSE
@@ -844,7 +849,8 @@ carry an explicit `type`.
 Security note: `stdio` lines in `.dsh/mcp.yml` spawn their `command` inside the dsh host
 process, so project files are executable-code carriers — add them only in trusted projects.
 
-[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.7.2...HEAD
+[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.6.0...v0.7.0
