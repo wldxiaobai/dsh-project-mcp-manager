@@ -48,7 +48,6 @@ import { PROJECT_MCP_UPDATED_EVENT } from "./service.js";
 import { extractManagedRows, readPatchFile, updateManagedRows, withPatchLock, MCP_PLUGIN_NAME, type PatchRow } from "./mcp-file.js";
 import {
   DIAG_FILE,
-  DSH_DIR,
   MCP_YML_FILE,
   PROFILE_ENV,
   dshHomeDir,
@@ -1184,7 +1183,7 @@ export class ProjectMcpRegistry {
   private detachProjectsExcept(keep: string): void {
     for (const [key, entry] of this.projects) {
       if (key === keep) continue;
-      for (const state of [...entry.servers.values()]) {
+      for (const state of entry.servers.values()) {
         entry.servers.delete(state.rawName);
         state.phase = "unloading";
         this.releaseFiber(state);
@@ -3032,7 +3031,7 @@ export class ProjectMcpRegistry {
         const index = this.findManagedRowIndex(rows, rawName, located);
         const base: PatchRow = index >= 0 ? { ...rows[index] } : { ...row };
         if (index < 0) delete base.disabled;
-        const config = { ...(configFromPatchRow(base) ?? {}) };
+        const config = { ...configFromPatchRow(base) };
         const filter = toolFilterFromConfig(config);
         const allow = new Set(filter?.allow ?? []);
         const deny = new Set(filter?.deny ?? []);
@@ -3059,7 +3058,7 @@ export class ProjectMcpRegistry {
   toolStates(projectRoot: string, rawName: string): { name: string; enabled: boolean }[] {
     const key = projectKeyOf(projectRoot);
     const state = this.projects.get(key)?.servers.get(rawName) ?? this.globalServers.get(rawName);
-    if (state === undefined || state.phase !== "active") return [];
+    if (state?.phase !== "active") return [];
     const prefix = `mcp__${state.effectiveName}__`;
     const ids = this.registeredToolIds().filter((id) => id.startsWith(prefix));
     const filter = toolFilterFromConfig(configFromPatchRow(state.row));

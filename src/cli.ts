@@ -447,7 +447,7 @@ async function resolveProfileTarget(parsed: ParsedArgs, deps: CliDeps): Promise<
     const list = available.length === 0 ? "（未发现任何 profile）" : available.join("、");
     return { error: `profile "${name}" 不存在于 ${profilesDir}；可用：${list}` };
   }
-  const format = parsed.format === undefined ? "yml" : parsed.format;
+  const format = parsed.format ?? "yml";
   if (format === "yml") return { path: profileMcpYmlFile(profilesDir, name), format: "yml", scope: "profile" };
   return { path: profileMcpJsonFile(profilesDir, name), format: "json", scope: "profile" };
 }

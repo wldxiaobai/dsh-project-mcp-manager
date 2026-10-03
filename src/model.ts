@@ -580,7 +580,7 @@ export function serviceIdentityKeyOf(config: {
   if (config.transport === "stdio") {
     if (typeof config.command !== "string" || config.command === "") return undefined;
     const command = process.platform === "win32" ? config.command.toLowerCase() : config.command;
-    const args = Array.isArray(config.args) ? config.args.map((item) => String(item)).join("\0") : "";
+    const args = Array.isArray(config.args) ? config.args.map(String).join("\0") : "";
     return "s\0" + command + "\0" + args;
   }
   return undefined;
