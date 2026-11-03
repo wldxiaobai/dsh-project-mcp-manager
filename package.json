@@ -1,6 +1,6 @@
 {
   "name": "dsh-project-mcp-manager",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "packageManager": "pnpm@12.3.4",
   "description": "MCP manager for DSH with default loader and settings UI components: project/global server loading, hot reload, per-session tool visibility, and the dsh-mcp CLI.",
   "type": "module",
@@ -45,7 +45,7 @@
   "dependencies": {
     "@deepseek-ai/dsh-mcp-client": "^0.2.1-rc.2",
     "chokidar": "^5.0.0",
-    "dsh-project-mcp-ui": "workspace:0.9.0",
+    "dsh-project-mcp-ui": "workspace:0.10.0",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
