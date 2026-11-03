@@ -9,7 +9,7 @@
 配套包 `dsh-project-mcp-ui` 提供的 web 端与桌面端 MCP 管理页（左侧栏入口，0.10
 起；旧设置页保留一个版本）。UI 默认启用，可以单独停用；装载器继续工作。
 
-**能力边界**（dsh ≥ 0.2.1-rc.2）：协议、重连、工具名、resources 与服务器
+**能力边界**（dsh ≥ 0.2.1-rc.5）：协议、重连、工具名、resources 与服务器
 instructions 归官方 client。发行版 profile 已经装了共享的 MCP 资源工具。官方
 配置是 profile 层 Cordis patch（该层自有 HMR）加上 `plugin_manager`。宿主还没做、
 仍由本插件负责的是：
@@ -21,9 +21,9 @@ instructions 归官方 client。发行版 profile 已经装了共享的 MCP 资�
 3. MCP 专用配置格式、`dsh-mcp` CLI 和 MCP 管理页。
 
 项目文件热重载是本插件自己的文件监听，不替代官方 profile HMR。**传输类型由官方
-client 决定。** v0.9.x 与 v0.10.x 面向 dsh `0.2` 线（从 0.2.1-rc.2 起，`engines.dsh` 为
-`^0.2.1-rc.2`）。dsh 0.2.0 继续用插件 v0.8.2。仍在 dsh 0.1.5 上的宿主继续用插件
-v0.6.0。
+client 决定。** v0.10.x 面向 dsh `0.2` 线（从 0.2.1-rc.5 起，`engines.dsh` 为
+`^0.2.1-rc.5`）；v0.9.x 留在 0.2.1-rc.2–rc.4。dsh 0.2.0 继续用插件 v0.8.2。
+仍在 dsh 0.1.5 上的宿主继续用插件 v0.6.0。
 
 若这个插件对你有帮助，欢迎给仓库点一颗
 [star](https://github.com/wldxiaobai/dsh-project-mcp-manager)。遇到问题、宿主
@@ -45,7 +45,8 @@ v0.6.0。
 - [查询面](guide/service.zh.md)——`ctx.projectMcp`、`projectMcp/updated` 事件、
   包入口导出的视图类型，以及对配套 UI 的语义化版本承诺。
 
-设计与发布记录（中文）：[dsh 0.2.1-rc.2 适配记录](design/adaptation-dsh-0.2.1-rc.2.md) ·
+设计与发布记录（中文）：[dsh 0.2.1-rc.5 适配记录](design/adaptation-dsh-0.2.1-rc.5.md) ·
+[dsh 0.2.1-rc.2 适配记录](design/adaptation-dsh-0.2.1-rc.2.md) ·
 [dsh 0.2.0-rc.2 适配记录](design/adaptation-dsh-0.2.0-rc.2.md) ·
 [dsh 0.1.6-alpha.2 适配方案](design/adaptation-dsh-0.1.6-alpha.2.md) ·
 [dsh 0.1.5-rc.2 适配记录](design/adaptation-dsh-0.1.5-rc2.md) ·
@@ -136,8 +137,8 @@ dsh plugin --profile web add link:<你的 dsh-mcp-project 源码目录>
 
 **升级/锁定版本**：重跑方式一的 `add` 命令并带上目标版本后缀——`@latest`
 升级到最新，`@<version>` 锁定指定发布版。默认 UI 需选择上文所述的 manager/UI
-同步发布版。v0.9.x 与 v0.10.x 需要 dsh 0.2.1-rc.2 或更新的 `0.2` 发布版（`engines.dsh`：
-`^0.2.1-rc.2`）。v0.7.x 与 v0.8.x 需要 dsh 0.2.0-rc.2（`0.2.0` 线）。
+同步发布版。v0.10.x 需要 dsh 0.2.1-rc.5 或更新的 `0.2` 发布版（`engines.dsh`：
+`^0.2.1-rc.5`）；v0.9.x 需要 0.2.1-rc.2–rc.4。v0.7.x 与 v0.8.x 需要 dsh 0.2.0-rc.2（`0.2.0` 线）。
 dsh 0.1.5 继续用插件 `@0.6.0`。
 
 **MCP 管理入口（默认包含）**：上面的 manager 安装会自动带上 web 端和桌面端 UI。

@@ -12,8 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Versioned together with `dsh-project-mcp-ui` 0.10.0. This source version and
 Git tag do not imply that either package has been published to npm.
 
-Host alignment is unchanged: dsh **0.2.1-rc.2** and later `0.2` releases
-(`engines.dsh` stays `^0.2.1-rc.2`). No loader, service, CLI, API route, or
+Host alignment for dsh **0.2.1-rc.5**. v0.9.0 remains the release for
+0.2.1-rc.2 through rc.4; v0.8.2 remains the release for the dsh `0.2.0` line;
+v0.6.0 remains the release for dsh 0.1.5. No loader, service, CLI, API route, or
 config-file behavior changed.
 
 ### Added
@@ -28,6 +29,14 @@ config-file behavior changed.
 
 ### Changed
 
+- **Dependency floors are `^0.2.1-rc.5`.** `@deepseek-ai/dsh-mcp-client`, the
+  UI runtime dependency `@deepseek-ai/dsh-native-command`, the client
+  devDependencies, and both `engines.dsh` fields move to rc.5. The bridge
+  schema is byte-identical to rc.2 (`stdio` | `streamable-http`, reconnect cap
+  `2147483647`, MCP SDK 2.2.0, cordis peer `~4.0.5`), so no code changed; the
+  floor moves because rc.5 client peers are exact-version rc.5 packages and a
+  rc.2–rc.4 host would otherwise mix tuples. `minimumReleaseAgeExclude` lists
+  the rc.5 packages for the same reason.
 - The browser bundle declares `@deepseek-ai/dsh-client-ui-sidebar` and
   `@deepseek-ai/dsh-client-ui-layout` in `dsh.client.inject`. Both entries
   render the same `McpPanel`; internal read/write logic is untouched.
