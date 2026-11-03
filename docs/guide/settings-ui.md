@@ -5,12 +5,14 @@ English | [中文](settings-ui.zh.md)
 [← README](../../README.md) ｜ Related: [configuration sources and layers](layers.md) · [configuration format](format.md) · [`${VAR}` expansion](env-expansion.md)
 
 The companion package `dsh-project-mcp-ui`, included in the default
-`dsh-project-mcp-manager` bundle, adds an MCP tab to the dsh web and desktop
-settings. It lists the servers the loader will run, shows whether each
-one is running, and lets you add, switch, and remove servers or single tools.
-Every change is written to a **managed `mcp.yml`**; the page never edits JSON
-files or the legacy `.mcp.json`. The loader does the rest through its normal
-file watch, so the page and the [CLI](cli.md) can be used side by side.
+`dsh-project-mcp-manager` bundle, adds an **MCP Manager** entry to the dsh web
+and desktop left sidebar. The same page also stays reachable from the settings
+tab **Plugin: MCP Manager** for one release. It lists the servers the loader
+will run, shows whether each one is running, and lets you add, switch, and
+remove servers or single tools. Every change is written to a **managed
+`mcp.yml`**; the page never edits JSON files or the legacy `.mcp.json`. The
+loader does the rest through its normal file watch, so the page and the
+[CLI](cli.md) can be used side by side.
 
 ## Install
 
@@ -49,14 +51,18 @@ not the core loader or MCP mounting. The UI row can be active independently.
 Connection arrival registers that integration, and connection disposal cleans
 it up.
 
-Open **Settings → Built-in plugins → Plugin: MCP Manager**
-(中文界面：设置 → 内置插件 → 插件：MCP 管理). Older hosts may label the
-middle item Plugins.
+Open **MCP Manager** in the left sidebar (中文界面：左侧栏「MCP 管理」). While the
+sidebar is collapsed to the 56px rail only the icon shows; hover or keyboard
+focus reveals the name. The previous entry, **Settings → Built-in plugins →
+Plugin: MCP Manager** (中文界面：设置 → 内置插件 → 插件：MCP 管理), opens the same
+page for one release and is planned for removal in the next release. Older
+hosts may label the middle item Plugins.
 
 To hide the page, open the manager bundle's contained components in the plugin
 manager and switch off only `mcp-project-ui`, leaving `mcp-project` enabled.
 Alternatively, disable the UI row by its id in a profile patch override. This
-stops the UI without stopping the loader; it does not remove the UI dependency.
+stops the UI (both the sidebar entry and the settings tab disappear) without
+stopping the loader; it does not remove the UI dependency.
 
 ### Migrating from a separately installed UI
 
