@@ -22,7 +22,7 @@
     }
   },
   "engines": {
-    "dsh": "^0.2.1-rc.2"
+    "dsh": "^0.2.1-rc.5"
   },
   "license": "MIT",
   "author": "wldxiaobai <944418001@qq.com>",
@@ -43,7 +43,7 @@
     "cordis"
   ],
   "dependencies": {
-    "@deepseek-ai/dsh-mcp-client": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-mcp-client": "^0.2.1-rc.5",
     "chokidar": "^5.0.0",
     "dsh-project-mcp-ui": "workspace:0.10.0",
     "yaml": "^2.9.0",

@@ -41,18 +41,20 @@
     "dsh-project-mcp-manager": "0.10.0"
   },
   "dependencies": {
-    "@deepseek-ai/dsh-native-command": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-native-command": "^0.2.1-rc.5",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.5",
-    "@deepseek-ai/dsh-client-connection": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-locale": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-primitives": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-renderer": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-settings": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-settings-plugins": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-slots": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-connection": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-client-locale": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-client-ui-layout": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-client-ui-renderer": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-client-ui-settings": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-client-ui-settings-plugins": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-client-ui-sidebar": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-client-ui-slots": "0.2.1-rc.5",
     "@types/react": "~18.3.1",
     "dsh-project-mcp-manager": "workspace:0.10.0",
     "esbuild": "^0.25.0",
@@ -60,7 +62,7 @@
     "typescript": "^7.0.2"
   },
   "engines": {
-    "dsh": "^0.2.1-rc.2"
+    "dsh": "^0.2.1-rc.5"
   },
   "license": "MIT"
 }
