@@ -401,4 +401,34 @@ button.dsh-mcp-switch.dsh-mcp-switch-waiting[aria-checked="true"] > span {
 .dsh-mcp-add-error {
   margin-top: 10px;
 }
+.dsh-mcp-page {
+  height: 100%;
+  overflow: auto;
+  box-sizing: border-box;
+  padding: calc(var(--dsh-frame-top-clearance, 0px) + 16px) 32px 32px;
+}
+.dsh-mcp-page-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 960px;
+}
+.dsh-mcp-page-title {
+  margin: 0;
+  font-size: 20px;
+  line-height: 28px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+.dsh-mcp-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.dsh-mcp-notice {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
 `;

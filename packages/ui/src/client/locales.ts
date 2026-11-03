@@ -2,6 +2,9 @@
 
 export type McpUiLocaleKey =
   | "tab"
+  | "panelLabel"
+  | "entryNoticeNew"
+  | "entryNoticeOld"
   | "intro"
   | "introHelp"
   | "open"
@@ -107,6 +110,9 @@ export type McpUiLocaleKey =
 
 export const en: Record<McpUiLocaleKey, string> = {
   tab: "Plugin: MCP Manager",
+  panelLabel: "MCP Manager",
+  entryNoticeNew: "Temporary entry: the settings page under Built-in plugins stays until the next release.",
+  entryNoticeOld: "New entry: MCP Manager in the left sidebar. This page will be removed in the next release.",
   intro: "MCP servers available right now.",
   introHelp: "Adding, switching, and removing write to the mcp.yml managed by the mcp-manager plugin.\nFor a server read from another file, you confirm first, then the managed mcp.yml is written.",
   open: "MCP config",
@@ -213,6 +219,9 @@ export const en: Record<McpUiLocaleKey, string> = {
 
 export const zh: Record<McpUiLocaleKey, string> = {
   tab: "插件：MCP 管理",
+  panelLabel: "MCP 管理",
+  entryNoticeNew: "临时入口：设置 → 内置插件里的「插件：MCP 管理」会保留到下一个版本。",
+  entryNoticeOld: "新的入口在左侧栏「MCP 管理」；本页将在下一个版本移除。",
   intro: "这里列出当前可用的 MCP 服务器。",
   introHelp: "添加、开关和删除都会写入受 mcp-manager 插件管理的 mcp.yml。\n对从其他文件读到的服务器，改动前会先确认，再写入受管 mcp.yml。",
   open: "MCP 配置",

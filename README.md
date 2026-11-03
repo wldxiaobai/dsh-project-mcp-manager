@@ -9,7 +9,8 @@ session opens in that project. Changes to the file hot-reload into the running
 dsh process, and tool visibility follows the session's original project
 (`session.header.cwd`). The default
 `dsh-project-mcp-manager` bundle includes the loader and the companion
-`dsh-project-mcp-ui` settings page for the web and desktop apps. The UI is
+`dsh-project-mcp-ui` MCP Manager page for the web and desktop apps (left
+sidebar from 0.10; the old settings tab stays for one release). The UI is
 enabled by default and can be disabled independently; the loader keeps working.
 
 **Capability boundary** (dsh ≥ 0.2.1-rc.2): the official client owns the
@@ -22,12 +23,12 @@ a profile-layer Cordis patch (with that layer's own HMR) plus
    and the read-only legacy `.mcp.json`.
 2. Tool visibility isolated by the session's original project
    (`session.header.cwd`). `working_directory` does not retarget it.
-3. The MCP file format, the `dsh-mcp` CLI, and the settings page.
+3. The MCP file format, the `dsh-mcp` CLI, and the MCP Manager page.
 
 Project-file hot reload is this plugin's file watcher. It does not replace
 official profile HMR. **Transport types are decided by the official client.**
-v0.9.x targets the dsh `0.2` line starting at 0.2.1-rc.2 (`engines.dsh` is
-`^0.2.1-rc.2`). Hosts on dsh 0.2.0 stay on plugin v0.8.2. Hosts still on
+v0.9.x and v0.10.x target the dsh `0.2` line starting at 0.2.1-rc.2
+(`engines.dsh` is `^0.2.1-rc.2`). Hosts on dsh 0.2.0 stay on plugin v0.8.2. Hosts still on
 dsh 0.1.5 should stay on plugin v0.6.0.
 
 If this plugin is useful, a GitHub
@@ -42,7 +43,7 @@ Feature documentation lives in `docs/`, English and Chinese side by side:
 
 - [Configuration format](docs/guide/format.md) — native YAML managed
   block, JSON dialect, divergences from the cordis dialect.
-- [Settings page](docs/guide/settings-ui.md) — use the bundled UI, read
+- [MCP Manager page](docs/guide/settings-ui.md) — use the bundled UI, read
   the server list, add servers (with fill from clipboard), switch, remove, and
   manage tools.
 - [Configuration sources and layers](docs/guide/layers.md) — the
@@ -63,6 +64,7 @@ Design and release records (Chinese): [dsh 0.2.1-rc.2 adaptation](docs/design/ad
 [dsh 0.1.2-rc.1 adaptation](docs/design/adaptation-dsh-0.1.2-rc1.md) ·
 [JSON config layer proposal](docs/design/proposal-json-mcp-config.md) ·
 [Runtime robustness & JSON interop proposal](docs/design/proposal-runtime-robustness-and-json-interop.md) ·
+[v0.10.0 release notes](docs/releases/v0.10.0.md) ·
 [v0.9.0 release notes](docs/releases/v0.9.0.md) ·
 [v0.8.2 release notes](docs/releases/v0.8.2.md) ·
 [v0.7.2 release notes](docs/releases/v0.7.2.md) ·
@@ -86,7 +88,7 @@ The plugin is mounted through a **bundle patch**: once the package is added to
 `dsh.profile.bundles`, dsh synthesizes each bundle's patch (the
 `cordis.patch.yml` pointed to by `dsh.bundle.patch`) into plugin lines at
 startup, in order. The manager's default bundle contains two rows:
-`mcp-project` (core loader) and `mcp-project-ui` (settings page). The manager
+`mcp-project` (core loader) and `mcp-project-ui` (MCP Manager page). The manager
 installs its same-exact-version UI dependency automatically; the UI package is
 not a standalone `dsh.bundle` and should not be selected separately.
 
@@ -151,16 +153,18 @@ updated compiled output.
 **Upgrading / pinning versions**: re-run the `add` command from option 1 with
 the desired version suffix — `@latest` upgrades to the newest release,
 `@<version>` pins a specific release. For the bundled UI, choose the coordinated
-manager/UI release described above. v0.9.x needs dsh 0.2.1-rc.2 or a later `0.2`
-release (`engines.dsh`: `^0.2.1-rc.2`). v0.7.x and v0.8.x need dsh 0.2.0-rc.2
+manager/UI release described above. v0.9.x and v0.10.x need dsh 0.2.1-rc.2 or a
+later `0.2` release (`engines.dsh`: `^0.2.1-rc.2`). v0.7.x and v0.8.x need dsh 0.2.0-rc.2
 (the `0.2.0` line). dsh 0.1.5 keeps working with plugin `@0.6.0`.
 
-**Settings page (included by default)**: the manager install above supplies
-the UI automatically in web and desktop profiles. Open Settings → Built-in plugins →
-Plugin: MCP Manager. To hide the page without stopping the loader, turn off
-only the manager bundle's `mcp-project-ui` component in the plugin manager's
-contained-components controls (or disable that row with a profile patch
-override). Keep `mcp-project` enabled.
+**MCP Manager entry (included by default)**: the manager install above supplies
+the UI automatically in web and desktop profiles. Open **MCP Manager** in the
+left sidebar. The previous entry, **Settings → Built-in plugins → Plugin: MCP
+Manager**, is kept for one release and renders the same page; it is planned for
+removal in the next release. To hide both entries without stopping the loader,
+turn off only the manager bundle's `mcp-project-ui` component in the plugin
+manager's contained-components controls (or disable that row with a profile
+patch override). Keep `mcp-project` enabled.
 
 A headless profile installs the same bundle but has no browser page. Without
 the dsh `connection` service, the UI registers no routes;
@@ -177,7 +181,7 @@ dependency. Before running the new bundle, remove an old direct UI dependency
 over transitive resolution. If the old UI bundle was disabled, transfer that
 intent to a `mcp-project-ui` row override with `disabled: true` before loading
 the manager. Neither old bundle selection nor direct dependencies are promised
-to be removed automatically. Details: [settings page](docs/guide/settings-ui.md#migrating-from-a-separately-installed-ui).
+to be removed automatically. Details: [MCP Manager page](docs/guide/settings-ui.md#migrating-from-a-separately-installed-ui).
 
 ## Build & test
 
@@ -252,7 +256,7 @@ reconcile's memory; they do not read disk. A successful reconcile emits
 `projectMcp/updated` with no payload. The listener calls `snapshot()` and
 diffs. The core loader does not open a browser SSE channel; the bundled UI
 owns that channel. The same service has
-the write methods the settings page uses (`addServer`, `setServerEnabled`,
+the write methods the MCP Manager page uses (`addServer`, `setServerEnabled`,
 `removeServer`, `setToolEnabled`); they only write a managed `mcp.yml`.
 
 That surface — the methods, the event, and the view types re-exported from the
@@ -277,7 +281,7 @@ skipped with a warning and do not affect other servers. Claude user-state
 monoliths such as `~/.claude.json` (mixing credentials with project history)
 are **no longer read at all** as of v0.4.0.
 
-The settings page writes the same managed files, so adding a local-command
+The MCP Manager page writes the same managed files, so adding a local-command
 server there spawns that command on the host. Its routes
 (`/api/project-mcp/*`) are served on the dsh connection: whoever can use the
 dsh web GUI can add and start servers through it.

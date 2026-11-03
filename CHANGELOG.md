@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-04
+
+Versioned together with `dsh-project-mcp-ui` 0.10.0. This source version and
+Git tag do not imply that either package has been published to npm.
+
+Host alignment is unchanged: dsh **0.2.1-rc.2** and later `0.2` releases
+(`engines.dsh` stays `^0.2.1-rc.2`). No loader, service, CLI, API route, or
+config-file behavior changed.
+
+### Added
+
+- **Left sidebar entry.** The UI package now registers `sidebar.panellist`
+  (icon row) and the matching `main` page under one id, `project-mcp`, so MCP
+  management opens from the left sidebar beside the shipped Plugins and task
+  panels. `order` is 10, right after Plugins.
+- **Migration notice in both entries.** The sidebar page says the settings tab
+  is temporary; the settings tab says the new entry exists and that the tab is
+  planned for removal in the next release.
+
+### Changed
+
+- The browser bundle declares `@deepseek-ai/dsh-client-ui-sidebar` and
+  `@deepseek-ai/dsh-client-ui-layout` in `dsh.client.inject`. Both entries
+  render the same `McpPanel`; internal read/write logic is untouched.
+
+### Deprecated
+
+- **Settings → Built-in plugins → Plugin: MCP Manager** still opens the same
+  panel in 0.10.0 and is planned for removal in 0.11.0.
+
 ## [0.9.0] - 2026-10-17
 
 Versioned together with `dsh-project-mcp-ui` 0.9.0. This source version and
