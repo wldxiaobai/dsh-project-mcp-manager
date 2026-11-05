@@ -1,12 +1,11 @@
-# 设置页
+# MCP 管理页
 
 [English](settings-ui.md) | 中文
 
 [← 返回 README](../README.zh.md) ｜ 相关：[配置来源与分层](layers.zh.md) · [配置格式](format.zh.md) · [`${VAR}` 展开](env-expansion.zh.md)
 
 默认 `dsh-project-mcp-manager` bundle 内的配套包 `dsh-project-mcp-ui` 在 dsh
-web 端与桌面端的左侧栏加一个 **MCP 管理** 入口（同一页面也仍可从设置的
-「插件：MCP 管理」标签页打开，这个旧入口保留一个版本）：列出装载器会启动的
+web 端与桌面端的左侧栏加一个 **MCP 管理** 入口：列出装载器会启动的
 服务器、显示每台是否在运行，并可以添加、开关、删除服务器或单个工具。所有改动
 都写进 **受管 `mcp.yml`**，页面不改 JSON 文件，也不改遗留
 `.mcp.json`。之后由装载器照常经文件监听生效，所以页面和 [CLI](cli.zh.md)
@@ -39,20 +38,18 @@ dsh plugin --profile web add link:<源码目录>
 
 改源码后重新构建，更新链接所使用的编译产物。
 
-headless profile 可以使用同一个 manager bundle。没有浏览器运行时就没有设置页；
+headless profile 可以使用同一个 manager bundle。没有浏览器运行时就没有该页面；
 缺少 dsh `connection` 服务时，UI 不注册路由，只有连接侧集成等待，
 不阻塞核心装载器与 MCP 装载，UI 行本身可以独立处于 active。connection 到来时
 注册对应集成，销毁时清理。
 
 入口：左侧栏的 **MCP 管理**（英文界面为 MCP Manager）。侧栏收起成 56px 轨道时
-只剩图标，悬停或键盘聚焦时显示名称。同一页面仍可从 **设置 → 内置插件 →
-插件：MCP 管理**（英文界面 Settings → Built-in plugins → Plugin: MCP Manager）
-打开；这个旧入口保留一个版本，计划在下一个版本移除。旧版宿主可能将中间项显示
-为「插件」。
+只剩图标，悬停或键盘聚焦时显示名称。0.11.0 起这是唯一入口：设置 → 内置插件里的
+旧标签页已经移除。
 
 要隐藏页面，在插件管理器中展开 manager bundle 所含组件，只关闭
 `mcp-project-ui`，保留 `mcp-project` 启用。也可以在 profile patch 中按 id 覆盖
-禁用 UI 行。这样只停用 UI（左侧栏与设置页两个入口一起消失），不停用装载器，
+禁用 UI 行。这样只停用 UI（左侧栏入口随之消失），不停用装载器，
 也不移除 UI 依赖。
 
 ### 从单独安装的 UI 迁移

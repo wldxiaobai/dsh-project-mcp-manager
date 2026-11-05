@@ -1,4 +1,4 @@
-# Settings page
+# MCP Manager page
 
 English | [中文](settings-ui.zh.md)
 
@@ -6,8 +6,7 @@ English | [中文](settings-ui.zh.md)
 
 The companion package `dsh-project-mcp-ui`, included in the default
 `dsh-project-mcp-manager` bundle, adds an **MCP Manager** entry to the dsh web
-and desktop left sidebar. The same page also stays reachable from the settings
-tab **Plugin: MCP Manager** for one release. It lists the servers the loader
+and desktop left sidebar. It lists the servers the loader
 will run, shows whether each one is running, and lets you add, switch, and
 remove servers or single tools. Every change is written to a **managed
 `mcp.yml`**; the page never edits JSON files or the legacy `.mcp.json`. The
@@ -45,7 +44,7 @@ dsh plugin --profile web add link:<source>
 Rebuild after source changes to update the compiled output used by the link.
 
 A headless profile can use the same manager bundle. Without a browser runtime
-there is no settings page. Without the dsh `connection` service, the UI
+there is no page. Without the dsh `connection` service, the UI
 registers no routes; only its connection-scoped integration waits,
 not the core loader or MCP mounting. The UI row can be active independently.
 Connection arrival registers that integration, and connection disposal cleans
@@ -53,15 +52,13 @@ it up.
 
 Open **MCP Manager** in the left sidebar (中文界面：左侧栏「MCP 管理」). While the
 sidebar is collapsed to the 56px rail only the icon shows; hover or keyboard
-focus reveals the name. The previous entry, **Settings → Built-in plugins →
-Plugin: MCP Manager** (中文界面：设置 → 内置插件 → 插件：MCP 管理), opens the same
-page for one release and is planned for removal in the next release. Older
-hosts may label the middle item Plugins.
+focus reveals the name. Since 0.11.0 this is the only entry: the old settings
+tab under Built-in plugins is gone.
 
 To hide the page, open the manager bundle's contained components in the plugin
 manager and switch off only `mcp-project-ui`, leaving `mcp-project` enabled.
 Alternatively, disable the UI row by its id in a profile patch override. This
-stops the UI (both the sidebar entry and the settings tab disappear) without
+stops the UI (the sidebar entry disappears) without
 stopping the loader; it does not remove the UI dependency.
 
 ### Migrating from a separately installed UI

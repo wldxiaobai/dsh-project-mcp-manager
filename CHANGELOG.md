@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-06
+
+Versioned together with `dsh-project-mcp-ui` 0.11.0. This source version and
+Git tag do not imply that either package has been published to npm.
+
+Host alignment for dsh **0.2.2-rc.1**. v0.10.0 remains the release for
+0.2.1-rc.2 through rc.5; v0.8.2 remains the release for the dsh `0.2.0` line;
+v0.6.0 remains the release for dsh 0.1.5. No loader, service, CLI, API route, or
+config-file behavior changed.
+
+### Removed
+
+- **The settings tab is gone.** `settings.plugins.tab`, the `Plugin: MCP Manager`
+  label, the one-release migration notice on both entries, and the
+  `.dsh-mcp-entry` / `.dsh-mcp-notice` styles were deleted. The left sidebar
+  **MCP Manager** row is now the only UI entry.
+- The browser bundle no longer waits for `@deepseek-ai/dsh-client-ui-settings`
+  or `@deepseek-ai/dsh-client-ui-settings-plugins` in `dsh.client.inject`, and
+  those packages left the client devDependencies and the esbuild externals.
+
+### Changed
+
+- **Dependency floors are `^0.2.2-rc.1`.** `@deepseek-ai/dsh-mcp-client`, the UI
+  runtime dependency `@deepseek-ai/dsh-native-command`, the client
+  devDependencies, and both `engines.dsh` fields move to rc.1. cordis moves from
+  `^4.0.5` to `^4.1.0` (dsh 0.2.2 ships cordis 4.1.0, loader 1.1.0, include
+  1.1.0, timer 1.2.0, schemastery 3.19.0).
+- `pnpm-workspace.yaml`'s `minimumReleaseAgeExclude` lists the 0.2.2-rc.1
+  packages plus cordis 4.1.0 and its plugins, so the release-age policy cannot
+  silently resolve back to the 0.2.1 tuple.
+
+### Compatibility notes
+
+- The mcp-client `Config` schema is byte-identical between 0.2.1-rc.5 and
+  0.2.2-rc.1: `stdio` | `streamable-http`, reconnect cap `2147483647`, MCP SDK
+  2.2.0, same exports. Nothing in the loader needed to change.
+- `tools.restrict()` and `tools.schemas()` keep their signatures; the
+  `tools.resolve/executable` and prompt-assembly migrations in the 0.2.2 notes
+  target plugins that register tools directly, which this plugin does not.
+- `agent/created` still carries `{ agent, source, signal? }`, `session.header.cwd`
+  is still the session's original project, and `connection.fetch.register` keeps
+  `{ path, methods, requestBody, fetch }`.
+- cordis 4.1.0 still accepts `ctx.effect(execute, label)` and
+  `ctx.plugin(plugin, config)`. Loader 1.1.0 entries expose `options.config`
+  without a top-level `config` accessor; `globalNames()` and `activeProfile()`
+  already fall back to `entry.options.config`, so they keep working unchanged.
+
+See [dsh 0.2.2-rc.1 adaptation record](docs/design/adaptation-dsh-0.2.2-rc.1.md).
+
 ## [0.10.0] - 2026-11-04
 
 Versioned together with `dsh-project-mcp-ui` 0.10.0. This source version and

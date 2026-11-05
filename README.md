@@ -10,10 +10,10 @@ dsh process, and tool visibility follows the session's original project
 (`session.header.cwd`). The default
 `dsh-project-mcp-manager` bundle includes the loader and the companion
 `dsh-project-mcp-ui` MCP Manager page for the web and desktop apps (left
-sidebar from 0.10; the old settings tab stays for one release). The UI is
+sidebar entry; the old settings tab was removed in 0.11). The UI is
 enabled by default and can be disabled independently; the loader keeps working.
 
-**Capability boundary** (dsh ≥ 0.2.1-rc.5): the official client owns the
+**Capability boundary** (dsh ≥ 0.2.2-rc.1): the official client owns the
 protocol, reconnect, tool names, resources, and server instructions. Shipped
 profiles already mount shared MCP resource tools. Official configuration is
 a profile-layer Cordis patch (with that layer's own HMR) plus
@@ -27,8 +27,8 @@ a profile-layer Cordis patch (with that layer's own HMR) plus
 
 Project-file hot reload is this plugin's file watcher. It does not replace
 official profile HMR. **Transport types are decided by the official client.**
-v0.10.x targets the dsh `0.2` line starting at 0.2.1-rc.5 (`engines.dsh` is
-`^0.2.1-rc.5`); v0.9.x stays the release for 0.2.1-rc.2 through rc.4. Hosts on
+v0.11.x targets the dsh `0.2` line starting at 0.2.2-rc.1 (`engines.dsh` is
+`^0.2.2-rc.1`); v0.10.x stays the release for 0.2.1-rc.2 through rc.5. Hosts on
 dsh 0.2.0 stay on plugin v0.8.2. Hosts still on
 dsh 0.1.5 should stay on plugin v0.6.0.
 
@@ -57,7 +57,8 @@ Feature documentation lives in `docs/`, English and Chinese side by side:
   `projectMcp/updated` event, exported view types, and the semver contract for
   the companion UI.
 
-Design and release records (Chinese): [dsh 0.2.1-rc.5 adaptation](docs/design/adaptation-dsh-0.2.1-rc.5.md) ·
+Design and release records (Chinese): [dsh 0.2.2-rc.1 adaptation](docs/design/adaptation-dsh-0.2.2-rc.1.md) ·
+[dsh 0.2.1-rc.5 adaptation](docs/design/adaptation-dsh-0.2.1-rc.5.md) ·
 [dsh 0.2.1-rc.2 adaptation](docs/design/adaptation-dsh-0.2.1-rc.2.md) ·
 [dsh 0.2.0-rc.2 adaptation](docs/design/adaptation-dsh-0.2.0-rc.2.md) ·
 [dsh 0.1.6-alpha.2 adaptation plan](docs/design/adaptation-dsh-0.1.6-alpha.2.md) ·
@@ -66,6 +67,7 @@ Design and release records (Chinese): [dsh 0.2.1-rc.5 adaptation](docs/design/ad
 [dsh 0.1.2-rc.1 adaptation](docs/design/adaptation-dsh-0.1.2-rc1.md) ·
 [JSON config layer proposal](docs/design/proposal-json-mcp-config.md) ·
 [Runtime robustness & JSON interop proposal](docs/design/proposal-runtime-robustness-and-json-interop.md) ·
+[v0.11.0 release notes](docs/releases/v0.11.0.md) ·
 [v0.10.0 release notes](docs/releases/v0.10.0.md) ·
 [v0.9.0 release notes](docs/releases/v0.9.0.md) ·
 [v0.8.2 release notes](docs/releases/v0.8.2.md) ·
@@ -155,16 +157,15 @@ updated compiled output.
 **Upgrading / pinning versions**: re-run the `add` command from option 1 with
 the desired version suffix — `@latest` upgrades to the newest release,
 `@<version>` pins a specific release. For the bundled UI, choose the coordinated
-manager/UI release described above. v0.10.x needs dsh 0.2.1-rc.5 or a later `0.2`
-release (`engines.dsh`: `^0.2.1-rc.5`); v0.9.x needs 0.2.1-rc.2 through rc.4.
+manager/UI release described above. v0.11.x needs dsh 0.2.2-rc.1 or a later `0.2`
+release (`engines.dsh`: `^0.2.2-rc.1`); v0.10.x needs 0.2.1-rc.2 through rc.5.
 v0.7.x and v0.8.x need dsh 0.2.0-rc.2
 (the `0.2.0` line). dsh 0.1.5 keeps working with plugin `@0.6.0`.
 
 **MCP Manager entry (included by default)**: the manager install above supplies
 the UI automatically in web and desktop profiles. Open **MCP Manager** in the
-left sidebar. The previous entry, **Settings → Built-in plugins → Plugin: MCP
-Manager**, is kept for one release and renders the same page; it is planned for
-removal in the next release. To hide both entries without stopping the loader,
+left sidebar. Since 0.11.0 this is the only entry: the old settings tab under
+Built-in plugins is gone. To hide the page without stopping the loader,
 turn off only the manager bundle's `mcp-project-ui` component in the plugin
 manager's contained-components controls (or disable that row with a profile
 patch override). Keep `mcp-project` enabled.
@@ -191,7 +192,7 @@ to be removed automatically. Details: [MCP Manager page](docs/guide/settings-ui.
 ```powershell
 pnpm install
 pnpm run build     # core: tsc → lib/; then UI: tsc + browser bundle → packages/ui/lib/
-pnpm test          # node test/*.mjs (loader, CLI, and settings-page helpers)
+pnpm test          # node test/*.mjs (loader, CLI, and page helpers)
 ```
 
 ## How it works
