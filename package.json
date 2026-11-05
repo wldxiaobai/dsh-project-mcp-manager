@@ -1,8 +1,8 @@
 {
   "name": "dsh-project-mcp-manager",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "packageManager": "pnpm@12.3.4",
-  "description": "MCP manager for DSH with default loader and settings UI components: project/global server loading, hot reload, per-session tool visibility, and the dsh-mcp CLI.",
+  "description": "MCP manager for DSH with default loader and sidebar MCP Manager page: project/global server loading, hot reload, per-session tool visibility, and the dsh-mcp CLI.",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -22,7 +22,7 @@
     }
   },
   "engines": {
-    "dsh": "^0.2.1-rc.5"
+    "dsh": "^0.2.2-rc.1"
   },
   "license": "MIT",
   "author": "wldxiaobai <944418001@qq.com>",
@@ -43,9 +43,9 @@
     "cordis"
   ],
   "dependencies": {
-    "@deepseek-ai/dsh-mcp-client": "^0.2.1-rc.5",
+    "@deepseek-ai/dsh-mcp-client": "^0.2.2-rc.1",
     "chokidar": "^5.0.0",
-    "dsh-project-mcp-ui": "workspace:0.10.0",
+    "dsh-project-mcp-ui": "workspace:0.11.0",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
@@ -65,7 +65,7 @@
     "LICENSE"
   ],
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.5",
+    "@deepseek-ai/cordis": "^4.1.0",
     "@types/node": "^26.2.0",
     "typescript": "^7.0.2"
   }
