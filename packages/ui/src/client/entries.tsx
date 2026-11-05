@@ -1,4 +1,4 @@
-/** Entry shells: the same panel behind the sidebar page and the temporary settings tab. */
+/** Entry shells: the sidebar row glyph and the page it opens. */
 import { IconDatabaseOutlineRegular } from "@deepseek-ai/dsh-client-ui-primitives";
 import { McpPanel } from "./McpPanel.tsx";
 import type { McpUiLocaleKey } from "./locales.ts";
@@ -18,19 +18,8 @@ export function McpSidebarPage({ t }: McpEntryProps) {
     <div className="dsh-mcp-page">
       <div className="dsh-mcp-page-inner">
         <h1 className="dsh-mcp-page-title">{t("panelLabel")}</h1>
-        <p className="dsh-mcp-notice">{t("entryNoticeNew")}</p>
         <McpPanel t={t} />
       </div>
-    </div>
-  );
-}
-
-/** The settings tab kept for one release after the sidebar entry lands. */
-export function McpSettingsTab({ t }: McpEntryProps) {
-  return (
-    <div className="dsh-mcp-entry">
-      <p className="dsh-mcp-notice">{t("entryNoticeOld")}</p>
-      <McpPanel t={t} />
     </div>
   );
 }

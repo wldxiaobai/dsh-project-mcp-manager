@@ -30,8 +30,10 @@ for (const file of ["../lib/index.js", "../lib/index.d.ts", "../packages/ui/lib/
 }
 const client = await readFile(new URL("../packages/ui/lib/client.js", import.meta.url), "utf8");
 assert.ok(client.includes('id: "dsh-project-mcp-ui"'), "browser module identity must stay on the full UI package name");
-for (const slot of ['name: "settings.plugins.tab"', 'name: "sidebar.panellist"', 'name: "main"']) {
+for (const slot of ['name: "sidebar.panellist"', 'name: "main"']) {
   assert.ok(client.includes(slot), `client bundle must keep the ${slot} registration`);
 }
 assert.ok(client.includes('"project-mcp"'), "the sidebar row and the main page must share one id");
+assert.ok(!client.includes("settings.plugins.tab"), "the retired settings tab must not be registered again");
+assert.ok(ui.dsh.client.inject.length === 4, "the bundle no longer waits for the settings packages");
 console.log("PASS  default bundle ships loader and same-version UI components with built artifacts");

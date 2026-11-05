@@ -420,15 +420,4 @@ button.dsh-mcp-switch.dsh-mcp-switch-waiting[aria-checked="true"] > span {
   font-weight: 600;
   color: var(--dsw-alias-label-primary);
 }
-.dsh-mcp-entry {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.dsh-mcp-notice {
-  margin: 0;
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--dsw-alias-label-secondary);
-}
 `;
