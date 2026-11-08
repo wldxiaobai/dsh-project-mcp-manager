@@ -1,6 +1,6 @@
-/** Browser half: one sidebar row and the page it opens. */
+/** Browser half: the sidebar row plus the settings tab that opens the same panel. */
 import type { Context } from "@deepseek-ai/cordis";
-import { installPanelStyle } from "./McpPanel.tsx";
+import { McpPanel, installPanelStyle } from "./McpPanel.tsx";
 import { McpPanelIcon, McpSidebarPage } from "./entries.tsx";
 import { en, zh, type McpUiLocaleKey } from "./locales.ts";
 
@@ -19,6 +19,15 @@ export function apply(ctx: Context): void {
   const slots = (ctx as Context & { slots: { inject: (name: string, effect: () => () => void) => () => void; register: (options: object, component: unknown) => () => void } }).slots;
   ctx.effect(() => locale.register(NS, { zh, en }), "dsh-project-mcp-ui: dictionaries");
   const t = locale.bind(NS);
+  // Both entries stay: the settings tab opens the panel in place, the sidebar row
+  // opens the same panel as a main page. Both render the one McpPanel instance.
+  slots.inject("settings.plugins.tab", () => slots.register({
+    name: "settings.plugins.tab",
+    id: "projectMcp",
+    order: 30,
+    label: () => t("tab"),
+    locale: NS
+  }, McpPanel));
   slots.inject("sidebar.panellist", () => slots.register({
     name: "sidebar.panellist",
     id: PANEL_ID,

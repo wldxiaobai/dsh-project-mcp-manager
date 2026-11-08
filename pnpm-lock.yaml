@@ -116,7 +116,7 @@ importers:
         specifier: ^5.0.0
         version: 5.0.0
       dsh-project-mcp-ui:
-        specifier: workspace:0.11.0
+        specifier: workspace:0.11.1
         version: link:packages/ui
       yaml:
         specifier: ^2.9.0
@@ -162,6 +162,12 @@ importers:
       '@deepseek-ai/dsh-client-ui-renderer':
         specifier: 0.2.2-rc.1
         version: 0.2.2-rc.1(@deepseek-ai/cordis@4.1.0)
+      '@deepseek-ai/dsh-client-ui-settings':
+        specifier: 0.2.2-rc.1
+        version: 0.2.2-rc.1(@deepseek-ai/cordis@4.1.0)
+      '@deepseek-ai/dsh-client-ui-settings-plugins':
+        specifier: 0.2.2-rc.1
+        version: 0.2.2-rc.1(@deepseek-ai/cordis@4.1.0)
       '@deepseek-ai/dsh-client-ui-sidebar':
         specifier: 0.2.2-rc.1
         version: 0.2.2-rc.1(@deepseek-ai/cordis@4.1.0)
@@ -172,7 +178,7 @@ importers:
         specifier: ~18.3.1
         version: 18.3.31
       dsh-project-mcp-manager:
-        specifier: workspace:0.11.0
+        specifier: workspace:0.11.1
         version: link:../..
       esbuild:
         specifier: ^0.25.0
@@ -251,6 +257,16 @@ packages:
 
   '@deepseek-ai/dsh-client-ui-renderer@0.2.2-rc.1':
     resolution: {integrity: sha512-99uRdt3Zf6SUmMSFrXKM8XsBJWwDKLt5S1n8Yb523520JZL/bhBUV4XTPnVQkQx76wMtDuK77Sh0JcHQRWngvA==}
+    peerDependencies:
+      '@deepseek-ai/cordis': ~4.1.0
+
+  '@deepseek-ai/dsh-client-ui-settings-plugins@0.2.2-rc.1':
+    resolution: {integrity: sha512-IK1ecussCVsvup+B74YHyurck7NsDqGRk/sbISmFM3J4MYQgs+xLjOrNB6nW5L+XdR5PZ1gBrYLrPDcm/a9oYw==}
+    peerDependencies:
+      '@deepseek-ai/cordis': ~4.1.0
+
+  '@deepseek-ai/dsh-client-ui-settings@0.2.2-rc.1':
+    resolution: {integrity: sha512-GyFmfYY08ls7uaQwVn7VWs4fJXiRTttI90sLLoGnOfime/RsoNtvFfjV6P9I2zqd+kyhm162/PlZOwxzkkLhLA==}
     peerDependencies:
       '@deepseek-ai/cordis': ~4.1.0
 
@@ -818,6 +834,15 @@ snapshots:
   '@deepseek-ai/dsh-client-ui-renderer@0.2.2-rc.1(@deepseek-ai/cordis@4.1.0)':
     dependencies:
       '@deepseek-ai/cordis': 4.1.0
+
+  '@deepseek-ai/dsh-client-ui-settings-plugins@0.2.2-rc.1(@deepseek-ai/cordis@4.1.0)':
+    dependencies:
+      '@deepseek-ai/cordis': 4.1.0
+
+  '@deepseek-ai/dsh-client-ui-settings@0.2.2-rc.1(@deepseek-ai/cordis@4.1.0)':
+    dependencies:
+      '@deepseek-ai/cordis': 4.1.0
+      '@deepseek-ai/schemastery': 3.19.0
 
   '@deepseek-ai/dsh-client-ui-sidebar@0.2.2-rc.1(@deepseek-ai/cordis@4.1.0)':
     dependencies:
