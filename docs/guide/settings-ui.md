@@ -5,8 +5,8 @@ English | [中文](settings-ui.zh.md)
 [← README](../../README.md) ｜ Related: [configuration sources and layers](layers.md) · [configuration format](format.md) · [`${VAR}` expansion](env-expansion.md)
 
 The companion package `dsh-project-mcp-ui`, included in the default
-`dsh-project-mcp-manager` bundle, adds an **MCP Manager** entry to the dsh web
-and desktop left sidebar. It lists the servers the loader
+`dsh-project-mcp-manager` bundle, adds an **MCP Manager** page with two entries —
+one in the left sidebar and one in settings. It lists the servers the loader
 will run, shows whether each one is running, and lets you add, switch, and
 remove servers or single tools. Every change is written to a **managed
 `mcp.yml`**; the page never edits JSON files or the legacy `.mcp.json`. The
@@ -50,15 +50,21 @@ not the core loader or MCP mounting. The UI row can be active independently.
 Connection arrival registers that integration, and connection disposal cleans
 it up.
 
-Open **MCP Manager** in the left sidebar (中文界面：左侧栏「MCP 管理」). While the
-sidebar is collapsed to the 56px rail only the icon shows; hover or keyboard
-focus reveals the name. Since 0.11.0 this is the only entry: the old settings
-tab under Built-in plugins is gone.
+There are two entries, both opening the same page:
+
+- **MCP Manager** in the left sidebar (中文界面：左侧栏「MCP 管理」). While the
+  sidebar is collapsed to the 56px rail only the icon shows; hover or keyboard
+  focus reveals the name. On narrow layouts or a collapsed macOS sidebar, expand
+  the sidebar first.
+- **Settings → Built-in plugins → Plugin: MCP Manager** (中文界面：设置 → 内置插件 →
+  插件：MCP 管理). Older hosts may label the middle item Plugins. The settings
+  surface floats over the session, so closing it returns you to where you were —
+  handy mid-conversation.
 
 To hide the page, open the manager bundle's contained components in the plugin
 manager and switch off only `mcp-project-ui`, leaving `mcp-project` enabled.
 Alternatively, disable the UI row by its id in a profile patch override. This
-stops the UI (the sidebar entry disappears) without
+stops the UI (both entries disappear) without
 stopping the loader; it does not remove the UI dependency.
 
 ### Migrating from a separately installed UI

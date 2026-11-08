@@ -6,7 +6,8 @@
 `.dsh/mcp.json` 写入 MCP 服务器配置，在该项目开启 dsh 会话时自动装载（经官方
 `@deepseek-ai/dsh-mcp-client`），文件改动热重载到运行中的 dsh 进程，并按会话
 原始项目（`session.header.cwd`）控制工具可见性。`dsh-project-mcp-manager` 的默认 bundle 包含装载器和
-配套包 `dsh-project-mcp-ui` 提供的 web 端与桌面端 MCP 管理页（左侧栏入口）。
+配套包 `dsh-project-mcp-ui` 提供的 web 端与桌面端 MCP 管理页（左侧栏入口与设置
+标签页，两者打开同一个页面）。
 UI 默认启用，可以单独停用；装载器继续工作。
 
 **能力边界**（dsh ≥ 0.2.2-rc.1）：协议、重连、工具名、resources 与服务器
@@ -55,6 +56,7 @@ client 决定。** v0.11.x 面向 dsh `0.2` 线（从 0.2.2-rc.1 起，`engines.
 [dsh 0.1.2-rc.1 适配记录](design/adaptation-dsh-0.1.2-rc1.md) ·
 [JSON 配置层设计提案](design/proposal-json-mcp-config.md) ·
 [运行时稳健性与 JSON 互通提案](design/proposal-runtime-robustness-and-json-interop.md) ·
+[v0.11.1 发布说明](releases/v0.11.1.md) ·
 [v0.11.0 发布说明](releases/v0.11.0.md) ·
 [v0.10.0 发布说明](releases/v0.10.0.md) ·
 [v0.9.0 发布说明](releases/v0.9.0.md) ·
@@ -144,8 +146,8 @@ dsh plugin --profile web add link:<你的 dsh-mcp-project 源码目录>
 dsh 0.1.5 继续用插件 `@0.6.0`。
 
 **MCP 管理入口（默认包含）**：上面的 manager 安装会自动带上 web 端和桌面端 UI。
-入口在左侧栏的「MCP 管理」，0.11.0 起是唯一入口（设置 → 内置插件里的旧标签页
-已移除）。如果只想隐藏页面、不停用装载器，
+两个入口都指向同一个页面：左侧栏的「MCP 管理」，或 **设置 → 内置插件 →
+插件：MCP 管理**（旧版宿主可能把中间项显示为「插件」）。如果只想隐藏页面、不停用装载器，
 在插件管理器的 bundle 所含组件开关里，仅关闭 `mcp-project-ui`（也可以用 profile
 patch 覆盖禁用该行），保持 `mcp-project` 启用。
 

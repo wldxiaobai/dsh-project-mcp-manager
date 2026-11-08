@@ -9,8 +9,8 @@ session opens in that project. Changes to the file hot-reload into the running
 dsh process, and tool visibility follows the session's original project
 (`session.header.cwd`). The default
 `dsh-project-mcp-manager` bundle includes the loader and the companion
-`dsh-project-mcp-ui` MCP Manager page for the web and desktop apps (left
-sidebar entry; the old settings tab was removed in 0.11). The UI is
+`dsh-project-mcp-ui` MCP Manager page for the web and desktop apps (a left
+sidebar row and a settings tab, both opening the same panel). The UI is
 enabled by default and can be disabled independently; the loader keeps working.
 
 **Capability boundary** (dsh ≥ 0.2.2-rc.1): the official client owns the
@@ -67,6 +67,7 @@ Design and release records (Chinese): [dsh 0.2.2-rc.1 adaptation](docs/design/ad
 [dsh 0.1.2-rc.1 adaptation](docs/design/adaptation-dsh-0.1.2-rc1.md) ·
 [JSON config layer proposal](docs/design/proposal-json-mcp-config.md) ·
 [Runtime robustness & JSON interop proposal](docs/design/proposal-runtime-robustness-and-json-interop.md) ·
+[v0.11.1 release notes](docs/releases/v0.11.1.md) ·
 [v0.11.0 release notes](docs/releases/v0.11.0.md) ·
 [v0.10.0 release notes](docs/releases/v0.10.0.md) ·
 [v0.9.0 release notes](docs/releases/v0.9.0.md) ·
@@ -163,9 +164,10 @@ v0.7.x and v0.8.x need dsh 0.2.0-rc.2
 (the `0.2.0` line). dsh 0.1.5 keeps working with plugin `@0.6.0`.
 
 **MCP Manager entry (included by default)**: the manager install above supplies
-the UI automatically in web and desktop profiles. Open **MCP Manager** in the
-left sidebar. Since 0.11.0 this is the only entry: the old settings tab under
-Built-in plugins is gone. To hide the page without stopping the loader,
+the UI automatically in web and desktop profiles. Open it either way: the
+**MCP Manager** row in the left sidebar, or **Settings → Built-in plugins →
+Plugin: MCP Manager** (older hosts may label the middle item Plugins). Both
+render the same panel. To hide the page without stopping the loader,
 turn off only the manager bundle's `mcp-project-ui` component in the plugin
 manager's contained-components controls (or disable that row with a profile
 patch override). Keep `mcp-project` enabled.

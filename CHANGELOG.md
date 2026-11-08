@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-11-08
+
+Versioned together with `dsh-project-mcp-ui` 0.11.1. This source version and
+Git tag do not imply that either package has been published to npm.
+
+Host alignment is unchanged (dsh **0.2.2-rc.1** and later `0.2` releases).
+No loader, service, CLI, API route, or config-file behavior changed.
+
+### Fixed
+
+- **The settings entry is back.** 0.11.0 removed
+  **Settings → Built-in plugins → Plugin: MCP Manager** and left the left sidebar
+  row as the only way in. That broke documented paths and left the page
+  unreachable while the sidebar is collapsed to the rail, hidden on macOS, or
+  opened as a drawer on narrow layouts. 0.11.1 restores the `settings.plugins.tab`
+  registration, so both entries exist again and open the same panel.
+- The browser bundle once again declares `@deepseek-ai/dsh-client-ui-settings`
+  and `@deepseek-ai/dsh-client-ui-settings-plugins` in `dsh.client.inject`, so the
+  slot package loads before the tab registers.
+
+### Changed
+
+- The one-release deprecation notices are not coming back: the two entries are
+  now a supported, permanent arrangement. The sidebar page shows only its title;
+  the settings tab renders `McpPanel` directly. Removed keys: `entryNoticeNew` and
+  `entryNoticeOld`, plus the `McpSettingsTab` shell and the `.dsh-mcp-notice`
+  style.
+
 ## [0.11.0] - 2026-11-06
 
 Versioned together with `dsh-project-mcp-ui` 0.11.0. This source version and
