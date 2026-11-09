@@ -1,7 +1,7 @@
 /** Browser half: the sidebar row plus the settings tab that opens the same panel. */
 import type { Context } from "@deepseek-ai/cordis";
 import { McpPanel, installPanelStyle } from "./McpPanel.tsx";
-import { McpPanelIcon, McpSidebarPage } from "./entries.tsx";
+import { McpPanelIcon, McpSettingsSection, McpSidebarPage } from "./entries.tsx";
 import { en, zh, type McpUiLocaleKey } from "./locales.ts";
 
 export const NS = "settings.projectMcp";
@@ -33,6 +33,22 @@ export function apply(ctx: Context): void {
     id: PANEL_ID,
     order: 10,
     label: () => t("panelLabel"),
+    locale: NS
+  }, McpPanelIcon));
+  // The settings sidebar entry reuses the same panel; the shell supplies its own
+  // title, close button and content padding, so the section adds no chrome.
+  slots.inject("settings.section", () => slots.register({
+    name: "settings.section",
+    id: PANEL_ID,
+    order: 20,
+    label: () => t("panelLabel"),
+    locale: NS
+  }, McpSettingsSection));
+  // The nav glyph is addressed by the matching section id; the shell falls back
+  // to its own gear when no icon is registered.
+  slots.inject("settings.section.icon", () => slots.register({
+    name: "settings.section.icon",
+    id: PANEL_ID,
     locale: NS
   }, McpPanelIcon));
   slots.inject("main", () => slots.register({

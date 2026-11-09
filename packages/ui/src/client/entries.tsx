@@ -23,3 +23,8 @@ export function McpSidebarPage({ t }: McpEntryProps) {
     </div>
   );
 }
+
+/** The settings sidebar entry: the settings shell already owns the title, close, and padding. */
+export function McpSettingsSection({ t }: McpEntryProps) {
+  return <McpPanel t={t} />;
+}
