@@ -7,40 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **Workspace names avoid quadratic regex backtracking.** Display-name parsing
-  now scans trailing separators and locates the last path separator directly,
-  preserving existing names and root-path display while handling long separator
-  runs in linear time.
-- **Entry settings no longer overwrite concurrent edits.** The visibility
-  dialog (Settings → General and the plugin manager page) now keeps the
-  `revision` it read when it opened and passes it through to
-  `configForms.mutate` as the write fence; the wiring layer no longer swaps in
-  the latest revision. Only the fields the user toggled in that dialog are
-  submitted, so a stale draft cannot revert a checkbox changed in another
-  window. When the Host refuses the write, the draft is kept, the reloaded
-  revision becomes the next fence, and the dialog says that confirming again
-  writes only the fields the user changed.
-- **Workspace identity follows the host platform.** `McpUiState` now carries
-  `activeProjectKey` and every server row carries `projectKey`; both are
-  computed by the core `projectKeyOf()` (case-insensitive on Windows only). The
-  browser no longer lowercases paths or rewrites separators, so two
-  case-different POSIX workspaces stay separate in the current-workspace counts,
-  group markers, and group ordering. The package entry now also exports
-  `projectKeyOf`.
-- **Global rows no longer count as the current workspace.** `workspaceCounts()`
-  filters on `layer === "project"` instead of comparing `projectRoot` alone, so
-  user/profile rows (whose `projectRoot` is the config directory) are excluded
-  even when `DSH_HOME` or a profile directory happens to be the workspace root.
-
-## [0.12.0] - 2026-11-09
+## [0.12.0] - 2026-11-10
 
 Versioned together with `dsh-project-mcp-ui` 0.12.0. This source version and
 Git tag do not imply that either package has been published to npm.
 
 Host alignment is unchanged (dsh **0.2.2-rc.1** and later `0.2` releases).
-No loader, service, CLI, API route, or config-file behavior changed.
+No loader, service method, CLI, or config-file behavior changed; the UI state
+route only gains fields.
 
 ### Added
 
@@ -70,8 +44,8 @@ No loader, service, CLI, API route, or config-file behavior changed.
   block: workspace name, full path, `N servers · M running · K waiting for a
   session · J disabled` (non-zero parts only), and the scope note. Multiple
   workspaces without a focus show **Current workspace not determined** instead
-  of guessing. `McpUiState.activeProject` carries the same value the Add MCP
-  dialog writes to, so no service contract changed.
+  of guessing. `McpUiState.activeProject` and `activeProjectKey` carry the same
+  workspace the Add MCP dialog writes to; no service method contract changed.
 - **Workspace group markers.** The active workspace group moves to the top and
   gets a **Current** tag; other groups whose rows are waiting for a session get
   an **Idle** tag and "Loads when you switch to this workspace." A more
@@ -90,6 +64,33 @@ No loader, service, CLI, API route, or config-file behavior changed.
   showing the page), then releases the sidebar row and page together; the
   settings section releases its nav row and glyph together.
 - The UI package declares `@deepseek-ai/schemastery` for the new host `Config`.
+
+### Fixed
+
+- **Workspace names avoid quadratic regex backtracking.** Display-name parsing
+  now scans trailing separators and locates the last path separator directly,
+  preserving existing names and root-path display while handling long separator
+  runs in linear time.
+- **Entry settings no longer overwrite concurrent edits.** The visibility
+  dialog (Settings → General and the plugin manager page) now keeps the
+  `revision` it read when it opened and passes it through to
+  `configForms.mutate` as the write fence; the wiring layer no longer swaps in
+  the latest revision. Only the fields the user toggled in that dialog are
+  submitted, so a stale draft cannot revert a checkbox changed in another
+  window. When the Host refuses the write, the draft is kept, the reloaded
+  revision becomes the next fence, and the dialog says that confirming again
+  writes only the fields the user changed.
+- **Workspace identity follows the host platform.** `McpUiState` now carries
+  `activeProjectKey` and every server row carries `projectKey`; both are
+  computed by the core `projectKeyOf()` (case-insensitive on Windows only). The
+  browser no longer lowercases paths or rewrites separators, so two
+  case-different POSIX workspaces stay separate in the current-workspace counts,
+  group markers, and group ordering. The package entry now also exports
+  `projectKeyOf`.
+- **Global rows no longer count as the current workspace.** `workspaceCounts()`
+  filters on `layer === "project"` instead of comparing `projectRoot` alone, so
+  user/profile rows (whose `projectRoot` is the config directory) are excluded
+  even when `DSH_HOME` or a profile directory happens to be the workspace root.
 
 ## [0.11.1] - 2026-11-08
 
@@ -1110,7 +1111,11 @@ carry an explicit `type`.
 Security note: `stdio` lines in `.dsh/mcp.yml` spawn their `command` inside the dsh host
 process, so project files are executable-code carriers — add them only in trusted projects.
 
-[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.9.0...HEAD
+[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.11.1...v0.12.0
+[0.11.1]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.11.0...v0.11.1
+[0.11.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.10.0...v0.11.0
+[0.10.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.8.0...v0.8.2
 [0.8.1]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.8.0...v0.8.1
