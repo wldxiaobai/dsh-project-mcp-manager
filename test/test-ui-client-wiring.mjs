@@ -51,6 +51,7 @@ function harness(initialValue = {}) {
   const unsubscribers = [];
   let snapshot = { status: "ready", value: initialValue, writable: true, revision: 1 };
   let activePanelId = null;
+  let mutateResult = true;
 
   const form = {
     getSnapshot: () => snapshot,
@@ -60,7 +61,7 @@ function harness(initialValue = {}) {
     },
     async mutate(ops, revision) {
       mutations.push({ ops, revision });
-      return true;
+      return mutateResult;
     }
   };
 
@@ -125,6 +126,9 @@ function harness(initialValue = {}) {
       snapshot = next;
       for (const listener of listeners) listener();
     },
+    setMutateResult(next) {
+      mutateResult = next;
+    },
     setActivePanel(id) {
       activePanelId = id;
     },
@@ -166,9 +170,21 @@ const ALL_KEYS = [
   const pluginRow = h.entries.get("plugins.bundle.config:dsh-project-mcp-manager").options.inject();
   assert.equal(pluginRow.hooks.entries, row.hooks.entries, "both rows share the one config form");
   assert.equal(pluginRow.save, row.save, "both rows share the one write path");
-  assert.equal(await row.save([{ op: "set", path: ["sidebar"], value: false }]), true);
+
+  const accepted = await row.save([{ op: "set", path: ["sidebar"], value: false }], 1);
+  assert.deepEqual(accepted, { ok: true, revision: 1 }, "an accepted write reports the snapshot revision");
   assert.deepEqual(h.mutations[0].ops, [{ op: "set", path: ["sidebar"], value: false }]);
-  assert.equal(h.mutations[0].revision, 1, "the row writes against the snapshot revision");
+  assert.equal(h.mutations[0].revision, 1, "the editor's baseline revision is the write fence");
+
+  // 另一个客户端写入后快照前进到 revision 2：fence 仍是编辑器打开时读到的 1。
+  h.setValue({ sidebar: false });
+  const second = await row.save([{ op: "set", path: ["settingsSection"], value: false }], 1);
+  assert.equal(h.mutations[1].revision, 1, "a newer snapshot must not replace the editor's revision");
+  assert.equal(second.revision, 2, "the result carries the reloaded revision for a retry");
+
+  h.setMutateResult(false);
+  const refused = await row.save([{ op: "set", path: ["sidebar"], value: true }], 2);
+  assert.deepEqual(refused, { ok: false, revision: 2 }, "a refused write reports the revision to retry with");
   pass("the page and both config rows expose their inject faces");
 }
 

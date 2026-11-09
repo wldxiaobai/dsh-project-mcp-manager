@@ -3,7 +3,7 @@
  * 槽位、键、顺序与注入面，方便用假组件在 Node 里验证接线。
  */
 import { backToWorkspace, type PanelNavigator } from "./entries-controller.ts";
-import type { EntriesFormSnapshot, EntryOp } from "./entries-settings.ts";
+import type { EntriesFormSnapshot, EntryOp, EntrySaveResult } from "./entries-settings.ts";
 import type { McpUiLocaleKey } from "./locales.ts";
 
 /** 页面与设置分区共用的 id；主页侧栏行和它打开的 `main` 页面也共用。 */
@@ -26,7 +26,8 @@ export interface EntriesObservable {
 export interface EntriesRegistryDeps {
   readonly layout: PanelNavigator;
   readonly entries: EntriesObservable;
-  readonly save: (ops: readonly EntryOp[]) => Promise<boolean>;
+  /** `revision` 来自编辑器打开弹窗时读到的快照，原样转给宿主作写入 fence。 */
+  readonly save: (ops: readonly EntryOp[], revision: number | undefined) => Promise<EntrySaveResult>;
 }
 
 export interface EntryRegistrations {

@@ -14,7 +14,7 @@ import { McpEntriesRow, McpPluginEntriesRow } from "./entries-row.tsx";
 import { McpPanelIcon, McpSettingsSection, McpSidebarPage } from "./entries.tsx";
 import { createEntriesController, leavePanelIfOpen, type PanelNavigator } from "./entries-controller.ts";
 import { entryRegistrations, NS, PANEL_ID, type EntriesObservable } from "./entries-registry.ts";
-import { ENTRY_CONFIG_ID, entryFlagsFromSnapshot, type EntriesFormSnapshot, type EntryOp } from "./entries-settings.ts";
+import { ENTRY_CONFIG_ID, entryFlagsFromSnapshot, type EntryOp, type EntrySaveResult } from "./entries-settings.ts";
 import { en, zh, type McpUiLocaleKey } from "./locales.ts";
 
 export { NS, PANEL_ID };
@@ -56,9 +56,12 @@ export function apply(ctx: Context): void {
     getSnapshot: () => form.getSnapshot(),
     subscribe: (listener) => form.subscribe(listener)
   };
-  const saveEntries = (ops: readonly EntryOp[]): Promise<boolean> => {
-    const snapshot: EntriesFormSnapshot = form.getSnapshot();
-    return form.mutate(ops, snapshot.revision);
+  // The editor fences its write with the revision it read when the dialog
+  // opened; substituting the latest revision here would let a stale draft
+  // silently overwrite another client's changes.
+  const saveEntries = async (ops: readonly EntryOp[], revision: number | undefined): Promise<EntrySaveResult> => {
+    const accepted = await form.mutate(ops, revision);
+    return { ok: accepted, revision: form.getSnapshot().revision };
   };
   const registrations = entryRegistrations(t, { layout, entries: entriesObservable, save: saveEntries });
 

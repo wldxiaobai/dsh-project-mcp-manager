@@ -8,7 +8,9 @@ import {
   entryOps,
   type EntriesFormSnapshot,
   type EntryFlags,
-  type EntryOp
+  type EntryKey,
+  type EntryOp,
+  type EntrySaveResult
 } from "./entries-settings.ts";
 import type { McpUiLocaleKey } from "./locales.ts";
 
@@ -16,8 +18,12 @@ export interface McpEntriesRowProps {
   t: (key: McpUiLocaleKey, params?: Record<string, unknown>) => string;
   /** 由槽位 `hooks` 合成的选择器；返回整个快照，保持引用稳定。 */
   useEntries: <S>(selector: (snapshot: EntriesFormSnapshot) => S) => S;
-  /** 一次提交多个字段；返回宿主是否接受。 */
-  save: (ops: readonly EntryOp[]) => Promise<boolean>;
+  /**
+   * 一次提交多个字段；返回宿主是否接受。`revision` 是打开弹窗时（冲突后是
+   * 重新加载后）读到的版本，必须原样交给宿主作写入 fence，不能在接线层换成
+   * 提交瞬间的最新版本。
+   */
+  save: (ops: readonly EntryOp[], revision: number | undefined) => Promise<EntrySaveResult>;
   /** `settings` 保留通用行的分隔线与内边距；`page` 作为插件页里的普通内容块。 */
   variant?: "settings" | "page";
 }
@@ -29,22 +35,40 @@ export function McpEntriesRow({ t, useEntries, save, variant = "settings" }: Mcp
   const showReadOnly = entriesReadOnlyNote(snapshot);
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<EntryFlags>(flags);
+  /** 用户在弹窗里显式改过的字段：提交只写这些，别处对其它字段的更新不会被旧草稿覆盖。 */
+  const [touched, setTouched] = useState<readonly EntryKey[]>([]);
+  /** 写入 fence：打开弹窗时读到的 revision，冲突后换成宿主重新加载后的值。 */
+  const [baseRevision, setBaseRevision] = useState<number | undefined>(undefined);
+  const [conflict, setConflict] = useState(false);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
 
   const start = () => {
     setDraft(flags);
+    setTouched([]);
+    setBaseRevision(snapshot.revision);
+    setConflict(false);
     setFailed(false);
     setOpen(true);
   };
 
   const update = (patch: Partial<EntryFlags>) => {
     setDraft((current) => ({ ...current, ...patch }));
+    setTouched((current) => {
+      const keys = current.slice();
+      for (const key of Object.keys(patch) as EntryKey[]) {
+        if (!keys.includes(key)) keys.push(key);
+      }
+      return keys;
+    });
     setFailed(false);
   };
 
   const done = async () => {
-    const ops = entryOps(flags, draft);
+    // 只提交用户改过的字段，且拿宿主当前值作比较基线：弹窗开着时别处写进来的
+    // 值不会被旧草稿回滚。写入仍用打开时的 revision 作 fence——别处已经写过
+    // 时宿主会拒绝，而不是让这次写入假装是最新的。
+    const ops = entryOps(flags, draft, touched);
     if (ops.length === 0) {
       setOpen(false);
       return;
@@ -52,8 +76,16 @@ export function McpEntriesRow({ t, useEntries, save, variant = "settings" }: Mcp
     setBusy(true);
     setFailed(false);
     try {
-      if (await save(ops)) setOpen(false);
-      else setFailed(true);
+      const result = await save(ops, baseRevision);
+      if (result.ok) {
+        setConflict(false);
+        setOpen(false);
+        return;
+      }
+      // 宿主拒绝：多半是别处先写过，表单已重新加载最新配置。保留草稿，把新
+      // revision 作为下一次确认的 fence；再点「完成」仍只写用户改过的项。
+      setBaseRevision(result.revision);
+      setConflict(true);
     } catch {
       setFailed(true);
     } finally {
@@ -87,6 +119,7 @@ export function McpEntriesRow({ t, useEntries, save, variant = "settings" }: Mcp
           <Checkbox checked={draft.settingsTab} disabled={busy || readOnly} label={t("entriesSettingsTab")} onChange={(next) => update({ settingsTab: next })} />
         </div>
         {showReadOnly && <p className="dsh-mcp-entries-note">{t("entriesReadOnly")}</p>}
+        {conflict && !failed && <p className="dsh-mcp-entries-note" role="status">{t("entriesConflict")}</p>}
         {failed && (
           <p className="dsh-mcp-banner dsh-mcp-entries-error" role="alert">
             <IconWarningOutlineRegular size={16} />

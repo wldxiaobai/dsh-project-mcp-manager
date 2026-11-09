@@ -40,6 +40,15 @@ export interface EntriesFormSnapshot {
 
 export type EntryOp = { readonly op: "set"; readonly path: readonly [EntryKey]; readonly value: boolean };
 
+/**
+ * 一次提交的结果。`revision` 是提交后快照里的 revision：宿主拒绝时会先重新
+ * 加载最新配置，因此这个值可以直接作为下一次重试的 fence。
+ */
+export interface EntrySaveResult {
+  readonly ok: boolean;
+  readonly revision?: number;
+}
+
 /** 配置里不是布尔值的字段按默认值处理；缺字段也保持显示。 */
 export function entryFlagsFrom(value: unknown): EntryFlags {
   const record = value !== null && typeof value === "object" && !Array.isArray(value)
@@ -68,10 +77,16 @@ export function entriesReadOnlyNote(snapshot: EntriesFormSnapshot | null | undef
   return snapshot !== null && snapshot !== undefined && snapshot.status !== "loading" && snapshot.writable !== true;
 }
 
-/** 只提交真正变化的字段；没有变化时返回空数组，调用方直接关闭弹窗。 */
-export function entryOps(current: EntryFlags, next: EntryFlags): EntryOp[] {
+/**
+ * 只提交真正变化的字段；没有变化时返回空数组，调用方直接关闭弹窗。
+ * 给了 `only` 时再限制到这些字段——调用方传弹窗里用户显式改过的项，这样
+ * 别的窗口对未触碰字段的更新不会被旧草稿回写。`current` 是宿主当前的值
+ * （提交瞬间可能已被别处更新），因此必须拿它比较，而不是打开弹窗时的旧值。
+ */
+export function entryOps(current: EntryFlags, next: EntryFlags, only?: readonly EntryKey[]): EntryOp[] {
   const ops: EntryOp[] = [];
   for (const key of ENTRY_KEYS) {
+    if (only !== undefined && !only.includes(key)) continue;
     if (current[key] !== next[key]) ops.push({ op: "set", path: [key], value: next[key] });
   }
   return ops;

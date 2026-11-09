@@ -127,7 +127,8 @@ export type McpUiLocaleKey =
   | "entriesSettingsTab"
   | "entriesDone"
   | "entriesReadOnly"
-  | "entriesWriteFailed";
+  | "entriesWriteFailed"
+  | "entriesConflict";
 
 export const en: Record<McpUiLocaleKey, string> = {
   tab: "Plugin: MCP Manager",
@@ -256,7 +257,8 @@ export const en: Record<McpUiLocaleKey, string> = {
   entriesSettingsTab: "Settings › Built-in plugins tab",
   entriesDone: "Done",
   entriesReadOnly: "This page cannot change these settings.",
-  entriesWriteFailed: "Couldn't save. Try again."
+  entriesWriteFailed: "Couldn't save. Try again.",
+  entriesConflict: "These settings changed elsewhere. Press Done again to write only the fields you changed."
 };
 
 export const zh: Record<McpUiLocaleKey, string> = {
@@ -386,5 +388,6 @@ export const zh: Record<McpUiLocaleKey, string> = {
   entriesSettingsTab: "设置页「内置插件」标签页",
   entriesDone: "完成",
   entriesReadOnly: "当前页面没有修改权限。",
-  entriesWriteFailed: "保存失败，请重试。"
+  entriesWriteFailed: "保存失败，请重试。",
+  entriesConflict: "这些设置已在别处更新。再次点「完成」只会提交你改动过的项。"
 };
