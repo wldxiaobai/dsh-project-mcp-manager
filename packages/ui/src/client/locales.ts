@@ -116,7 +116,18 @@ export type McpUiLocaleKey =
   | "workspaceServerCount"
   | "workspaceRunningCount"
   | "workspaceWaitingCount"
-  | "workspaceDisabledCount";
+  | "workspaceDisabledCount"
+  | "backToWorkspace"
+  | "entriesTitle"
+  | "entriesHint"
+  | "entriesOpen"
+  | "entriesDialogTitle"
+  | "entriesSidebar"
+  | "entriesSettingsSection"
+  | "entriesSettingsTab"
+  | "entriesDone"
+  | "entriesReadOnly"
+  | "entriesWriteFailed";
 
 export const en: Record<McpUiLocaleKey, string> = {
   tab: "Plugin: MCP Manager",
@@ -234,7 +245,18 @@ export const en: Record<McpUiLocaleKey, string> = {
   workspaceServerCount: "{count} servers",
   workspaceRunningCount: "{count} running",
   workspaceWaitingCount: "{count} waiting for a session",
-  workspaceDisabledCount: "{count} disabled"
+  workspaceDisabledCount: "{count} disabled",
+  backToWorkspace: "Back to current workspace",
+  entriesTitle: "MCP management page entries",
+  entriesHint: "Choose where the MCP management page appears.",
+  entriesOpen: "Configure…",
+  entriesDialogTitle: "MCP management page entries",
+  entriesSidebar: "Main sidebar",
+  entriesSettingsSection: "Settings sidebar",
+  entriesSettingsTab: "Settings › Plugins tab",
+  entriesDone: "Done",
+  entriesReadOnly: "This page cannot change these settings.",
+  entriesWriteFailed: "Couldn't save. Try again."
 };
 
 export const zh: Record<McpUiLocaleKey, string> = {
@@ -353,5 +375,16 @@ export const zh: Record<McpUiLocaleKey, string> = {
   workspaceServerCount: "{count} 个服务器",
   workspaceRunningCount: "{count} 运行中",
   workspaceWaitingCount: "{count} 待会话",
-  workspaceDisabledCount: "{count} 已禁用"
+  workspaceDisabledCount: "{count} 已禁用",
+  backToWorkspace: "回到当前工作区",
+  entriesTitle: "MCP 管理页入口",
+  entriesHint: "选择在哪些位置显示 MCP 管理页。",
+  entriesOpen: "设置…",
+  entriesDialogTitle: "MCP 管理页入口设置",
+  entriesSidebar: "主页左侧栏",
+  entriesSettingsSection: "设置页左侧栏",
+  entriesSettingsTab: "设置页「插件」标签页",
+  entriesDone: "完成",
+  entriesReadOnly: "当前页面没有修改权限。",
+  entriesWriteFailed: "保存失败，请重试。"
 };

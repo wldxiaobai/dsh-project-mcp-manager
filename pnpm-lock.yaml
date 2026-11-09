@@ -140,6 +140,9 @@ importers:
       '@deepseek-ai/dsh-native-command':
         specifier: ^0.2.2-rc.1
         version: 0.2.2-rc.1(@deepseek-ai/cordis@4.1.0)
+      '@deepseek-ai/schemastery':
+        specifier: ~3.19.0
+        version: 3.19.0
       yaml:
         specifier: ^2.9.0
         version: 2.9.0

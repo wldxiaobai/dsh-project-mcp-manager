@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import { openNativeTextFile } from "@deepseek-ai/dsh-native-command";
+import Schema from "@deepseek-ai/schemastery";
 import { serviceIdentityKeyOf, type McpRowSource, type ProjectFileState } from "dsh-project-mcp-manager";
 import {
   MCP_UI_ADD_PATH,
@@ -26,6 +27,17 @@ import {
 export const name = "dsh-project-mcp-ui";
 /** projectMcp 是硬依赖；connection 在子作用域里等待，headless 下 UI 行仍可 active。 */
 export const inject = ["projectMcp"];
+
+/**
+ * 三个 UI 入口的显隐。三个默认值都是 true，与 v0.11.1 的行为一致。
+ * 值落宿主设置文档（`mcp-project-ui` 这一条），浏览器经 `ctx.configForms` 读写，
+ * 不写 profile patch。
+ */
+export const Config = Schema.object({
+  sidebar: Schema.boolean().default(true),
+  settingsSection: Schema.boolean().default(true),
+  settingsTab: Schema.boolean().default(true)
+});
 
 const YML_SOURCES = new Set<McpRowSource>(["dsh-project", "dsh-profile-user-yml", "dsh-user-yml"]);
 

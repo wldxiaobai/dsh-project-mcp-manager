@@ -42,6 +42,7 @@
   },
   "dependencies": {
     "@deepseek-ai/dsh-native-command": "^0.2.2-rc.1",
+    "@deepseek-ai/schemastery": "~3.19.0",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
