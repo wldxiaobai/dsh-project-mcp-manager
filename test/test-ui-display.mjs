@@ -73,6 +73,8 @@ const home = "C:\\Users\\haima";
   assert.equal(zh.continueWrite, "写入 mcp.yml");
   assert.equal(zh.enableLabel, "启用");
   assert.equal(zh.workspaceLocked, "这个工作区当前不能改");
+  assert.equal(zh.intro, "这里列出已配置的 MCP 服务器。");
+  assert.equal(en.intro, "Configured MCP servers are listed here.");
   assert.equal(zh.statusIdle, "已启用 · 等待会话启动");
   assert.equal(zh.statusOff, "已禁用");
   for (const value of [zh.introHelp, zh.addDescription, zh.takeoverTitle, zh.removeWill, zh.badgeTakeoverHint]) {

@@ -664,8 +664,10 @@ function WorkspaceHeader({ activeProject, servers, t }: {
   return (
     <section className="workspace-head">
       <p className="workspace-label">{t("currentWorkspace")}</p>
-      <p className="workspace-name">{header.known ? header.name : t("workspaceUnknown")}</p>
-      {header.path !== null && <p className="workspace-path" title={header.path}>{header.path}</p>}
+      <div className="workspace-title">
+        <p className="workspace-name">{header.known ? header.name : t("workspaceUnknown")}</p>
+        {header.path !== null && <p className="workspace-path" title={header.path}>{header.path}</p>}
+      </div>
       {header.segments.length > 0 && (
         <p className="workspace-status">
           {header.segments.map((segment, index) => (

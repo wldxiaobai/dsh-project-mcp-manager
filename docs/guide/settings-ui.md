@@ -116,12 +116,11 @@ All three entries render the same panel, so all three open with the same
 **Current workspace** header. It answers "which workspace am I looking at?":
 
 - the **Current workspace** label;
-- the workspace name (the last path segment);
-- the full path, ellipsized when long and shown in full on hover;
+- the workspace name (the last path segment) and the full path on one line,
+  with the path ellipsized when long and shown in full on hover;
 - a status line — `N servers · M running · K waiting for a session · J disabled`
   — with only the non-zero parts;
-- the note "Only this workspace's servers are loaded; others load when you
-  switch."
+- the note "Automatically loads the MCP servers of the workspace you are in."
 
 When the host cannot tell yet (several workspaces and no session focus), the
 name reads **Current workspace not determined**, the path is hidden, and the

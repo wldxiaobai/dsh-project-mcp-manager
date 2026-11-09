@@ -156,10 +156,10 @@ export const Config = Schema.object({
 - 放在 `McpPanel` 顶部，三个入口自动一致；入口壳不再重复渲染。
 - 结构（自上而下）：
   1. 小标签「当前工作区」；
-  2. 工作区名（`basename(activeProject)`）；
-  3. 完整路径（代码字体、超长省略、`title` 显示全文）；
-  4. 状态行：`N 个服务器 · M 运行中 · K 待会话 · J 已禁用`（只显示非零项）；
-  5. 说明行：「只装载当前工作区的服务器；切到其它工作区后自动装载。」
+  2. 工作区名（`basename(activeProject)`）与完整路径同一行，路径用代码字体、
+     超长省略、`title` 显示全文；
+  3. 状态行：`N 个服务器 · M 运行中 · K 待会话 · J 已禁用`（只显示非零项）；
+  4. 说明行：「将自动装载当前所在工作区的 MCP 服务器。」
 - 没有任何工作区焦点时：名称显示「当前工作区未确定」，隐藏路径，说明改为「打开一个会话或发送一条消息后确定。」
 
 ### 5.2 数据来源
@@ -192,7 +192,7 @@ export const Config = Schema.object({
 | `currentWorkspace` | 当前工作区 | Current workspace |
 | `workspaceUnknown` | 当前工作区未确定 | Current workspace not determined |
 | `workspaceUnknownHint` | 打开一个会话或发送一条消息后确定。 | Open a session or send a message to determine it. |
-| `workspaceScopeNote` | 只装载当前工作区的服务器；切到其它工作区后自动装载。 | Only this workspace's servers are loaded; others load when you switch. |
+| `workspaceScopeNote` | 将自动装载当前所在工作区的 MCP 服务器。 | Automatically loads the MCP servers of the workspace you are in. |
 | `workspaceCurrent` | 当前 | Current |
 | `workspaceIdle` | 空闲 | Idle |
 | `workspaceIdleHint` | 切到该工作区时装载。 | Loads when you switch to this workspace. |

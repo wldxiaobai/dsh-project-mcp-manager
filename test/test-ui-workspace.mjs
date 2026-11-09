@@ -129,7 +129,7 @@ function row(overrides) {
   assert.equal(zh.currentWorkspace, "当前工作区");
   assert.equal(zh.workspaceUnknown, "当前工作区未确定");
   assert.equal(zh.workspaceUnknownHint, "打开一个会话或发送一条消息后确定。");
-  assert.equal(zh.workspaceScopeNote, "只装载当前工作区的服务器；切到其它工作区后自动装载。");
+  assert.equal(zh.workspaceScopeNote, "将自动装载当前所在工作区的 MCP 服务器。");
   assert.equal(zh.workspaceCurrent, "当前");
   assert.equal(zh.workspaceIdle, "空闲");
   assert.equal(zh.workspaceIdleHint, "切到该工作区时装载。");
