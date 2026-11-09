@@ -120,41 +120,31 @@ the desired version suffix — `@latest` upgrades to the newest release,
 manager/UI release described above, and pick the plugin release that matches
 your dsh version — see the compatibility table above.
 
-**MCP Manager entry (included by default)**: the manager install above supplies
-the UI automatically in web and desktop profiles. Three entries open the same
-panel: the **MCP Manager** row in the main sidebar (its title row has a **Back
-to current workspace** button), **Settings → MCP Manager** in the settings
-sidebar, and **Settings → Built-in plugins → Plugin: MCP Manager** (older hosts
-may label the middle item Plugins). The page opens on a **Current workspace**
-header — workspace name, full path, and server counts — pinning the current
-workspace group and marking the other idle groups. To choose which of the three
-entries appear, use **Settings → General → MCP management page entries**:
-changes are saved together from one dialog, and turning all three off is
-allowed because that row always stays as the way back. The same row also appears
-on the manager bundle's page in the plugin manager (main sidebar **Plugins →
-`dsh-project-mcp-manager`**); both places edit one shared configuration. That
-page's README follows the UI language: Chinese shows `docs/README.zh.md`, other
-languages show the root `README.md`. To hide
-the page entirely without stopping the loader, turn off only the manager bundle's
-`mcp-project-ui` component in the plugin manager's contained-components controls
-(or disable that row with a profile patch override). Keep `mcp-project` enabled.
+If you installed `dsh-project-mcp-ui` separately before, see
+[migrating from a separately installed UI](docs/guide/settings-ui.md#migrating-from-a-separately-installed-ui).
 
-A headless profile installs the same bundle but has no browser page. Without
-the dsh `connection` service, the UI registers no routes;
-its connection integration waits without blocking the core loader or MCP
-mounting.
+### MCP Manager entries
 
-**Migrating from a separate UI install**: after installing the manager bundle,
-remove `dsh-project-mcp-ui` from the profile's bundle selection
-(`dsh.profile.bundles`), keeping the manager selected. You may then remove the
-direct UI dependency with `dsh plugin --profile web remove dsh-project-mcp-ui`
-(use `desktop` for the desktop profile); the manager still supplies its own UI
-dependency. Before running the new bundle, remove an old direct UI dependency
-(recommended) or align it to the manager's exact version; it can take precedence
-over transitive resolution. If the old UI bundle was disabled, transfer that
-intent to a `mcp-project-ui` row override with `disabled: true` before loading
-the manager. Neither old bundle selection nor direct dependencies are promised
-to be removed automatically. Details: [MCP Manager page](docs/guide/settings-ui.md#migrating-from-a-separately-installed-ui).
+After you install the manager, the web and desktop apps have an MCP Manager
+page. These three entries open the same page:
+
+- **MCP Manager** in the main sidebar
+- **MCP Manager** in the Settings sidebar
+- **Settings → Built-in plugins → Plugin: MCP Manager**
+
+A headless profile has no page; the loader works the same. For how to use the
+page, see [MCP Manager page](docs/guide/settings-ui.md).
+
+### MCP Manager entry settings
+
+Go to **Settings → General → MCP management page entries**, choose
+**Configure…**, and tick the entries you want. You can turn off all three; this
+row always stays, so you can turn them back on. The same row is on the main
+sidebar's **Plugins → `dsh-project-mcp-manager`** page, and both places change
+the same setting.
+
+To remove the page but keep the loader, turn off only the `mcp-project-ui`
+component in the plugin manager.
 
 ## Build & test
 

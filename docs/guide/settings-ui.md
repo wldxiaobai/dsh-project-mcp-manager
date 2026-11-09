@@ -50,40 +50,6 @@ not the core loader or MCP mounting. The UI row can be active independently.
 Connection arrival registers that integration, and connection disposal cleans
 it up.
 
-There are three entries, all opening the same page:
-
-- **MCP Manager** in the left sidebar (中文界面：左侧栏「MCP 管理」). While the
-  sidebar is collapsed to the 56px rail only the icon shows; hover or keyboard
-  focus reveals the name. On narrow layouts or a collapsed macOS sidebar, expand
-  the sidebar first. This entry replaces the conversation column, so its title
-  row carries a **Back to current workspace** button; it returns to the
-  conversation surface without changing the current session.
-- **Settings → MCP Manager** in the settings sidebar (中文界面：设置 →「MCP 管理」).
-  The settings panel floats over the session, so closing it returns you to where
-  you were — handy mid-conversation.
-- **Settings → Built-in plugins → Plugin: MCP Manager** (中文界面：设置 → 内置插件 →
-  插件：MCP 管理). Older hosts may label the middle item Plugins.
-
-**Choosing which entries appear.** On the **Settings → General** page, the
-**MCP management page entries** row has a **Configure…** button. Its dialog has
-one checkbox per entry: main sidebar, settings sidebar, and the Built-in plugins tab.
-Changes are drafted locally and saved together by **Done**; **Cancel** discards
-them. Another browser's changes sync in as well. All three can be switched off —
-the General row is not one of them and always stays as the way back. When the
-page has no write permission (for example a remote browser), the checkboxes are
-disabled and the dialog says so.
-
-The same row also appears on the manager bundle's page in the plugin manager
-(main sidebar **Plugins → `dsh-project-mcp-manager`**). Both places edit the
-same configuration, so a change saved in one is immediately reflected in the
-other.
-
-To hide the whole page, open the manager bundle's contained components in the
-plugin manager and switch off only `mcp-project-ui`, leaving `mcp-project`
-enabled. Alternatively, disable the UI row by its id in a profile patch
-override. This stops all three entries without stopping the loader; it does not
-remove the UI dependency.
-
 ### Migrating from a separately installed UI
 
 1. Install or upgrade the manager bundle first.
@@ -114,6 +80,46 @@ loading the new manager bundle** with this profile patch row override:
 
 Disabling the old standalone bundle alone does not disable the manager's new
 UI component; without that override the default UI is enabled.
+
+## Entries
+
+There are three entries, all opening the same page:
+
+- **MCP Manager** in the left sidebar (中文界面：左侧栏「MCP 管理」). While the
+  sidebar is collapsed to the 56px rail only the icon shows; hover or keyboard
+  focus reveals the name. On narrow layouts or a collapsed macOS sidebar, expand
+  the sidebar first. This entry replaces the conversation column, so its title
+  row carries a **Back to current workspace** button; it returns to the
+  conversation surface without changing the current session.
+- **Settings → MCP Manager** in the settings sidebar (中文界面：设置 →「MCP 管理」).
+  The settings panel floats over the session, so closing it returns you to where
+  you were — handy mid-conversation.
+- **Settings → Built-in plugins → Plugin: MCP Manager** (中文界面：设置 → 内置插件 →
+  插件：MCP 管理). Older hosts may label the middle item Plugins.
+
+### Entry settings
+
+Go to **Settings → General → MCP management page entries** and choose
+**Configure…**. The dialog has one checkbox each for the main sidebar, the
+settings sidebar, and the Built-in plugins tab. **Done** saves all changes at
+once; **Cancel** discards them. Changes made in another browser sync in too.
+
+- You can turn off all three entries. The General row is not one of them and
+  always stays, so you can turn entries back on.
+- The same row is on the main sidebar's **Plugins → `dsh-project-mcp-manager`**
+  page, and both places change the same setting. That page's README follows
+  the UI language: Chinese shows `docs/README.zh.md`, other languages show the
+  root `README.md`.
+- When the page has no write permission (for example a remote browser), the
+  checkboxes are disabled and the dialog says so.
+
+### Hiding the whole page
+
+Open the manager bundle's contained components in the plugin manager and
+switch off only `mcp-project-ui`, leaving `mcp-project` enabled. Alternatively,
+disable the UI row by its id in a profile patch override. This removes all
+three entries without stopping the loader; it does not remove the UI
+dependency.
 
 ## Current workspace
 

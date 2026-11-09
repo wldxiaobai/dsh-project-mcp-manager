@@ -103,30 +103,27 @@ dsh plugin --profile web add link:<你的 dsh-mcp-project 源码目录>
 升级到最新，`@<version>` 锁定指定发布版。默认 UI 需选择上文所述的 manager/UI
 同步发布版；按上方的兼容性表格选择与你 dsh 版本匹配的插件版本。
 
-**MCP 管理入口（默认包含）**：上面的 manager 安装会自动带上 web 端和桌面端 UI。
-三个入口打开的是同一个页面：主页左侧栏的「MCP 管理」（标题行带「回到当前工作区」
-按钮）、设置页左侧栏的「MCP 管理」，以及 **设置 → 内置插件 → 插件：MCP 管理**
-（旧版宿主可能把中间项显示为「插件」）。页面顶部有「当前工作区」抬头——工作区名、
-完整路径与服务器计数——当前工作区分组置顶，其它空闲分组带标记。三处入口分别显隐：
-**设置 → 通用 →「MCP 管理页入口」**，改动在一个小窗里草拟后一次保存；三个全关也
-可以，那一行始终保留，是恢复入口。同一行也出现在主页 →「插件」→
-`dsh-project-mcp-manager` 页面里，两处改的是同一份配置；该页面显示的 README 跟随
-界面语言，中文显示 `docs/README.zh.md`，其它语言显示根目录 `README.md`。如果只想
-隐藏页面、不停用装载器，在插件管理器的 bundle 所含组件开关里，仅关闭
-`mcp-project-ui`（也可以用 profile patch 覆盖禁用该行），保持 `mcp-project` 启用。
+以前单独装过 `dsh-project-mcp-ui` 的，见
+[从单独安装的 UI 迁移](guide/settings-ui.zh.md#从单独安装的-ui-迁移)。
 
-headless profile 安装同一个 bundle，但没有浏览器页面。缺少 dsh `connection`
-服务时，UI 不注册路由；连接侧集成等待该服务，不阻塞核心装载器与
-MCP 装载。
+### MCP 管理页入口
 
-**从单独安装的 UI 迁移**：先安装 manager bundle，再从 profile 的 bundle 选择
-（`dsh.profile.bundles`）中移除 `dsh-project-mcp-ui`，保留 manager。之后可选执行
-`dsh plugin --profile web remove dsh-project-mcp-ui` 移除直接 UI 依赖（桌面端换成
-`desktop`）；manager 仍提供自己的 UI 依赖。运行新 bundle 前建议移除旧直接 UI
-依赖，或对齐到 manager 的精确版本，避免它优先于传递依赖解析。旧 UI bundle 若
-曾禁用，需在加载 manager 前用 `mcp-project-ui` 行的 `disabled: true` 覆盖保留意图。
-不承诺旧 bundle 选择或直接依赖会自动清理。详见
-[页面迁移说明](guide/settings-ui.zh.md#从单独安装的-ui-迁移)。
+安装 manager 后，web 端和桌面端都有 MCP 管理页。下面三个入口打开同一个页面：
+
+- 主页左侧栏的「MCP 管理」
+- 设置页左侧栏的「MCP 管理」
+- 设置 → 内置插件 →「插件：MCP 管理」
+
+headless profile 没有页面，装载器照常工作。页面用法见
+[MCP 管理页](guide/settings-ui.zh.md)。
+
+### MCP 管理页入口设置
+
+在 **设置 → 通用 →「MCP 管理页入口」** 点「设置…」，勾选要显示的入口。三个可以
+全部关掉；这一行始终保留，随时可以重新打开。主页 →「插件」→
+`dsh-project-mcp-manager` 页面里也有这一行，两处改的是同一份设置。
+
+要去掉整个页面但保留装载器，在插件管理器里只关闭 `mcp-project-ui` 组件。
 
 ## 构建与测试
 
