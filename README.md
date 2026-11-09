@@ -58,7 +58,9 @@ not a standalone `dsh.bundle` and should not be selected separately.
 > examples below provide that layout once both 0.8.0 packages are published;
 > a Git tag alone does not publish packages or change npm's `latest` tag.
 
-**Prerequisite: install dsh itself** (for users who don't have dsh yet):
+**Prerequisite: install dsh itself** (skip if you already have it). Download
+DeepSeek Harness from the official page:
+<https://www.deepseek.com/harness/>. To install it from npm or GitHub instead:
 
 ```powershell
 npm install -g @deepseek-ai/dsh        # official npm package

@@ -49,7 +49,8 @@ client 决定。**
 > 核心加 UI 的默认 bundle 已纳入源码版本 **0.8.0**。下列 npm 示例在两个
 > 0.8.0 包同步发布后才提供这个布局；Git 标签不会自动发布 npm 或更新 `latest`。
 
-**前置：安装 dsh 本体**（尚未安装 dsh 的用户）：
+**前置：安装 dsh 本体**（已安装可跳过）。推荐从官方下载页获取 DeepSeek Harness：
+<https://www.deepseek.com/harness/>。也可以从 npm 或 GitHub 安装：
 
 ```powershell
 npm install -g @deepseek-ai/dsh        # npm 官方包
