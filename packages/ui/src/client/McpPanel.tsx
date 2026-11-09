@@ -673,10 +673,10 @@ function ServerGroups({ title, groups, busy, t, homeDir, writeTargets, onToggle,
 
 /** 「当前工作区」抬头：名称、路径、计数与范围说明。三个入口都渲染同一个面板，因此都带上这一块。 */
 function WorkspaceHeader({ activeProject, activeProjectKey, servers, t }: {
-  activeProject: string | null;
-  activeProjectKey: string | null;
-  servers: McpUiServer[];
-  t: McpPanelProps["t"];
+  readonly activeProject: string | null;
+  readonly activeProjectKey: string | null;
+  readonly servers: McpUiServer[];
+  readonly t: McpPanelProps["t"];
 }) {
   const header = workspaceHeader(activeProject, activeProjectKey, servers);
   return (

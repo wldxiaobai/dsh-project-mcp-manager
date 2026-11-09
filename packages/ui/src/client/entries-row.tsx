@@ -15,17 +15,17 @@ import {
 import type { McpUiLocaleKey } from "./locales.ts";
 
 export interface McpEntriesRowProps {
-  t: (key: McpUiLocaleKey, params?: Record<string, unknown>) => string;
+  readonly t: (key: McpUiLocaleKey, params?: Record<string, unknown>) => string;
   /** 由槽位 `hooks` 合成的选择器；返回整个快照，保持引用稳定。 */
-  useEntries: <S>(selector: (snapshot: EntriesFormSnapshot) => S) => S;
+  readonly useEntries: <S>(selector: (snapshot: EntriesFormSnapshot) => S) => S;
   /**
    * 一次提交多个字段；返回宿主是否接受。`revision` 是打开弹窗时（冲突后是
    * 重新加载后）读到的版本，必须原样交给宿主作写入 fence，不能在接线层换成
    * 提交瞬间的最新版本。
    */
-  save: (ops: readonly EntryOp[], revision: number | undefined) => Promise<EntrySaveResult>;
+  readonly save: (ops: readonly EntryOp[], revision: number | undefined) => Promise<EntrySaveResult>;
   /** `settings` 保留通用行的分隔线与内边距；`page` 作为插件页里的普通内容块。 */
-  variant?: "settings" | "page";
+  readonly variant?: "settings" | "page";
 }
 
 export function McpEntriesRow({ t, useEntries, save, variant = "settings" }: McpEntriesRowProps) {
@@ -119,7 +119,7 @@ export function McpEntriesRow({ t, useEntries, save, variant = "settings" }: Mcp
           <Checkbox checked={draft.settingsTab} disabled={busy || readOnly} label={t("entriesSettingsTab")} onChange={(next) => update({ settingsTab: next })} />
         </div>
         {showReadOnly && <p className="dsh-mcp-entries-note">{t("entriesReadOnly")}</p>}
-        {conflict && !failed && <p className="dsh-mcp-entries-note" role="status">{t("entriesConflict")}</p>}
+        {conflict && !failed && <p className="dsh-mcp-entries-note"><output>{t("entriesConflict")}</output></p>}
         {failed && (
           <p className="dsh-mcp-banner dsh-mcp-entries-error" role="alert">
             <IconWarningOutlineRegular size={16} />

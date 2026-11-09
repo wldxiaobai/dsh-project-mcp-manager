@@ -4,13 +4,13 @@ import { McpPanel } from "./McpPanel.tsx";
 import type { McpUiLocaleKey } from "./locales.ts";
 
 export interface McpEntryProps {
-  t: (key: McpUiLocaleKey, params?: Record<string, unknown>) => string;
+  readonly t: (key: McpUiLocaleKey, params?: Record<string, unknown>) => string;
 }
 
 /** The sidebar page also receives the navigation command; the settings entries do not. */
 export interface McpSidebarPageProps extends McpEntryProps {
   /** Select the conversation surface without changing the current session. */
-  onBack?: () => void;
+  readonly onBack?: () => void;
 }
 
 /** The sidebar row's glyph; the shell asks for the square edge and reads the active state itself. */

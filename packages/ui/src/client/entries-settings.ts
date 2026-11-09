@@ -63,13 +63,13 @@ export function entryFlagsFrom(value: unknown): EntryFlags {
 
 /** 只有表单 ready 时才信任配置值；加载中或命名空间不可用时按默认全显示。 */
 export function entryFlagsFromSnapshot(snapshot: EntriesFormSnapshot | null | undefined): EntryFlags {
-  if (snapshot === null || snapshot === undefined || snapshot.status !== "ready") return DEFAULT_ENTRY_FLAGS;
+  if (snapshot?.status !== "ready") return DEFAULT_ENTRY_FLAGS;
   return entryFlagsFrom(snapshot.value);
 }
 
 /** 三个勾选框是否禁用：表单没 ready 或当前页面没有写入权限时为 true。 */
 export function entriesReadOnly(snapshot: EntriesFormSnapshot | null | undefined): boolean {
-  return snapshot === null || snapshot === undefined || snapshot.status !== "ready" || snapshot.writable !== true;
+  return snapshot?.status !== "ready" || snapshot.writable !== true;
 }
 
 /** 是否需要显示「没有修改权限」：加载中不显示，避免闪一句误导文案。 */
