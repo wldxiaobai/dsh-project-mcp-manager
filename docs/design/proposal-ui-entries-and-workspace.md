@@ -1,8 +1,8 @@
 # 设计提案：MCP 管理页的 UI 入口与“当前工作区”提示
 
-[← 返回 README](../README.zh.md) ｜ 相关：[MCP 管理页使用指南](../guide/settings-ui.zh.md) · [dsh 0.2.2-rc.1 适配记录](adaptation-dsh-0.2.2-rc.1.md) · [v0.11.1 发布说明](../releases/v0.11.1.md)
+[← 返回 README](../README.zh.md) ｜ 相关：[MCP 管理页使用指南](../guide/settings-ui.zh.md) · [dsh 0.2.2-rc.1 适配记录](adaptation-dsh-0.2.2-rc.1.md) · [v0.12.0 发布说明](../releases/v0.12.0.md)
 
-**状态**：设计已定，待实现 ｜ **提出日期**：2026-11-09 ｜ **目标版本**：v0.12.0（暂定）
+**状态**：已实现（v0.12.0，实机点击回归待补） ｜ **提出日期**：2026-11-09 ｜ **目标版本**：v0.12.0
 **关联**：`AGENTS.md`（UI 入口与槽位）、`packages/ui/src/client/index.ts`（现有注册）、`packages/ui/src/index.ts`（宿主半区）
 
 ## 0. 裁决结果
@@ -257,3 +257,20 @@ export const Config = Schema.object({
 - 目标版本号：暂定 v0.12.0。
 - 设置分区图标：先复用数据库图标；如果视觉上比内置分区的图标重，再换更细的图标。
 - 通用行副标题是否显示「当前显示 N/3 个入口」：可选，不影响行为。
+
+## 11. 实现记录（v0.12.0）
+
+- 宿主半区：`packages/ui/src/index.ts` 导出 `Config`（`sidebar` /
+  `settingsSection` / `settingsTab`，默认全 `true`），`McpUiState` 增加
+  `activeProject`（取 `writeTargets()` 的项目项）；`packages/ui` 增加
+  `@deepseek-ai/schemastery` 依赖。
+- 浏览器半区：`client/index.ts` 的 `inject` 增加 `layout`、`configForms`；槽位
+  描述集中在 `entries-registry.ts`；显隐模型与提交操作在 `entries-settings.ts`；
+  幂等增删注册在 `entries-controller.ts`；通用行在 `entries-row.tsx`；抬头与
+  分组判断在 `workspace.ts`。
+- 三个入口：主页侧栏行 + `main`（返回按钮经 slot `inject` 传入）、设置页
+  `settings.section` + `settings.section.icon`、`settings.plugins.tab`，外加
+  `settings.general.item` 的显隐行（id `mcp-entries`、order 12）。
+- 测试：`test/test-ui-workspace.mjs`、`test/test-ui-entries.mjs`，
+  并更新 `test/test-bundle.mjs` 与 `test/test-ui-lifecycle.mjs`。
+- 未做：真机点击回归；§8.1 的「Config 写入是否触发该行重载」未实测。

@@ -6,8 +6,8 @@
 `.dsh/mcp.json` 写入 MCP 服务器配置，在该项目开启 dsh 会话时自动装载（经官方
 `@deepseek-ai/dsh-mcp-client`），文件改动热重载到运行中的 dsh 进程，并按会话
 原始项目（`session.header.cwd`）控制工具可见性。`dsh-project-mcp-manager` 的默认 bundle 包含装载器和
-配套包 `dsh-project-mcp-ui` 提供的 web 端与桌面端 MCP 管理页（左侧栏入口与设置
-标签页，两者打开同一个页面）。
+配套包 `dsh-project-mcp-ui` 提供的 web 端与桌面端 MCP 管理页（主页左侧栏、设置页
+左侧栏与设置里的插件标签页三个入口，打开同一个页面）。
 UI 默认启用，可以单独停用；装载器继续工作。
 
 **能力边界**（dsh ≥ 0.2.2-rc.1）：协议、重连、工具名、resources 与服务器
@@ -22,7 +22,7 @@ instructions 归官方 client。发行版 profile 已经装了共享的 MCP 资�
 3. MCP 专用配置格式、`dsh-mcp` CLI 和 MCP 管理页。
 
 项目文件热重载是本插件自己的文件监听，不替代官方 profile HMR。**传输类型由官方
-client 决定。** v0.11.x 面向 dsh `0.2` 线（从 0.2.2-rc.1 起，`engines.dsh` 为
+client 决定。** v0.12.x 面向 dsh `0.2` 线（从 0.2.2-rc.1 起，`engines.dsh` 为
 `^0.2.2-rc.1`）；v0.10.x 留在 0.2.1-rc.2–rc.5。dsh 0.2.0 继续用插件 v0.8.2。
 仍在 dsh 0.1.5 上的宿主继续用插件 v0.6.0。
 
@@ -57,6 +57,7 @@ client 决定。** v0.11.x 面向 dsh `0.2` 线（从 0.2.2-rc.1 起，`engines.
 [JSON 配置层设计提案](design/proposal-json-mcp-config.md) ·
 [运行时稳健性与 JSON 互通提案](design/proposal-runtime-robustness-and-json-interop.md) ·
 [UI 入口与当前工作区提案](design/proposal-ui-entries-and-workspace.md) ·
+[v0.12.0 发布说明](releases/v0.12.0.md) ·
 [v0.11.1 发布说明](releases/v0.11.1.md) ·
 [v0.11.0 发布说明](releases/v0.11.0.md) ·
 [v0.10.0 发布说明](releases/v0.10.0.md) ·
@@ -142,15 +143,19 @@ dsh plugin --profile web add link:<你的 dsh-mcp-project 源码目录>
 
 **升级/锁定版本**：重跑方式一的 `add` 命令并带上目标版本后缀——`@latest`
 升级到最新，`@<version>` 锁定指定发布版。默认 UI 需选择上文所述的 manager/UI
-同步发布版。v0.11.x 需要 dsh 0.2.2-rc.1 或更新的 `0.2` 发布版（`engines.dsh`：
+同步发布版。v0.12.x 需要 dsh 0.2.2-rc.1 或更新的 `0.2` 发布版（`engines.dsh`：
 `^0.2.2-rc.1`）；v0.10.x 需要 0.2.1-rc.2–rc.5。v0.7.x 与 v0.8.x 需要 dsh 0.2.0-rc.2（`0.2.0` 线）。
 dsh 0.1.5 继续用插件 `@0.6.0`。
 
 **MCP 管理入口（默认包含）**：上面的 manager 安装会自动带上 web 端和桌面端 UI。
-两个入口都指向同一个页面：左侧栏的「MCP 管理」，或 **设置 → 内置插件 →
-插件：MCP 管理**（旧版宿主可能把中间项显示为「插件」）。如果只想隐藏页面、不停用装载器，
-在插件管理器的 bundle 所含组件开关里，仅关闭 `mcp-project-ui`（也可以用 profile
-patch 覆盖禁用该行），保持 `mcp-project` 启用。
+三个入口打开的是同一个页面：主页左侧栏的「MCP 管理」（标题行带「回到当前工作区」
+按钮）、设置页左侧栏的「MCP 管理」，以及 **设置 → 内置插件 → 插件：MCP 管理**
+（旧版宿主可能把中间项显示为「插件」）。页面顶部有「当前工作区」抬头——工作区名、
+完整路径与服务器计数——当前工作区分组置顶，其它空闲分组带标记。三处入口分别显隐：
+**设置 → 通用 →「MCP 管理页入口」**，改动在一个小窗里草拟后一次保存；三个全关也
+可以，那一行始终保留，是恢复入口。如果只想隐藏页面、不停用装载器，在插件管理器的
+bundle 所含组件开关里，仅关闭 `mcp-project-ui`（也可以用 profile patch 覆盖禁用该行），
+保持 `mcp-project` 启用。
 
 headless profile 安装同一个 bundle，但没有浏览器页面。缺少 dsh `connection`
 服务时，UI 不注册路由；连接侧集成等待该服务，不阻塞核心装载器与
