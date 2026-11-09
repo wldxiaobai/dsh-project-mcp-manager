@@ -46,17 +46,8 @@ short report helps.
 
 ## Installation (mount into a profile)
 
-The plugin is mounted through a **bundle patch**: once the package is added to
-`dsh.profile.bundles`, dsh synthesizes each bundle's patch (the
-`cordis.patch.yml` pointed to by `dsh.bundle.patch`) into plugin lines at
-startup, in order. The manager's default bundle contains two rows:
-`mcp-project` (core loader) and `mcp-project-ui` (MCP Manager page). The manager
-installs its same-exact-version UI dependency automatically; the UI package is
-not a standalone `dsh.bundle` and should not be selected separately.
-
-> The core-plus-UI bundle is included in source version **0.8.0**. The npm
-> examples below provide that layout once both 0.8.0 packages are published;
-> a Git tag alone does not publish packages or change npm's `latest` tag.
+Install only `dsh-project-mcp-manager`; it brings the core loader and the MCP
+Manager page. How the bundle is laid out: [install](docs/guide/settings-ui.md#install).
 
 **Prerequisite: install dsh itself** (skip if you already have it). Download
 DeepSeek Harness from the official page:
@@ -156,80 +147,15 @@ pnpm test          # node test/*.mjs (loader, CLI, and page helpers)
 
 ## How it works
 
-- **Project discovery**: the `session.header.cwd` of an active agent session,
-  plus the dsh process start directory → walk up to the nearest ancestor
-  containing `.git` as the project root (falls back to the directory itself
-  when there is no `.git`).
-- **Mounting**: each `(project, serverName)` pair in the project layers mounts
-  one `@deepseek-ai/dsh-mcp-client` instance (`ctx.plugin`) on the host ctx and
-  registers it into the global tool layer; multiple sessions inside the same
-  project share a single connection. Before a workspace is focused,
-  project-layer fibers are created only for projects with a live session or
-  the process cwd, and they unmount after a 5 minute grace. Once the user
-  focuses a workspace, only that project stays mounted and the others
-  unmount immediately, so a desktop workspace switch cannot leave another
-  project's tools in the global list. The catalog entry and watcher remain.
-  **Every
-  user-layer row mounts exactly one instance** (global, independent of the
-  number of projects) — see
-  [configuration sources and layers](docs/guide/layers.md).
-- **Hot reload**: chokidar watches each known project root and its `.dsh`
-  directory (depth 1). The allow-list is that root, `.dsh`, and the three
-  config files; every other path is ignored, so the watcher does not open
-  `lib/`, `src/`, or `build/` and a Windows build can delete those directories
-  while dsh is running. Edits to the **exact** config files of known project
-  roots — `<projectRoot>/.dsh/mcp.yml`, `<projectRoot>/.dsh/mcp.json` and
-  `<projectRoot>/.mcp.json` — trigger a full reconciliation after a 150 ms
-  debounce: added rows are mounted, removed rows are unmounted, and config
-  changes are remounted. A second watcher covers the
-  user layer as **exact file paths** — `~/.dsh/mcp.yml`,
-  `~/.dsh/mcp.json`, `~/.dsh/profiles/<active profile>/mcp.yml` and
-  `mcp.json`, and
-  `$DSH_HOME/dsh-mcp.json` (the other plugin's global store; watched only so
-  creating it can be diagnosed, never mounted). chokidar v5 can deliver an
-  event for a watched missing file when it is created, as long as its parent
-  directory exists — never the home directory at large.
-- **Profile name resolution**: derived from the loader root include's
-  `config.path` (`~/.dsh/profiles/<name>/cordis.yml`) or `ctx.baseUrl`, and
-  overridable with `DSH_MCP_PROFILE=<name>`; when it cannot be resolved the
-  profile layer is not read (the other layers still are).
-- **Effective names**: when the original `serverName` is unique across the
-  whole catalog (host global rows + all project rows) it keeps its name; on a
-  conflict **project rows** are renamed to `p<first 6 hex chars of
-  sha256(project root)>_<original name>` (truncated to 32 characters,
-  deterministic and independent of mount order) to avoid the serverName
-  reservation conflicts that `dsh-mcp-client` makes per process root. Global
-  rows (profile patch lines and user-layer rows) participate in occupancy
-  determination but are never renamed. Model-visible tool names are built from
-  the **effective** server name and the MCP tool's own name
-  (`mcp__<effectiveServerName>__<toolName>`), which may differ from the
-  `serverName` written in the file.
-- **Session visibility**: when an agent is created, its session cwd resolves to
-  a project, and `tools.restrict({ deny })` is applied to that agent to deny
-  every project server except those of the session's own project, plus the
-  global servers suppressed by the project's own rows; a session without a cwd
-  falls back to the owner project (subagents), then to the project containing
-  the dsh process cwd. Released when the session is destroyed.
+The loader finds a session's project by walking up from its
+`session.header.cwd` to the nearest `.git` ancestor. It mounts each project
+server once through `@deepseek-ai/dsh-mcp-client`, and uses
+`tools.restrict({ deny })` so a session sees only its own project's servers.
+User-layer rows mount once for the whole host. Edits to the config files
+hot-reload after a 150 ms debounce. Details: [how it works](docs/guide/how-it-works.md).
 
-## Query surface
-
-Other plugins and the companion UI read mount state from `ctx.projectMcp`
-(`snapshot`, `serverView`, `globalState`, `reload`). Queries are the previous
-reconcile's memory; they do not read disk. A successful reconcile emits
-`projectMcp/updated` with no payload. The listener calls `snapshot()` and
-diffs. The core loader does not open a browser SSE channel; the bundled UI
-owns that channel. The same service has
-the write methods the MCP Manager page uses (`addServer`, `setServerEnabled`,
-`removeServer`, `setToolEnabled`); they only write a managed `mcp.yml`.
-
-That surface — the methods, the event, and the view types re-exported from the
-package entry (`ProjectFileState`, `McpServerRuntimeView`, `McpServerView`,
-`McpRowSource`, and the types those views name) — follows semantic versioning
-for the companion UI. The manager depends on `dsh-project-mcp-ui` at the
-**same exact version**, and the UI peer-depends on `dsh-project-mcp-manager`
-at that exact version (no `^` or `~` in either published contract). Both packages
-must be versioned and released together; users install only the manager.
-Details: [query surface](docs/guide/service.md).
+Other plugins and the bundled UI read mount state from `ctx.projectMcp`;
+see [query surface](docs/guide/service.md).
 
 ## Security boundary
 
@@ -251,27 +177,10 @@ dsh web GUI can add and start servers through it.
 
 ## Coexistence with other MCP manager plugins
 
-This plugin and `@wingsky-1/dsh-mcp-manager` both auto-load per-project MCP
-servers, but they do **not** share a file format:
-
-1. **Project files are mutually incompatible.** This plugin reads
-   `{ mcpServers: { … } }` in `<projectRoot>/.dsh/mcp.json`. The other plugin
-   stores `{ version, servers: [] }` at the same path. A missing `mcpServers`
-   key is a legal empty layer here, so the other format would otherwise look
-   like "I configured it but nothing happens". The loader now writes a
-   diagnostic naming that format and suggesting `mcpServers` or
-   `.dsh/mcp.yml`. The same hint applies to `~/.dsh/dsh-mcp.json`. If that
-   file already uses this plugin's `mcpServers` dialect, the diagnostic tells
-   you to move the object into `mcp.json` — it is still not loaded from the
-   other plugin's filename.
-2. **The same `serverName` can be started twice** (once by each plugin).
-   stdio servers may contend for ports or exclusive resources.
-3. **Prefer one plugin per project**, or keep this plugin on `.dsh/mcp.yml`
-   and the other on `.dsh/mcp.json`.
-
-`globalNames()` only sees official loader patch rows, not tools registered by
-the other plugin at runtime, so rename-to-avoid-collision does **not** cover
-that other instance.
+`@wingsky-1/dsh-mcp-manager` also reads `<projectRoot>/.dsh/mcp.json`, but in
+a different format, and the two plugins can start the same server twice. Use
+one plugin per project, or keep this plugin on `.dsh/mcp.yml`. Details:
+[coexistence with `@wingsky-1/dsh-mcp-manager`](docs/guide/layers.md#coexistence-with-wingsky-1dsh-mcp-manager).
 
 ## Documentation
 
@@ -288,38 +197,10 @@ Feature documentation lives in `docs/`, English and Chinese side by side:
 - [`${VAR}` expansion](docs/guide/env-expansion.md) — mount-time interpolation and
   its diagnostics.
 - [CLI `dsh-mcp`](docs/guide/cli.md) — scopes, write formats, ownership contract.
+- [How it works](docs/guide/how-it-works.md) — project discovery, mounting,
+  hot reload, effective names, and session visibility.
 - [Query surface](docs/guide/service.md) — `ctx.projectMcp`, the
   `projectMcp/updated` event, exported view types, and the semver contract for
   the companion UI.
 
-Design and release records (Chinese): [dsh 0.2.2-rc.1 adaptation](docs/design/adaptation-dsh-0.2.2-rc.1.md) ·
-[dsh 0.2.1-rc.5 adaptation](docs/design/adaptation-dsh-0.2.1-rc.5.md) ·
-[dsh 0.2.1-rc.2 adaptation](docs/design/adaptation-dsh-0.2.1-rc.2.md) ·
-[dsh 0.2.0-rc.2 adaptation](docs/design/adaptation-dsh-0.2.0-rc.2.md) ·
-[dsh 0.1.6-alpha.2 adaptation plan](docs/design/adaptation-dsh-0.1.6-alpha.2.md) ·
-[dsh 0.1.5-rc.2 adaptation](docs/design/adaptation-dsh-0.1.5-rc2.md) ·
-[dsh 0.1.5-rc.1 adaptation](docs/design/adaptation-dsh-0.1.5-rc1.md) ·
-[dsh 0.1.2-rc.1 adaptation](docs/design/adaptation-dsh-0.1.2-rc1.md) ·
-[JSON config layer proposal](docs/design/proposal-json-mcp-config.md) ·
-[Runtime robustness & JSON interop proposal](docs/design/proposal-runtime-robustness-and-json-interop.md) ·
-[UI entries & current-workspace proposal](docs/design/proposal-ui-entries-and-workspace.md) ·
-[v0.12.0 release notes](docs/releases/v0.12.0.md) ·
-[v0.11.1 release notes](docs/releases/v0.11.1.md) ·
-[v0.11.0 release notes](docs/releases/v0.11.0.md) ·
-[v0.10.0 release notes](docs/releases/v0.10.0.md) ·
-[v0.9.0 release notes](docs/releases/v0.9.0.md) ·
-[v0.8.2 release notes](docs/releases/v0.8.2.md) ·
-[v0.7.2 release notes](docs/releases/v0.7.2.md) ·
-[v0.7.1 release notes](docs/releases/v0.7.1.md) ·
-[v0.7.0 release notes](docs/releases/v0.7.0.md) ·
-[v0.6.0 release notes](docs/releases/v0.6.0.md) ·
-[v0.4.3 release notes](docs/releases/v0.4.3.md) ·
-[v0.4.2 release notes](docs/releases/v0.4.2.md) ·
-[v0.4.1 release notes](docs/releases/v0.4.1.md) ·
-[v0.4.0 release notes](docs/releases/v0.4.0.md) ·
-[v0.3.1 release notes](docs/releases/v0.3.1.md).
-
-Code review records (Chinese): [TypeScript changes since v0.3.1](docs/code-review/ts-review-since-v0.3.1.zh.md) ·
-[v0.4.3 to v0.6.0](docs/code-review/ts-review-v0.4.3-to-v0.6.0.zh.md) ·
-[7e0088d to 804662f (fix follow-up)](docs/code-review/ts-review-7e0088d-to-804662f.zh.md) ·
-[feat/adapt-dsh-0.2.0-rc.2 (v0.7.0)](docs/code-review/review-feat-adapt-dsh-0.2.0-rc.2.zh.md).
+Design, release, code review, and testing records: [records](docs/records.md).

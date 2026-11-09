@@ -22,6 +22,10 @@ dsh plugin --profile web add dsh-project-mcp-manager@latest
 dsh plugin --profile desktop add dsh-project-mcp-manager@latest
 ```
 
+The plugin is mounted through a **bundle patch**: once the package is in
+`dsh.profile.bundles`, dsh turns each bundle's patch (the `cordis.patch.yml`
+pointed to by `dsh.bundle.patch`) into plugin rows at startup, in order.
+
 The manager depends on `dsh-project-mcp-ui` at the **same exact version**, so
 the UI is installed automatically. Its default bundle contains `mcp-project`
 (core) and `mcp-project-ui` (UI), both enabled. The UI package keeps its exact

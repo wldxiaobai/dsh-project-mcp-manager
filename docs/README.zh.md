@@ -40,14 +40,8 @@ client 决定。**
 
 ## 安装（挂载到 profile）
 
-插件通过 **bundle patch** 挂载：把包加入 `dsh.profile.bundles` 后，dsh 启动时
-按顺序合成每个 bundle 的 patch（`dsh.bundle.patch` 指向的 `cordis.patch.yml`）
-作为插件行。manager 的默认 bundle 包含 `mcp-project`（核心装载器）与
-`mcp-project-ui`（MCP 管理页）两行，自动安装同一精确版本的 UI 依赖；UI 包不再
-单独声明 `dsh.bundle`，不应再作为独立 bundle 选择。
-
-> 核心加 UI 的默认 bundle 已纳入源码版本 **0.8.0**。下列 npm 示例在两个
-> 0.8.0 包同步发布后才提供这个布局；Git 标签不会自动发布 npm 或更新 `latest`。
+只需安装 `dsh-project-mcp-manager`，它同时带上核心装载器和 MCP 管理页。bundle
+的组成见[安装](guide/settings-ui.zh.md#安装)。
 
 **前置：安装 dsh 本体**（已安装可跳过）。推荐从官方下载页获取 DeepSeek Harness：
 <https://www.deepseek.com/harness/>。也可以从 npm 或 GitHub 安装：
@@ -135,55 +129,12 @@ pnpm test          # node 直跑 test/ 下的 .mjs（装载器、CLI 与页面�
 
 ## 工作原理
 
-- **项目发现**：在线 agent 会话的 `session.header.cwd` + dsh 进程启动目录 →
-  向上找最近的含 `.git` 的祖先目录作为项目根（无 `.git` 时退回目录本身）。
-- **装载**：项目层每个 `(项目, serverName)` 在宿主 ctx 上装载一个
-  `@deepseek-ai/dsh-mcp-client` 实例（`ctx.plugin`），注册进全局工具层，同一
-  项目内多会话共享同一连接。尚未聚焦时，项目层只给有活跃会话或进程 cwd 的项目
-  发起装载，离开后宽限 5 分钟再卸载。聚焦某个工作区之后只保留这一处，其它工作区
-  立刻卸载，避免桌面端切走后别的项目的工具还留在全局工具层。条目与文件监听保留。
-  **用户层每行只装载一个实例**（全局，与项目数无关）
-  ——详见[配置来源与分层](guide/layers.zh.md)。
-- **热重载**：chokidar 只监听已知项目根和它的 `.dsh`（depth 1）。放行的是
-  项目根、`.dsh` 和三个配置文件，其它路径一律忽略，因此不会打开 `lib/`、
-  `src/`、`build/`，Windows 上构建时可以删掉这些目录。只有**已知项目根的精确
-  配置文件**（`<projectRoot>/.dsh/mcp.yml`、`<projectRoot>/.dsh/mcp.json` 与
-  `<projectRoot>/.mcp.json`）的改动经 150ms 防抖触发全量对账：新增行装载、
-  删除行卸载、配置变化重装。另有独立 watcher 以
-  **精确文件路径**监听用户层：`~/.dsh/mcp.yml`、`~/.dsh/mcp.json`、
-  `~/.dsh/profiles/<当前 profile>/mcp.yml` 与 `mcp.json`，以及 `$DSH_HOME/dsh-mcp.json`
-  （对方插件的全局存储；只监听以便创建时能立刻诊断，从不装载）。chokidar v5
-  对被监听的缺失文件能在其创建时补发事件，前提是父目录已存在——不监听家目录
-  整体。
-- **profile 名解析**：从 loader 根 include 的 `config.path`
-  （`~/.dsh/profiles/<name>/cordis.yml`）或 `ctx.baseUrl` 推导，可用
-  `DSH_MCP_PROFILE=<name>` 覆盖；解析不出时不读 profile 层（其余层照常）。
-- **生效名**：原始 `serverName` 在整个目录（宿主全局行 + 全部项目行）中唯一时
-  保持原名；冲突时**项目行**改为 `p<sha256(项目根)前6位>_<原名>`（截断 32 字符，
-  确定性、与装载顺序无关），避免 `dsh-mcp-client` 按进程根的 serverName
-  预留冲突。全局行（profile patch 行与用户层行）参与占用判定但不改名。模型可见
-  的工具名由生效服务器名与 MCP 工具自身的名字拼成 `mcp__<生效名>__<工具名>`，
-  与文件里写的 `serverName` 可能不同。
-- **会话可见性**：agent 创建时按其会话 cwd 解析项目，对该 agent 应用
-  `tools.restrict({ deny })`，deny 掉除本会话项目外的全部项目服务器，以及本项目
-  自身行压制过的全局服务器；会话无 cwd 时回退 owner 项目（子代理），再回退 dsh
-  进程 cwd 所在项目。会话销毁时释放。
+装载器从会话的 `session.header.cwd` 向上找最近的 `.git` 祖先，作为该会话的
+项目。每个项目服务器经 `@deepseek-ai/dsh-mcp-client` 装载一次，再用
+`tools.restrict({ deny })` 让会话只看到本项目的服务器。用户层每行在宿主上只装载
+一次。配置文件改动经 150ms 防抖热重载。详见[工作原理](guide/how-it-works.zh.md)。
 
-## 查询面
-
-其它插件和配套 UI 从 `ctx.projectMcp`（`snapshot`、`serverView`、`globalState`、
-`reload`）读装载状态。查询看到的是上一轮对账的内存，不读盘。对账成功结束时 emit
-`projectMcp/updated`，无载荷。监听方再调 `snapshot()` 自己 diff。核心装载器不打开
-浏览器 SSE，这条通道由 bundle 内的 UI 负责。同一服务还提供 MCP 管理页用的写方法
-（`addServer`、`setServerEnabled`、`removeServer`、`setToolEnabled`），它们只写受管
-`mcp.yml`。
-
-这个面——方法、事件，以及从包入口再导出的视图类型（`ProjectFileState`、
-`McpServerRuntimeView`、`McpServerView`、`McpRowSource`，以及这些视图点名的类型）
-——对配套 UI 按语义化版本承诺。manager 依赖 `dsh-project-mcp-ui` 的**同一精确
-版本**，UI 对 `dsh-project-mcp-manager` 的 peer dependency 也锁到该精确版本
-（发布后的两份契约都不要写 `^` 或 `~`）。两个包须同步升版、同步发布；用户只需
-安装 manager。详见[查询面](guide/service.zh.md)。
+其它插件和配套 UI 从 `ctx.projectMcp` 读装载状态，见[查询面](guide/service.zh.md)。
 
 ## 安全边界
 
@@ -201,20 +152,10 @@ GUI 的人，就能通过它添加并启动服务器。
 
 ## 与同类插件共存
 
-本插件与 `@wingsky-1/dsh-mcp-manager` 都做按项目自带 MCP，但**文件格式互不兼容**：
-
-1. **项目文件格式互不兼容。** 本插件读 `<projectRoot>/.dsh/mcp.json` 里的
-   `{ mcpServers: { … } }`；对方在同一路径存 `{ version, servers: [] }`。缺
-   `mcpServers` 在本插件是合法空层，对方格式会表现为「我配了但没生效」。装载器
-   现在会写一条诊断，指认该格式并建议改用 `mcpServers` 或 `.dsh/mcp.yml`。
-   全局 `~/.dsh/dsh-mcp.json` 同样提示；若该文件已经是本插件的 `mcpServers`
-   方言，诊断会建议把对象搬到 `mcp.json`——仍不会从对方文件名装载。
-2. **同名服务器会被两个插件各启动一次**，stdio 可能互相抢端口或独占资源。
-3. **建议同一项目只启用一个**，或让两者分居 `mcp.yml`（本插件）与
-   `.dsh/mcp.json`（对方）。
-
-`globalNames()` 只读官方 loader patch 行，看不到对方运行时注册的工具，因此
-「改名避让」不会覆盖对方实例。
+`@wingsky-1/dsh-mcp-manager` 也读 `<projectRoot>/.dsh/mcp.json`，但格式不同，
+两个插件还可能把同一台服务器各启动一次。建议同一项目只启用一个，或让本插件只用
+`.dsh/mcp.yml`。详见
+[与 `@wingsky-1/dsh-mcp-manager` 共存](guide/layers.zh.md#与-wingsky-1dsh-mcp-manager-共存)。
 
 ## 文档
 
@@ -228,40 +169,8 @@ GUI 的人，就能通过它添加并启动服务器。
   全局装载 vs 项目装载，以及只读的遗留 Claude Code 层。
 - [`${VAR}` 展开](guide/env-expansion.zh.md)——装载时插值与对应诊断。
 - [CLI `dsh-mcp`](guide/cli.zh.md)——作用域、写入格式与独占契约。
+- [工作原理](guide/how-it-works.zh.md)——项目发现、装载、热重载、生效名与会话可见性。
 - [查询面](guide/service.zh.md)——`ctx.projectMcp`、`projectMcp/updated` 事件、
   包入口导出的视图类型，以及对配套 UI 的语义化版本承诺。
 
-设计与发布记录（中文）：[dsh 0.2.2-rc.1 适配记录](design/adaptation-dsh-0.2.2-rc.1.md) ·
-[dsh 0.2.1-rc.5 适配记录](design/adaptation-dsh-0.2.1-rc.5.md) ·
-[dsh 0.2.1-rc.2 适配记录](design/adaptation-dsh-0.2.1-rc.2.md) ·
-[dsh 0.2.0-rc.2 适配记录](design/adaptation-dsh-0.2.0-rc.2.md) ·
-[dsh 0.1.6-alpha.2 适配方案](design/adaptation-dsh-0.1.6-alpha.2.md) ·
-[dsh 0.1.5-rc.2 适配记录](design/adaptation-dsh-0.1.5-rc2.md) ·
-[dsh 0.1.5-rc.1 适配记录](design/adaptation-dsh-0.1.5-rc1.md) ·
-[dsh 0.1.2-rc.1 适配记录](design/adaptation-dsh-0.1.2-rc1.md) ·
-[JSON 配置层设计提案](design/proposal-json-mcp-config.md) ·
-[运行时稳健性与 JSON 互通提案](design/proposal-runtime-robustness-and-json-interop.md) ·
-[UI 入口与当前工作区提案](design/proposal-ui-entries-and-workspace.md) ·
-[v0.12.0 发布说明](releases/v0.12.0.md) ·
-[v0.11.1 发布说明](releases/v0.11.1.md) ·
-[v0.11.0 发布说明](releases/v0.11.0.md) ·
-[v0.10.0 发布说明](releases/v0.10.0.md) ·
-[v0.9.0 发布说明](releases/v0.9.0.md) ·
-[v0.8.2 发布说明](releases/v0.8.2.md) ·
-[v0.7.2 发布说明](releases/v0.7.2.md) ·
-[v0.7.1 发布说明](releases/v0.7.1.md) ·
-[v0.7.0 发布说明](releases/v0.7.0.md) ·
-[v0.6.0 发布说明](releases/v0.6.0.md) ·
-[v0.4.3 发布说明](releases/v0.4.3.md) ·
-[v0.4.2 发布说明](releases/v0.4.2.md) ·
-[v0.4.1 发布说明](releases/v0.4.1.md) ·
-[v0.4.0 发布说明](releases/v0.4.0.md) ·
-[v0.3.1 发布说明](releases/v0.3.1.md)。
-
-代码审查记录（中文）：[v0.3.1 以来 TypeScript 变更审查](code-review/ts-review-since-v0.3.1.zh.md) ·
-[v0.4.3 至 v0.6.0](code-review/ts-review-v0.4.3-to-v0.6.0.zh.md) ·
-[7e0088d 至 804662f（审查落地复查）](code-review/ts-review-7e0088d-to-804662f.zh.md) ·
-[feat/adapt-dsh-0.2.0-rc.2（v0.7.0）](code-review/review-feat-adapt-dsh-0.2.0-rc.2.zh.md)。
-
-本地测试与维护记录：[v0.8.0 npm Web 下载验证](testing/v0.8.0-npm-web.zh.md) ·
-[本地测试产物与目录说明](testing/local-artifacts.zh.md)。
+设计、发布、代码审查与测试记录：[记录索引](records.zh.md)。

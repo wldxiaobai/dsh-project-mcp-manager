@@ -20,6 +20,10 @@ dsh plugin --profile web add dsh-project-mcp-manager@latest
 dsh plugin --profile desktop add dsh-project-mcp-manager@latest
 ```
 
+插件通过 **bundle patch** 挂载：把包加入 `dsh.profile.bundles` 后，dsh 启动时
+按顺序把每个 bundle 的 patch（`dsh.bundle.patch` 指向的 `cordis.patch.yml`）合成
+为插件行。
+
 manager 以**同一精确版本**依赖 `dsh-project-mcp-ui`，会自动安装 UI。默认 bundle
 包含 `mcp-project`（核心）与 `mcp-project-ui`（UI）两行，均默认启用。UI 保留
 精确版本的 manager peer dependency，但不再单独声明 `dsh.bundle`，不要另选 UI
