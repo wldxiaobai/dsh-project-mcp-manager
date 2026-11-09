@@ -28,10 +28,15 @@ a profile-layer Cordis patch (with that layer's own HMR) plus
 
 Project-file hot reload is this plugin's file watcher. It does not replace
 official profile HMR. **Transport types are decided by the official client.**
-v0.12.x targets the dsh `0.2` line starting at 0.2.2-rc.1 (`engines.dsh` is
-`^0.2.2-rc.1`); v0.10.x stays the release for 0.2.1-rc.2 through rc.5. Hosts on
-dsh 0.2.0 stay on plugin v0.8.2. Hosts still on
-dsh 0.1.5 should stay on plugin v0.6.0.
+
+**Supported dsh versions:**
+
+| Plugin | dsh |
+|---|---|
+| v0.11.x – v0.12.x | `0.2` line, from `0.2.2-rc.1` (`engines.dsh`: `^0.2.2-rc.1`) |
+| v0.10.x | `0.2.1-rc.2` – `0.2.1-rc.5` |
+| v0.7.x – v0.8.x | `0.2.0` line, from `0.2.0-rc.2` |
+| v0.6.0 | `0.1.5` |
 
 If this plugin is useful, a GitHub
 [star](https://github.com/wldxiaobai/dsh-project-mcp-manager) is appreciated.
@@ -110,10 +115,8 @@ updated compiled output.
 **Upgrading / pinning versions**: re-run the `add` command from option 1 with
 the desired version suffix — `@latest` upgrades to the newest release,
 `@<version>` pins a specific release. For the bundled UI, choose the coordinated
-manager/UI release described above. v0.12.x needs dsh 0.2.2-rc.1 or a later `0.2`
-release (`engines.dsh`: `^0.2.2-rc.1`); v0.10.x needs 0.2.1-rc.2 through rc.5.
-v0.7.x and v0.8.x need dsh 0.2.0-rc.2
-(the `0.2.0` line). dsh 0.1.5 keeps working with plugin `@0.6.0`.
+manager/UI release described above, and pick the plugin release that matches
+your dsh version — see the compatibility table above.
 
 **MCP Manager entry (included by default)**: the manager install above supplies
 the UI automatically in web and desktop profiles. Three entries open the same
