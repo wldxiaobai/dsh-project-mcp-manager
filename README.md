@@ -39,57 +39,6 @@ Bugs, host mismatches, or ideas belong in
 [Issues](https://github.com/wldxiaobai/dsh-project-mcp-manager/issues) — even a
 short report helps.
 
-## Documentation
-
-Feature documentation lives in `docs/`, English and Chinese side by side:
-
-- [Configuration format](docs/guide/format.md) — native YAML managed
-  block, JSON dialect, divergences from the cordis dialect.
-- [MCP Manager page](docs/guide/settings-ui.md) — use the bundled UI, read
-  the server list, add servers (with fill from clipboard), switch, remove, and
-  manage tools.
-- [Configuration sources and layers](docs/guide/layers.md) — the
-  seven-layer source model, shadow priority, global vs project mounting, and the
-  read-only legacy Claude Code layer.
-- [`${VAR}` expansion](docs/guide/env-expansion.md) — mount-time interpolation and
-  its diagnostics.
-- [CLI `dsh-mcp`](docs/guide/cli.md) — scopes, write formats, ownership contract.
-- [Query surface](docs/guide/service.md) — `ctx.projectMcp`, the
-  `projectMcp/updated` event, exported view types, and the semver contract for
-  the companion UI.
-
-Design and release records (Chinese): [dsh 0.2.2-rc.1 adaptation](docs/design/adaptation-dsh-0.2.2-rc.1.md) ·
-[dsh 0.2.1-rc.5 adaptation](docs/design/adaptation-dsh-0.2.1-rc.5.md) ·
-[dsh 0.2.1-rc.2 adaptation](docs/design/adaptation-dsh-0.2.1-rc.2.md) ·
-[dsh 0.2.0-rc.2 adaptation](docs/design/adaptation-dsh-0.2.0-rc.2.md) ·
-[dsh 0.1.6-alpha.2 adaptation plan](docs/design/adaptation-dsh-0.1.6-alpha.2.md) ·
-[dsh 0.1.5-rc.2 adaptation](docs/design/adaptation-dsh-0.1.5-rc2.md) ·
-[dsh 0.1.5-rc.1 adaptation](docs/design/adaptation-dsh-0.1.5-rc1.md) ·
-[dsh 0.1.2-rc.1 adaptation](docs/design/adaptation-dsh-0.1.2-rc1.md) ·
-[JSON config layer proposal](docs/design/proposal-json-mcp-config.md) ·
-[Runtime robustness & JSON interop proposal](docs/design/proposal-runtime-robustness-and-json-interop.md) ·
-[UI entries & current-workspace proposal](docs/design/proposal-ui-entries-and-workspace.md) ·
-[v0.12.0 release notes](docs/releases/v0.12.0.md) ·
-[v0.11.1 release notes](docs/releases/v0.11.1.md) ·
-[v0.11.0 release notes](docs/releases/v0.11.0.md) ·
-[v0.10.0 release notes](docs/releases/v0.10.0.md) ·
-[v0.9.0 release notes](docs/releases/v0.9.0.md) ·
-[v0.8.2 release notes](docs/releases/v0.8.2.md) ·
-[v0.7.2 release notes](docs/releases/v0.7.2.md) ·
-[v0.7.1 release notes](docs/releases/v0.7.1.md) ·
-[v0.7.0 release notes](docs/releases/v0.7.0.md) ·
-[v0.6.0 release notes](docs/releases/v0.6.0.md) ·
-[v0.4.3 release notes](docs/releases/v0.4.3.md) ·
-[v0.4.2 release notes](docs/releases/v0.4.2.md) ·
-[v0.4.1 release notes](docs/releases/v0.4.1.md) ·
-[v0.4.0 release notes](docs/releases/v0.4.0.md) ·
-[v0.3.1 release notes](docs/releases/v0.3.1.md).
-
-Code review records (Chinese): [TypeScript changes since v0.3.1](docs/code-review/ts-review-since-v0.3.1.zh.md) ·
-[v0.4.3 to v0.6.0](docs/code-review/ts-review-v0.4.3-to-v0.6.0.zh.md) ·
-[7e0088d to 804662f (fix follow-up)](docs/code-review/ts-review-7e0088d-to-804662f.zh.md) ·
-[feat/adapt-dsh-0.2.0-rc.2 (v0.7.0)](docs/code-review/review-feat-adapt-dsh-0.2.0-rc.2.zh.md).
-
 ## Installation (mount into a profile)
 
 The plugin is mounted through a **bundle patch**: once the package is added to
@@ -328,3 +277,54 @@ servers, but they do **not** share a file format:
 `globalNames()` only sees official loader patch rows, not tools registered by
 the other plugin at runtime, so rename-to-avoid-collision does **not** cover
 that other instance.
+
+## Documentation
+
+Feature documentation lives in `docs/`, English and Chinese side by side:
+
+- [Configuration format](docs/guide/format.md) — native YAML managed
+  block, JSON dialect, divergences from the cordis dialect.
+- [MCP Manager page](docs/guide/settings-ui.md) — use the bundled UI, read
+  the server list, add servers (with fill from clipboard), switch, remove, and
+  manage tools.
+- [Configuration sources and layers](docs/guide/layers.md) — the
+  seven-layer source model, shadow priority, global vs project mounting, and the
+  read-only legacy Claude Code layer.
+- [`${VAR}` expansion](docs/guide/env-expansion.md) — mount-time interpolation and
+  its diagnostics.
+- [CLI `dsh-mcp`](docs/guide/cli.md) — scopes, write formats, ownership contract.
+- [Query surface](docs/guide/service.md) — `ctx.projectMcp`, the
+  `projectMcp/updated` event, exported view types, and the semver contract for
+  the companion UI.
+
+Design and release records (Chinese): [dsh 0.2.2-rc.1 adaptation](docs/design/adaptation-dsh-0.2.2-rc.1.md) ·
+[dsh 0.2.1-rc.5 adaptation](docs/design/adaptation-dsh-0.2.1-rc.5.md) ·
+[dsh 0.2.1-rc.2 adaptation](docs/design/adaptation-dsh-0.2.1-rc.2.md) ·
+[dsh 0.2.0-rc.2 adaptation](docs/design/adaptation-dsh-0.2.0-rc.2.md) ·
+[dsh 0.1.6-alpha.2 adaptation plan](docs/design/adaptation-dsh-0.1.6-alpha.2.md) ·
+[dsh 0.1.5-rc.2 adaptation](docs/design/adaptation-dsh-0.1.5-rc2.md) ·
+[dsh 0.1.5-rc.1 adaptation](docs/design/adaptation-dsh-0.1.5-rc1.md) ·
+[dsh 0.1.2-rc.1 adaptation](docs/design/adaptation-dsh-0.1.2-rc1.md) ·
+[JSON config layer proposal](docs/design/proposal-json-mcp-config.md) ·
+[Runtime robustness & JSON interop proposal](docs/design/proposal-runtime-robustness-and-json-interop.md) ·
+[UI entries & current-workspace proposal](docs/design/proposal-ui-entries-and-workspace.md) ·
+[v0.12.0 release notes](docs/releases/v0.12.0.md) ·
+[v0.11.1 release notes](docs/releases/v0.11.1.md) ·
+[v0.11.0 release notes](docs/releases/v0.11.0.md) ·
+[v0.10.0 release notes](docs/releases/v0.10.0.md) ·
+[v0.9.0 release notes](docs/releases/v0.9.0.md) ·
+[v0.8.2 release notes](docs/releases/v0.8.2.md) ·
+[v0.7.2 release notes](docs/releases/v0.7.2.md) ·
+[v0.7.1 release notes](docs/releases/v0.7.1.md) ·
+[v0.7.0 release notes](docs/releases/v0.7.0.md) ·
+[v0.6.0 release notes](docs/releases/v0.6.0.md) ·
+[v0.4.3 release notes](docs/releases/v0.4.3.md) ·
+[v0.4.2 release notes](docs/releases/v0.4.2.md) ·
+[v0.4.1 release notes](docs/releases/v0.4.1.md) ·
+[v0.4.0 release notes](docs/releases/v0.4.0.md) ·
+[v0.3.1 release notes](docs/releases/v0.3.1.md).
+
+Code review records (Chinese): [TypeScript changes since v0.3.1](docs/code-review/ts-review-since-v0.3.1.zh.md) ·
+[v0.4.3 to v0.6.0](docs/code-review/ts-review-v0.4.3-to-v0.6.0.zh.md) ·
+[7e0088d to 804662f (fix follow-up)](docs/code-review/ts-review-7e0088d-to-804662f.zh.md) ·
+[feat/adapt-dsh-0.2.0-rc.2 (v0.7.0)](docs/code-review/review-feat-adapt-dsh-0.2.0-rc.2.zh.md).

@@ -31,56 +31,6 @@ client 决定。** v0.12.x 面向 dsh `0.2` 线（从 0.2.2-rc.1 起，`engines.
 不适配或有想法，请开
 [Issue](https://github.com/wldxiaobai/dsh-project-mcp-manager/issues)——哪怕几句话也很有用。
 
-## 文档
-
-功能说明已拆分到 `docs/`，中英双版并存：
-
-- [配置格式](guide/format.zh.md)——原生 YAML 受管块、JSON 方言、与
-  cordis 方言的差异。
-- [MCP 管理页](guide/settings-ui.zh.md)——使用默认包含的 UI、看懂服务器列表、添加服务器
-  （含从剪贴板填入）、开关、删除与管理工具。
-- [配置来源与分层](guide/layers.zh.md)——七层来源模型、影子优先序、
-  全局装载 vs 项目装载，以及只读的遗留 Claude Code 层。
-- [`${VAR}` 展开](guide/env-expansion.zh.md)——装载时插值与对应诊断。
-- [CLI `dsh-mcp`](guide/cli.zh.md)——作用域、写入格式与独占契约。
-- [查询面](guide/service.zh.md)——`ctx.projectMcp`、`projectMcp/updated` 事件、
-  包入口导出的视图类型，以及对配套 UI 的语义化版本承诺。
-
-设计与发布记录（中文）：[dsh 0.2.2-rc.1 适配记录](design/adaptation-dsh-0.2.2-rc.1.md) ·
-[dsh 0.2.1-rc.5 适配记录](design/adaptation-dsh-0.2.1-rc.5.md) ·
-[dsh 0.2.1-rc.2 适配记录](design/adaptation-dsh-0.2.1-rc.2.md) ·
-[dsh 0.2.0-rc.2 适配记录](design/adaptation-dsh-0.2.0-rc.2.md) ·
-[dsh 0.1.6-alpha.2 适配方案](design/adaptation-dsh-0.1.6-alpha.2.md) ·
-[dsh 0.1.5-rc.2 适配记录](design/adaptation-dsh-0.1.5-rc2.md) ·
-[dsh 0.1.5-rc.1 适配记录](design/adaptation-dsh-0.1.5-rc1.md) ·
-[dsh 0.1.2-rc.1 适配记录](design/adaptation-dsh-0.1.2-rc1.md) ·
-[JSON 配置层设计提案](design/proposal-json-mcp-config.md) ·
-[运行时稳健性与 JSON 互通提案](design/proposal-runtime-robustness-and-json-interop.md) ·
-[UI 入口与当前工作区提案](design/proposal-ui-entries-and-workspace.md) ·
-[v0.12.0 发布说明](releases/v0.12.0.md) ·
-[v0.11.1 发布说明](releases/v0.11.1.md) ·
-[v0.11.0 发布说明](releases/v0.11.0.md) ·
-[v0.10.0 发布说明](releases/v0.10.0.md) ·
-[v0.9.0 发布说明](releases/v0.9.0.md) ·
-[v0.8.2 发布说明](releases/v0.8.2.md) ·
-[v0.7.2 发布说明](releases/v0.7.2.md) ·
-[v0.7.1 发布说明](releases/v0.7.1.md) ·
-[v0.7.0 发布说明](releases/v0.7.0.md) ·
-[v0.6.0 发布说明](releases/v0.6.0.md) ·
-[v0.4.3 发布说明](releases/v0.4.3.md) ·
-[v0.4.2 发布说明](releases/v0.4.2.md) ·
-[v0.4.1 发布说明](releases/v0.4.1.md) ·
-[v0.4.0 发布说明](releases/v0.4.0.md) ·
-[v0.3.1 发布说明](releases/v0.3.1.md)。
-
-代码审查记录（中文）：[v0.3.1 以来 TypeScript 变更审查](code-review/ts-review-since-v0.3.1.zh.md) ·
-[v0.4.3 至 v0.6.0](code-review/ts-review-v0.4.3-to-v0.6.0.zh.md) ·
-[7e0088d 至 804662f（审查落地复查）](code-review/ts-review-7e0088d-to-804662f.zh.md) ·
-[feat/adapt-dsh-0.2.0-rc.2（v0.7.0）](code-review/review-feat-adapt-dsh-0.2.0-rc.2.zh.md)。
-
-本地测试与维护记录：[v0.8.0 npm Web 下载验证](testing/v0.8.0-npm-web.zh.md) ·
-[本地测试产物与目录说明](testing/local-artifacts.zh.md)。
-
 ## 安装（挂载到 profile）
 
 插件通过 **bundle patch** 挂载：把包加入 `dsh.profile.bundles` 后，dsh 启动时
@@ -262,3 +212,53 @@ GUI 的人，就能通过它添加并启动服务器。
 
 `globalNames()` 只读官方 loader patch 行，看不到对方运行时注册的工具，因此
 「改名避让」不会覆盖对方实例。
+
+## 文档
+
+功能说明已拆分到 `docs/`，中英双版并存：
+
+- [配置格式](guide/format.zh.md)——原生 YAML 受管块、JSON 方言、与
+  cordis 方言的差异。
+- [MCP 管理页](guide/settings-ui.zh.md)——使用默认包含的 UI、看懂服务器列表、添加服务器
+  （含从剪贴板填入）、开关、删除与管理工具。
+- [配置来源与分层](guide/layers.zh.md)——七层来源模型、影子优先序、
+  全局装载 vs 项目装载，以及只读的遗留 Claude Code 层。
+- [`${VAR}` 展开](guide/env-expansion.zh.md)——装载时插值与对应诊断。
+- [CLI `dsh-mcp`](guide/cli.zh.md)——作用域、写入格式与独占契约。
+- [查询面](guide/service.zh.md)——`ctx.projectMcp`、`projectMcp/updated` 事件、
+  包入口导出的视图类型，以及对配套 UI 的语义化版本承诺。
+
+设计与发布记录（中文）：[dsh 0.2.2-rc.1 适配记录](design/adaptation-dsh-0.2.2-rc.1.md) ·
+[dsh 0.2.1-rc.5 适配记录](design/adaptation-dsh-0.2.1-rc.5.md) ·
+[dsh 0.2.1-rc.2 适配记录](design/adaptation-dsh-0.2.1-rc.2.md) ·
+[dsh 0.2.0-rc.2 适配记录](design/adaptation-dsh-0.2.0-rc.2.md) ·
+[dsh 0.1.6-alpha.2 适配方案](design/adaptation-dsh-0.1.6-alpha.2.md) ·
+[dsh 0.1.5-rc.2 适配记录](design/adaptation-dsh-0.1.5-rc2.md) ·
+[dsh 0.1.5-rc.1 适配记录](design/adaptation-dsh-0.1.5-rc1.md) ·
+[dsh 0.1.2-rc.1 适配记录](design/adaptation-dsh-0.1.2-rc1.md) ·
+[JSON 配置层设计提案](design/proposal-json-mcp-config.md) ·
+[运行时稳健性与 JSON 互通提案](design/proposal-runtime-robustness-and-json-interop.md) ·
+[UI 入口与当前工作区提案](design/proposal-ui-entries-and-workspace.md) ·
+[v0.12.0 发布说明](releases/v0.12.0.md) ·
+[v0.11.1 发布说明](releases/v0.11.1.md) ·
+[v0.11.0 发布说明](releases/v0.11.0.md) ·
+[v0.10.0 发布说明](releases/v0.10.0.md) ·
+[v0.9.0 发布说明](releases/v0.9.0.md) ·
+[v0.8.2 发布说明](releases/v0.8.2.md) ·
+[v0.7.2 发布说明](releases/v0.7.2.md) ·
+[v0.7.1 发布说明](releases/v0.7.1.md) ·
+[v0.7.0 发布说明](releases/v0.7.0.md) ·
+[v0.6.0 发布说明](releases/v0.6.0.md) ·
+[v0.4.3 发布说明](releases/v0.4.3.md) ·
+[v0.4.2 发布说明](releases/v0.4.2.md) ·
+[v0.4.1 发布说明](releases/v0.4.1.md) ·
+[v0.4.0 发布说明](releases/v0.4.0.md) ·
+[v0.3.1 发布说明](releases/v0.3.1.md)。
+
+代码审查记录（中文）：[v0.3.1 以来 TypeScript 变更审查](code-review/ts-review-since-v0.3.1.zh.md) ·
+[v0.4.3 至 v0.6.0](code-review/ts-review-v0.4.3-to-v0.6.0.zh.md) ·
+[7e0088d 至 804662f（审查落地复查）](code-review/ts-review-7e0088d-to-804662f.zh.md) ·
+[feat/adapt-dsh-0.2.0-rc.2（v0.7.0）](code-review/review-feat-adapt-dsh-0.2.0-rc.2.zh.md)。
+
+本地测试与维护记录：[v0.8.0 npm Web 下载验证](testing/v0.8.0-npm-web.zh.md) ·
+[本地测试产物与目录说明](testing/local-artifacts.zh.md)。
