@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { parse } from "yaml";
 
 const root = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
@@ -21,6 +21,19 @@ assert.deepEqual(patch.flatMap((item) => item.insert ?? []).map(({ id, name, dis
 assert.equal(ui.dsh.client.platform, "web");
 assert.equal(ui.exports["./client"], "./lib/client.js");
 assert.ok(ui.files.includes("lib"));
+
+// The plugin manager reads a bundle's detail document by display language:
+// `locale/<language>.json` `meta.detail` names the Markdown file, falling back
+// to the root README. Chinese gets the Chinese README; other languages fall
+// through to `en` and the English README.
+assert.ok(root.files.includes("locale"), "localised bundle metadata must be packed");
+assert.ok(root.files.includes("docs"), "the Chinese README lives under docs/ and must be packed");
+assert.ok(root.files.includes("README.md"));
+for (const [language, detail] of [["en", "README.md"], ["zh", "docs/README.zh.md"]]) {
+  const locale = JSON.parse(await readFile(new URL(`../locale/${language}.json`, import.meta.url), "utf8"));
+  assert.equal(locale.meta.detail, detail, `locale/${language}.json must name ${detail}`);
+  await access(new URL(`../${detail}`, import.meta.url));
+}
 
 // Build the loader first: UI consumes its declarations and root-level npm
 // lifecycle scripts must not rely on topological order in a cyclic workspace.

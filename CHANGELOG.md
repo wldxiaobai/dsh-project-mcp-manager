@@ -33,6 +33,12 @@ No loader, service, CLI, API route, or config-file behavior changed.
   keep the checkboxes disabled with a note. The same row is also contributed to
   the plugin manager's page for the bundle (`plugins.bundle.config`, keyed by
   `dsh-project-mcp-manager`); both places edit one shared form.
+- **Localised README in the plugin manager.** `locale/zh.json` declares
+  `meta.detail: docs/README.zh.md` and `locale/en.json` declares
+  `meta.detail: README.md`. The plugin manager picks the file by display
+  language (`zh-CN` → `zh` → `en`), so a Chinese UI reads the Chinese README
+  and every other language falls back to English. Both locale files and both
+  READMEs are packed.
 - **Current workspace header.** The panel starts with a **Current workspace**
   block: workspace name, full path, `N servers · M running · K waiting for a
   session · J disabled` (non-zero parts only), and the scope note. Multiple

@@ -178,7 +178,9 @@ entries appear, use **Settings → General → MCP management page entries**:
 changes are saved together from one dialog, and turning all three off is
 allowed because that row always stays as the way back. The same row also appears
 on the manager bundle's page in the plugin manager (main sidebar **Plugins →
-`dsh-project-mcp-manager`**); both places edit one shared configuration. To hide
+`dsh-project-mcp-manager`**); both places edit one shared configuration. That
+page's README follows the UI language: Chinese shows `docs/README.zh.md`, other
+languages show the root `README.md`. To hide
 the page entirely without stopping the loader, turn off only the manager bundle's
 `mcp-project-ui` component in the plugin manager's contained-components controls
 (or disable that row with a profile patch override). Keep `mcp-project` enabled.

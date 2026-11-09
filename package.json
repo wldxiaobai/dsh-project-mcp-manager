@@ -62,6 +62,7 @@
     "cordis.patch.yml",
     "README.md",
     "docs",
+    "locale",
     "LICENSE"
   ],
   "devDependencies": {
