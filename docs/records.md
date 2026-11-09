@@ -48,6 +48,7 @@ Most records are written in Chinese.
 - [v0.4.3 to v0.6.0](code-review/ts-review-v0.4.3-to-v0.6.0.zh.md)
 - [7e0088d to 804662f (fix follow-up)](code-review/ts-review-7e0088d-to-804662f.zh.md)
 - [feat/adapt-dsh-0.2.0-rc.2 (v0.7.0)](code-review/review-feat-adapt-dsh-0.2.0-rc.2.zh.md)
+- [v0.9.0 to v0.12.0](code-review/review-v0.9.0-to-v0.12.0.zh.md)
 
 ## Testing and maintenance
 

@@ -75,8 +75,10 @@ v0.11.1 有两个 UI 入口：左侧栏图标行（`sidebar.panellist` + `main`�
   - 标题「MCP 管理页入口设置」；
   - 三个 `Checkbox` 行：主页左侧栏、设置页左侧栏、设置页「内置插件」标签页；
   - 底部「取消 / 完成」；宽度约 440px。
-- 弹窗内是**草稿**：打开时从表单快照初始化，点「完成」把有变化的字段合成一次 `mutate` 提交，然后关闭；取消丢弃草稿。
-- 表单不可写（远程浏览器没有权限）时，三个勾选框禁用并显示说明；写入失败时保留弹窗并显示错误文案。
+- 弹窗内是**草稿**：打开时从表单快照初始化，同时记下当时的三个值和 `revision`。
+- 点「完成」只提交用户在这个弹窗里改过的字段，并用打开时读到的 `revision` 做写入 fence（`mutate(ops, revision)`），不换成提交瞬间的最新 revision。三个勾选项都没动时直接关闭，不写盘。
+- 宿主拒绝（别处已经写过）时保留草稿并提示；表单已同步到最新配置，再点「完成」拿重新加载的 revision 重试，且仍然只写用户改过的字段——别的窗口对未触碰字段的修改不会被旧草稿回滚。同一字段两边都改过时，用户再次确认即以草稿值为准。
+- 表单不可写（远程浏览器没有权限）时，三个勾选框禁用并显示说明；传输失败时保留弹窗并显示错误文案。
 
 ### 3.2 配置模型
 
@@ -164,20 +166,22 @@ export const Config = Schema.object({
 
 ### 5.2 数据来源
 
-- `McpUiState`（`packages/ui/src/wire.ts`）增加 `activeProject: string | null`。
+- `McpUiState`（`packages/ui/src/wire.ts`）增加 `activeProject: string | null` 与 `activeProjectKey: string | null`；`McpUiServer` 增加 `projectKey: string`。
 - UI 宿主半区（`packages/ui/src/index.ts`）从 `mcp.writeTargets()` 里 `id === "project"` 的 `projectRoot` 取值：
   - `writeTargets()` 内部就是 `focusedProjectRoot()`：有焦点时给当前工作区；只有一个已知工作区时也给它；多个工作区且无焦点时没有项目项。
   - 因此**不需要**改 `projectMcp` 服务契约，也不需要新增服务方法；这个值同时是「添加 MCP」默认写入的工作区，抬头与可编辑范围一致。
-- 计数只统计 `servers` 中 `projectRoot === activeProject` 的行：
+- 工作区身份一律用宿主算好的 `projectKeyOf()`：`activeProjectKey = projectKeyOf(activeProject)`，项目行 `projectKey = projectKeyOf(file.project)`，用户层 / profile 层行 `projectKey = ""`。浏览器只比较这个键，不自己小写化、折叠分隔符或裁空白——浏览器可能远程访问另一个平台的宿主，POSIX 上大小写不同的两个工作区不能被并成一个；Windows 的大小写不敏感仍由宿主决定。
+- 计数只统计 `servers` 中 `layer === "project"` 且 `projectKey === activeProjectKey` 的行：
   - 运行中：`active === true`；
   - 待会话：`skipReason === "idle"`；
   - 已禁用：`enabled === false`；
   - 启动中、失败等其它状态不单列，总数仍包含它们。
-- 用户层 / profile 层的行 `projectRoot` 为空，不计入工作区抬头。
+- 用户层 / profile 层行的 `projectRoot` 是配置文件所在目录（**不是**空串），但它们的 `layer` 不是 `project`、`projectKey` 为空，因此不计入工作区抬头；计数不能依赖「全局行路径为空」这个假设。
 
 ### 5.3 分组标记
 
 - 当前工作区那一组置顶，组标题后挂「当前」标签。
+- 分组键与置顶判断都用 `projectKey`；组标题仍显示行上的原始路径，保留宿主的大小写。
 - 其它工作区分组挂「空闲」，并附一句「切到该工作区时装载。」。
 - 判断依据：该组行出现 `skipReason === "idle"`；已有更具体原因（`env-missing`、`env-invalid`、`name-taken` 等）不覆盖。
 - 用户层、profile 层分组不加这些标签。
@@ -206,6 +210,7 @@ export const Config = Schema.object({
 | `entriesDone` | 完成 | Done |
 | `entriesReadOnly` | 当前页面没有修改权限。 | This page cannot change these settings. |
 | `entriesWriteFailed` | 保存失败，请重试。 | Couldn't save. Try again. |
+| `entriesConflict` | 这些设置已在别处更新。再次点「完成」只会提交你改动过的项。 | These settings changed elsewhere. Press Done again to write only the fields you changed. |
 
 复用现有键：`panelLabel`（侧栏行、设置分区、页面标题）、`tab`（标签页）、`cancel`（取消）。
 
@@ -279,3 +284,19 @@ export const Config = Schema.object({
   `dsh-project-mcp-manager` 页面；两处共用同一个表单与提交函数，行组件用
   `variant="page"` 去掉通用行的分隔线。仍不采用 `plugins.row.config`。
 - 未做：真机点击回归；§8.1 的「Config 写入是否触发该行重载」未实测。
+
+## 12. 审查修复记录（2026-11-10）
+
+对应 [代码审查：v0.9.0 至 v0.12.0](../code-review/review-v0.9.0-to-v0.12.0.zh.md) 的 R1–R3：
+
+- **R1（`69d2bde`）**：通用行弹窗打开时记下 `revision`，`save(ops, revision)` 原样交给
+  `form.mutate` 作写入 fence，接线层不再替换为最新 revision；提交只包含用户在弹窗里
+  改过的字段（`entryOps(current, draft, touched)`）。宿主拒绝后保留草稿，用重新加载
+  的 revision 重试并提示「只提交你改动过的项」。`entries-settings.ts` 增加
+  `EntrySaveResult`，`entries-row.tsx` 记录 `touched` / `baseRevision` / `conflict`。
+- **R2（`35d1d84`）**：`McpUiState` 增加 `activeProjectKey`，`McpUiServer` 增加
+  `projectKey`，都由宿主用 core `projectKeyOf()` 算（core 包入口同时导出
+  `projectKeyOf`）。`workspace.ts` 删掉 `normalizeProjectPath()` / `sameProjectPath()`，
+  改用 `sameWorkspace(key, activeKey)`；分组、标记与置顶都按 `projectKey`。
+- **R3（同 `35d1d84`）**：`workspaceCounts()` 先过滤 `layer !== "project"`，不再依赖
+  「全局行 `projectRoot` 为空」的假设；§5.2 的数据契约随之更正。

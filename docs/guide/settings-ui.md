@@ -105,9 +105,16 @@ There are three entries, all opening the same page:
 
 Go to **Settings → General → MCP management page entries** and choose
 **Configure…**. The dialog has one checkbox each for the main sidebar, the
-settings sidebar, and the Built-in plugins tab. **Done** saves all changes at
-once; **Cancel** discards them. Changes made in another browser sync in too.
+settings sidebar, and the Built-in plugins tab. **Done** saves the dialog's
+changes; **Cancel** discards them. Changes made in another browser sync in too.
 
+- A save only writes the checkboxes you touched in this dialog. Settings changed
+  in another window at the same time are not rolled back; if you changed
+  nothing, **Done** just closes the dialog and writes nothing.
+- If the Host refuses the write (usually because another window saved first),
+  the dialog keeps your choices and says so. **Done** again retries against the
+  revision that just synced in and still writes only the fields you changed;
+  when both sides changed one field, the choice you just confirmed wins.
 - You can turn off all three entries. The General row is not one of them and
   always stays, so you can turn entries back on.
 - The same row is on the main sidebar's **Plugins → `dsh-project-mcp-manager`**
@@ -140,8 +147,8 @@ All three entries render the same panel, so all three open with the same
 When the host cannot tell yet (several workspaces and no session focus), the
 name reads **Current workspace not determined**, the path is hidden, and the
 note becomes "Open a session or send a message to determine it." The counts
-cover only rows in that workspace; starting, failed, and other states are not
-listed separately but still count in the total.
+cover only rows in that workspace; user and profile servers never count. Starting,
+failed, and other states are not listed separately but still count in the total.
 
 Workspace groups follow the same focus. The current group moves to the top and
 gets a **Current** tag; other groups that still have a row waiting for a

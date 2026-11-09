@@ -21,6 +21,8 @@
 
 级别口径：P0 = 紧急阻断；P1 = 高影响、应优先修复；P2 = 正常优先级的确定性功能缺陷；P3 = 低频、影响有限的准确性问题。**本报告只审查并提出建议，没有修复业务代码。**
 
+> 修复记录（2026-11-10）：R1 已在 `69d2bde` 落地，R2 与 R3 在 `35d1d84` 一并落地；改法与验收见 §7。正文保持审查时点的结论与证据。
+
 ## 2. 范围与方法
 
 ### 2.1 改动范围
@@ -216,3 +218,24 @@ console.log(orderWorkspaceGroups([
 4. 再跑完整构建、两套类型检查及全部测试；最后在两个浏览器窗口与大小写敏感宿主上做定向人工验收。
 
 没有必要仅为风格、函数长度或个人偏好扩大这次修复范围；以上建议均围绕已验证的行为问题或直接相关的测试缺口。
+
+## 7. 修复落地（2026-11-10）
+
+按「R1（P2）→ R2（P2）+ R3（P3）→ 文档」提交。R2 与 R3 落在同一个 `workspace.ts` 身份契约里，
+一次改完：R3 的层级过滤既修复了独立缺陷，也是新契约的一部分（浏览器不再依赖「全局行路径为空」）。
+
+| 编号 | commit | 改动 | 覆盖测试 |
+|---|---|---|---|
+| R1 | `69d2bde` | 弹窗打开时用当时的三个开关值初始化草稿并记下 `revision`；`save(ops, revision)` 把该 revision 原样交给 `form.mutate` 作写入 fence，接线层不再替换为最新 revision。提交只包含用户显式改过的字段（`entryOps(current, draft, touched)`）。宿主拒绝后保留草稿，用重新加载的 revision 重试，并提示「只提交你改动过的项」；同一字段两边都改过时以用户再次确认为准。新增 `EntrySaveResult`、`entriesConflict` 文案。 | `test/test-ui-entries.mjs`（无编辑不写盘、未触碰字段不随旧草稿回写、冲突后按最新值比较）、`test/test-ui-client-wiring.mjs`（fence 用编辑器基线而非快照最新值、拒绝时返回重试 revision） |
+| R2 | `35d1d84` | `McpUiState` 增加 `activeProjectKey`，每行服务器增加 `projectKey`，都由宿主用 core `projectKeyOf()` 算（core 包入口同时导出 `projectKeyOf`）。删除 `normalizeProjectPath()` / `sameProjectPath()`，改用 `sameWorkspace(key, activeKey)`；抬头计数、分组标记与置顶排序全部按 `projectKey`，分组标签仍显示原始路径。 | `test/test-ui-workspace.mjs`（POSIX 大小写不同、反斜杠与空白目录名各自独立；Windows 键相同则同组）、`test/test-ui-lifecycle.mjs`（state 与行都带宿主算的键，全局层为空串） |
+| R3 | `35d1d84` | `workspaceCounts()` 先过滤 `row.layer !== "project"`，不再只比较路径；设计提案 §5.2 的数据契约同步更正为「全局行 `projectRoot` 是配置目录、`projectKey` 为空」。 | `test/test-ui-workspace.mjs`（user/profile 行即使路径等于当前工作区也不计入；项目行照常统计；键相同但非项目层仍排除） |
+
+验收（Windows，Node 26.7.0）：
+
+- `npm run build`（core + UI）通过。
+- `tsc --noEmit` 三套全部通过：根 `tsconfig.json`、`packages/ui/tsconfig.json`、`packages/ui/tsconfig.client.json`。
+- 全部测试通过：model 34 / mcp-file 7 / json-file 13 / json-write 6 / registry 63 / project-watch 5 /
+  cli 21 / ui-collapse 14 / ui-paste 14 / ui-display 7 / ui-workspace 10 / ui-entries 9 /
+  panel-helpers 通过 / bundle 通过 / ui-client-wiring 7 / ui-lifecycle 12。
+- 未做：真实浏览器双窗口点击回归（R1 在纯函数与接线层验证，未渲染组件）；POSIX 宿主实机复验
+  （R2 的身份语义在纯函数测试里按宿主键模拟）。

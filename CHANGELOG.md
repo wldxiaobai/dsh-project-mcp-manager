@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Entry settings no longer overwrite concurrent edits.** The visibility
+  dialog (Settings → General and the plugin manager page) now keeps the
+  `revision` it read when it opened and passes it through to
+  `configForms.mutate` as the write fence; the wiring layer no longer swaps in
+  the latest revision. Only the fields the user toggled in that dialog are
+  submitted, so a stale draft cannot revert a checkbox changed in another
+  window. When the Host refuses the write, the draft is kept, the reloaded
+  revision becomes the next fence, and the dialog says that confirming again
+  writes only the fields the user changed.
+- **Workspace identity follows the host platform.** `McpUiState` now carries
+  `activeProjectKey` and every server row carries `projectKey`; both are
+  computed by the core `projectKeyOf()` (case-insensitive on Windows only). The
+  browser no longer lowercases paths or rewrites separators, so two
+  case-different POSIX workspaces stay separate in the current-workspace counts,
+  group markers, and group ordering. The package entry now also exports
+  `projectKeyOf`.
+- **Global rows no longer count as the current workspace.** `workspaceCounts()`
+  filters on `layer === "project"` instead of comparing `projectRoot` alone, so
+  user/profile rows (whose `projectRoot` is the config directory) are excluded
+  even when `DSH_HOME` or a profile directory happens to be the workspace root.
+
 ## [0.12.0] - 2026-11-09
 
 Versioned together with `dsh-project-mcp-ui` 0.12.0. This source version and
