@@ -29,11 +29,11 @@ assert.ok(ui.files.includes("lib"));
 assert.ok(root.files.includes("locale"), "localised bundle metadata must be packed");
 assert.ok(root.files.includes("docs"), "the Chinese README lives under docs/ and must be packed");
 assert.ok(root.files.includes("README.md"));
-for (const [language, detail] of [["en", "README.md"], ["zh", "docs/README.zh.md"]]) {
+await Promise.all([["en", "README.md"], ["zh", "docs/README.zh.md"]].map(async ([language, detail]) => {
   const locale = JSON.parse(await readFile(new URL(`../locale/${language}.json`, import.meta.url), "utf8"));
   assert.equal(locale.meta.detail, detail, `locale/${language}.json must name ${detail}`);
   await access(new URL(`../${detail}`, import.meta.url));
-}
+}));
 
 // Build the loader first: UI consumes its declarations and root-level npm
 // lifecycle scripts must not rely on topological order in a cyclic workspace.

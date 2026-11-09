@@ -11,7 +11,11 @@ import {
 import { en, zh } from "../packages/ui/src/client/locales.ts";
 
 // Keep deterministic UTF-16 code-unit order, independent of the host locale.
-const byCodeUnit = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+function byCodeUnit(a, b) {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
 
 let passed = 0;
 function test(name, run) {

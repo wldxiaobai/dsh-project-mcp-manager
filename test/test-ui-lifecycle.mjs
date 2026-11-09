@@ -20,6 +20,13 @@ const expectedRoutes = [
   ["/api/project-mcp/events", ["GET"]]
 ];
 
+// Keep deterministic UTF-16 code-unit order, independent of the host locale.
+function byCodeUnit(a, b) {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
 let passed = 0;
 function pass(name) {
   passed += 1;
@@ -98,7 +105,7 @@ function connectionScope(ctx, uiFiber) {
 }
 
 function assertRoutes(connection) {
-  assert.deepEqual([...connection.routes.keys()].sort(), expectedRoutes.map(([path]) => path).sort());
+  assert.deepEqual([...connection.routes.keys()].sort(byCodeUnit), expectedRoutes.map(([path]) => path).sort(byCodeUnit));
   for (const [path, methods] of expectedRoutes) {
     const { route } = connection.routes.get(path);
     assert.deepEqual(route.methods, methods);
@@ -181,7 +188,7 @@ async function assertClosed(stream) {
   const Schema = requireFromUi("@deepseek-ai/schemastery");
   const config = new Schema(ui.Config.toJSON());
   assert.equal(config.type, "object");
-  assert.deepEqual(Object.keys(config.dict).sort(), ["settingsSection", "settingsTab", "sidebar"]);
+  assert.deepEqual(Object.keys(config.dict).sort(byCodeUnit), ["settingsSection", "settingsTab", "sidebar"]);
   for (const key of ["sidebar", "settingsSection", "settingsTab"]) {
     assert.equal(config.dict[key].meta.volatile, true, `${key} must be volatile`);
     assert.equal(config.dict[key].meta.default, true, `${key} defaults to visible`);
@@ -224,11 +231,11 @@ async function assertClosed(stream) {
     assert.equal(state.activeProject, null, "no focused workspace is reported as null");
     assert.equal(state.activeProjectKey, null, "no focused workspace has no identity key");
     assert.equal(typeof state.homeDir, "string");
-    mcp.setWriteTargets([{ id: "project", source: "dsh-project", projectRoot: "D:\\work", path: "D:\\work\\.dsh\\mcp.yml" }]);
+    mcp.setWriteTargets([{ id: "project", source: "dsh-project", projectRoot: String.raw`D:\work`, path: String.raw`D:\work\.dsh\mcp.yml` }]);
     const focused = await readState(connection);
-    assert.deepEqual(focused.writeTargets, [{ id: "project", source: "dsh-project", projectRoot: "D:\\work", path: "D:\\work\\.dsh\\mcp.yml" }]);
-    assert.equal(focused.activeProject, "D:\\work", "the active workspace follows the project write target");
-    assert.equal(focused.activeProjectKey, projectKeyOf("D:\\work"),
+    assert.deepEqual(focused.writeTargets, [{ id: "project", source: "dsh-project", projectRoot: String.raw`D:\work`, path: String.raw`D:\work\.dsh\mcp.yml` }]);
+    assert.equal(focused.activeProject, String.raw`D:\work`, "the active workspace follows the project write target");
+    assert.equal(focused.activeProjectKey, projectKeyOf(String.raw`D:\work`),
       "the workspace identity is the host's projectKeyOf(), not a browser-side guess");
     mcp.setWriteTargets([]);
     const { route: toolRoute } = connection.routes.get("/api/project-mcp/tools");
@@ -308,8 +315,8 @@ async function assertClosed(stream) {
   const ctx = new Context();
   const snapshot = [
     {
-      project: "D:\\work",
-      path: "D:\\work\\.dsh\\mcp.yml",
+      project: String.raw`D:\work`,
+      path: String.raw`D:\work\.dsh\mcp.yml`,
       ok: true,
       error: null,
       source: "dsh-project",
@@ -318,8 +325,8 @@ async function assertClosed(stream) {
       ]
     },
     {
-      project: "C:\\Users\\me\\.dsh\\profiles\\web",
-      path: "C:\\Users\\me\\.dsh\\profiles\\web\\mcp.yml",
+      project: String.raw`C:\Users\me\.dsh\profiles\web`,
+      path: String.raw`C:\Users\me\.dsh\profiles\web\mcp.yml`,
       kind: "global",
       ok: true,
       error: null,
@@ -343,8 +350,8 @@ async function assertClosed(stream) {
     const state = await readState(connection);
     assert.equal(state.servers.length, 2);
     assert.equal(state.servers[0].layer, "project");
-    assert.equal(state.servers[0].projectRoot, "D:\\work");
-    assert.equal(state.servers[0].projectKey, projectKeyOf("D:\\work"), "project rows carry the host project key");
+    assert.equal(state.servers[0].projectRoot, String.raw`D:\work`);
+    assert.equal(state.servers[0].projectKey, projectKeyOf(String.raw`D:\work`), "project rows carry the host project key");
     assert.equal(state.servers[1].layer, "user");
     assert.equal(state.servers[1].projectKey, "", "global rows have no workspace identity");
     pass("state rows carry host-computed workspace keys and global rows stay empty");

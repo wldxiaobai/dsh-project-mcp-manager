@@ -12,8 +12,16 @@ import { backToWorkspace, createEntriesController, leavePanelIfOpen } from "../p
 import { ENTRIES_ROW_ID, entryRegistrations, MANAGER_BUNDLE, NS, PANEL_ID } from "../packages/ui/src/client/entries-registry.ts";
 import { en, zh } from "../packages/ui/src/client/locales.ts";
 
+// Keep deterministic UTF-16 code-unit order, independent of the host locale.
+function byCodeUnit(a, b) {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
 let passed = 0;
-function pass(name) {
+function test(name, run) {
+  run();
   passed += 1;
   console.log("PASS  " + name);
 }
@@ -22,25 +30,23 @@ function snapshot(overrides) {
   return { status: "ready", value: undefined, writable: true, ...overrides };
 }
 
-{
+test("entry flags default to visible and ignore non-boolean values", () => {
   assert.equal(ENTRY_CONFIG_ID, "mcp-project-ui", "the form reads the UI plugin entry");
   assert.deepEqual(entryFlagsFrom({}), DEFAULT_ENTRY_FLAGS);
   assert.deepEqual(entryFlagsFrom(undefined), DEFAULT_ENTRY_FLAGS);
   assert.deepEqual(entryFlagsFrom({ sidebar: false }), { sidebar: false, settingsSection: true, settingsTab: true });
   assert.deepEqual(entryFlagsFrom({ sidebar: "no", settingsSection: 0, settingsTab: null }), DEFAULT_ENTRY_FLAGS);
   assert.deepEqual(entryFlagsFrom({ sidebar: false, settingsSection: false, settingsTab: false }), { sidebar: false, settingsSection: false, settingsTab: false });
-  pass("entry flags default to visible and ignore non-boolean values");
-}
+});
 
-{
+test("only a ready snapshot contributes a value", () => {
   assert.deepEqual(entryFlagsFromSnapshot(null), DEFAULT_ENTRY_FLAGS);
   assert.deepEqual(entryFlagsFromSnapshot(snapshot({ status: "loading" })), DEFAULT_ENTRY_FLAGS);
   assert.deepEqual(entryFlagsFromSnapshot(snapshot({ status: "unavailable" })), DEFAULT_ENTRY_FLAGS);
   assert.deepEqual(entryFlagsFromSnapshot(snapshot({ value: { sidebar: false } })), { sidebar: false, settingsSection: true, settingsTab: true });
-  pass("only a ready snapshot contributes a value");
-}
+});
 
-{
+test("read-only state disables the checkboxes and has its own note condition", () => {
   assert.equal(entriesReadOnly(null), true);
   assert.equal(entriesReadOnly(snapshot({ status: "loading" })), true);
   assert.equal(entriesReadOnly(snapshot({ writable: false })), true);
@@ -48,10 +54,9 @@ function snapshot(overrides) {
   assert.equal(entriesReadOnlyNote(snapshot({ status: "loading", writable: false })), false);
   assert.equal(entriesReadOnlyNote(snapshot({ writable: false })), true);
   assert.equal(entriesReadOnlyNote(snapshot({})), false);
-  pass("read-only state disables the checkboxes and has its own note condition");
-}
+});
 
-{
+test("only changed fields ride one commit", () => {
   const current = { sidebar: true, settingsSection: true, settingsTab: true };
   assert.deepEqual(entryOps(current, current), []);
   assert.deepEqual(entryOps(current, { ...current, settingsTab: false }), [{ op: "set", path: ["settingsTab"], value: false }]);
@@ -59,10 +64,9 @@ function snapshot(overrides) {
     entryOps(current, { sidebar: false, settingsSection: true, settingsTab: false }),
     [{ op: "set", path: ["sidebar"], value: false }, { op: "set", path: ["settingsTab"], value: false }]
   );
-  pass("only changed fields ride one commit");
-}
+});
 
-{
+test("a stale draft never rewrites fields another client changed", () => {
   // R1：弹窗打开时的草稿只写用户显式改过的字段。
   // 窗口 A 打开弹窗（三个都是 true），只取消 sidebar；窗口 B 随后把
   // settingsTab 设为 false，宿主同步把 A 的快照推进到 revision 2。
@@ -84,12 +88,10 @@ function snapshot(overrides) {
   ], "touched fields are listed in the canonical entry order");
   assert.deepEqual(entryOps(reloaded, draft), [{ op: "set", path: ["sidebar"], value: false }, { op: "set", path: ["settingsTab"], value: true }],
     "without a touched set the helper still diffs every field (pure form)");
-  pass("a stale draft never rewrites fields another client changed");
-}
+});
 
-{
+test("controller adds and removes registrations exactly once, leaving the panel first", () => {
   const calls = [];
-  const detach = { sidebar: [], settingsSection: [], settingsTab: [] };
   const attachments = Object.fromEntries(["sidebar", "settingsSection", "settingsTab"].map((key) => [key, {
     attach() {
       calls.push("attach:" + key);
@@ -120,10 +122,9 @@ function snapshot(overrides) {
   calls.length = 0;
   controller.dispose();
   assert.deepEqual(calls, [], "dispose is idempotent");
-  pass("controller adds and removes registrations exactly once, leaving the panel first");
-}
+});
 
-{
+test("back and disable only leave the main panel when it is ours", () => {
   const calls = [];
   const navigator = {
     panelInfo: { getSnapshot: () => ({ activePanelId: "project-mcp" }) },
@@ -144,10 +145,9 @@ function snapshot(overrides) {
     }
   };
   assert.equal(leavePanelIfOpen(elsewhere, "project-mcp"), false);
-  pass("back and disable only leave the main panel when it is ours");
-}
+});
 
-{
+test("registrations carry the documented slots, keys, orders and inject faces", () => {
   const calls = [];
   const layout = {
     panelInfo: { getSnapshot: () => ({ activePanelId: null }) },
@@ -190,11 +190,10 @@ function snapshot(overrides) {
   const pluginFace = reg.pluginEntries.inject();
   assert.equal(pluginFace.hooks.entries, form, "the plugin page row subscribes to the same form");
   assert.equal(pluginFace.save, save, "the plugin page row writes through the same command");
-  pass("registrations carry the documented slots, keys, orders and inject faces");
-}
+});
 
-{
-  assert.deepEqual(Object.keys(en).sort(), Object.keys(zh).sort());
+test("entry copy exists in both languages", () => {
+  assert.deepEqual(Object.keys(en).sort(byCodeUnit), Object.keys(zh).sort(byCodeUnit));
   assert.equal(zh.backToWorkspace, "回到当前工作区");
   assert.equal(zh.entriesTitle, "MCP 管理页入口");
   assert.equal(zh.entriesHint, "选择在哪些位置显示 MCP 管理页。");
@@ -209,7 +208,6 @@ function snapshot(overrides) {
   assert.equal(zh.entriesConflict, "这些设置已在别处更新。再次点「完成」只会提交你改动过的项。");
   assert.equal(en.entriesConflict, "These settings changed elsewhere. Press Done again to write only the fields you changed.");
   assert.equal(en.entriesOpen, "Configure…");
-  pass("entry copy exists in both languages");
-}
+});
 
 console.log(passed + " passed");

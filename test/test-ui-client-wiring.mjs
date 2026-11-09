@@ -10,6 +10,13 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 
+// Keep deterministic UTF-16 code-unit order, independent of the host locale.
+function byCodeUnit(a, b) {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
 let passed = 0;
 function pass(name) {
   passed += 1;
@@ -23,6 +30,8 @@ const source = await readFile(new URL("../packages/ui/lib/client.js", import.met
 let definition;
 // The browser loader shim: evaluate the bundle with a `window` that captures
 // the module definition, then call its factory like the real loader does.
+// Only execute our fixed local build artifact, never request data or an arbitrary path.
+// This intentionally tests the browser module wrapper; node:vm is not a security boundary.
 new Function("window", source)({
   __ModuleLoader__: {
     load(candidate) {
@@ -136,7 +145,7 @@ function harness(initialValue = {}) {
   };
 }
 
-const keys = (entries) => [...entries.keys()].sort();
+const keys = (entries) => [...entries.keys()].sort(byCodeUnit);
 const ALL_KEYS = [
   "main:project-mcp",
   "plugins.bundle.config:dsh-project-mcp-manager",
@@ -204,8 +213,12 @@ const ALL_KEYS = [
   h.setValue({ sidebar: false, settingsSection: true, settingsTab: true });
   const added = h.calls.slice(before);
   assert.equal(added[0], "selectPanel:null", "the page is left before its registration is released");
-  assert.ok(added.indexOf("release:main:project-mcp") > 0);
-  assert.ok(added.indexOf("release:sidebar.panellist:project-mcp") > 0);
+  const navigationIndex = added.indexOf("selectPanel:null");
+  for (const release of ["release:main:project-mcp", "release:sidebar.panellist:project-mcp"]) {
+    const releaseIndex = added.indexOf(release);
+    assert.notEqual(releaseIndex, -1, `${release} must occur`);
+    assert.ok(releaseIndex > navigationIndex, `${release} must follow navigation`);
+  }
   pass("closing the main entry leaves the panel first, then releases the row and page");
 }
 
