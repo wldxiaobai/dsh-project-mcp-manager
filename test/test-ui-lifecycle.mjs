@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
+import { createRequire } from "node:module";
 import { Context } from "@deepseek-ai/cordis";
 // The host entry imports ./wire.js, so exercise its compiled output after the root build.
 import * as ui from "../packages/ui/lib/index.js";
@@ -173,6 +174,17 @@ async function assertClosed(stream) {
 
 {
   assert.deepEqual(ui.inject, ["projectMcp"]);
+  // The host settings service only projects volatile Config fields into forms
+  // (`settings.volatileForm`); without this the three toggles are unreachable.
+  const requireFromUi = createRequire(new URL("../packages/ui/package.json", import.meta.url));
+  const Schema = requireFromUi("@deepseek-ai/schemastery");
+  const config = new Schema(ui.Config.toJSON());
+  assert.equal(config.type, "object");
+  assert.deepEqual(Object.keys(config.dict).sort(), ["settingsSection", "settingsTab", "sidebar"]);
+  for (const key of ["sidebar", "settingsSection", "settingsTab"]) {
+    assert.equal(config.dict[key].meta.volatile, true, `${key} must be volatile`);
+    assert.equal(config.dict[key].meta.default, true, `${key} defaults to visible`);
+  }
   const ctx = new Context();
   const mcp = mockProjectMcp();
   const connection = mockConnection();

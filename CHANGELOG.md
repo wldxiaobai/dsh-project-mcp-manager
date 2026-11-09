@@ -24,7 +24,8 @@ No loader, service, CLI, API route, or config-file behavior changed.
   section, and the restored plugins tab.
 - **Per-entry visibility.** The `mcp-project-ui` host entry exports a
   `Config` schema with `sidebar`, `settingsSection`, and `settingsTab`
-  booleans (all default `true`). A **Settings → General** row
+  booleans (all default `true`, all marked `.volatile()` so the host settings
+  form serves them without a plugin remount). A **Settings → General** row
   (`settings.general.item`, id `mcp-entries`, order 12) opens a small dialog
   with one checkbox per entry; changes are drafted locally and written as one
   `configForms.mutate` on **Done**, and **Cancel** discards them. All three can

@@ -32,11 +32,15 @@ export const inject = ["projectMcp"];
  * 三个 UI 入口的显隐。三个默认值都是 true，与 v0.11.1 的行为一致。
  * 值落宿主设置文档（`mcp-project-ui` 这一条），浏览器经 `ctx.configForms` 读写，
  * 不写 profile patch。
+ *
+ * 三个字段都标 `.volatile()`：宿主只把 volatile 字段投影进设置表单
+ * （`settings.volatileForm`），不标的话这个命名空间不会出现在 `describe()` 里，
+ * 页面也就读不到、改不了。
  */
 export const Config = Schema.object({
-  sidebar: Schema.boolean().default(true),
-  settingsSection: Schema.boolean().default(true),
-  settingsTab: Schema.boolean().default(true)
+  sidebar: Schema.boolean().default(true).volatile(),
+  settingsSection: Schema.boolean().default(true).volatile(),
+  settingsTab: Schema.boolean().default(true).volatile()
 });
 
 const YML_SOURCES = new Set<McpRowSource>(["dsh-project", "dsh-profile-user-yml", "dsh-user-yml"]);
