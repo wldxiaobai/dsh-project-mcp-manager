@@ -10,7 +10,7 @@ dsh process, and tool visibility follows the session's original project
 (`session.header.cwd`). The default
 `dsh-project-mcp-manager` bundle includes the loader and the companion
 `dsh-project-mcp-ui` MCP Manager page for the web and desktop apps (three
-entries — main sidebar, settings sidebar, and a settings plugins tab — all
+entries — main sidebar, settings sidebar, and a Built-in plugins settings tab — all
 opening the same panel). The UI is
 enabled by default and can be disabled independently; the loader keeps working.
 

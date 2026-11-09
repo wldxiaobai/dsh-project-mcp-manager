@@ -253,7 +253,7 @@ export const en: Record<McpUiLocaleKey, string> = {
   entriesDialogTitle: "MCP management page entries",
   entriesSidebar: "Main sidebar",
   entriesSettingsSection: "Settings sidebar",
-  entriesSettingsTab: "Settings › Plugins tab",
+  entriesSettingsTab: "Settings › Built-in plugins tab",
   entriesDone: "Done",
   entriesReadOnly: "This page cannot change these settings.",
   entriesWriteFailed: "Couldn't save. Try again."
@@ -383,7 +383,7 @@ export const zh: Record<McpUiLocaleKey, string> = {
   entriesDialogTitle: "MCP 管理页入口设置",
   entriesSidebar: "主页左侧栏",
   entriesSettingsSection: "设置页左侧栏",
-  entriesSettingsTab: "设置页「插件」标签页",
+  entriesSettingsTab: "设置页「内置插件」标签页",
   entriesDone: "完成",
   entriesReadOnly: "当前页面没有修改权限。",
   entriesWriteFailed: "保存失败，请重试。"

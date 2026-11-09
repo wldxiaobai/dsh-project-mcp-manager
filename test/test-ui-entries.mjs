@@ -172,7 +172,7 @@ function snapshot(overrides) {
   assert.equal(zh.entriesDialogTitle, "MCP 管理页入口设置");
   assert.equal(zh.entriesSidebar, "主页左侧栏");
   assert.equal(zh.entriesSettingsSection, "设置页左侧栏");
-  assert.equal(zh.entriesSettingsTab, "设置页「插件」标签页");
+  assert.equal(zh.entriesSettingsTab, "设置页「内置插件」标签页");
   assert.equal(zh.entriesDone, "完成");
   assert.equal(zh.entriesReadOnly, "当前页面没有修改权限。");
   assert.equal(zh.entriesWriteFailed, "保存失败，请重试。");

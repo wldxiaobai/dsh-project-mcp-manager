@@ -22,7 +22,7 @@
 
 ## 1. 背景与目标
 
-v0.11.1 有两个 UI 入口：左侧栏图标行（`sidebar.panellist` + `main`）和设置「插件」标签页（`settings.plugins.tab`），两者渲染同一个 `McpPanel`。
+v0.11.1 有两个 UI 入口：左侧栏图标行（`sidebar.panellist` + `main`）和设置「内置插件」标签页（`settings.plugins.tab`），两者渲染同一个 `McpPanel`。
 
 本次要解决三件事：
 
@@ -48,7 +48,7 @@ v0.11.1 有两个 UI 入口：左侧栏图标行（`sidebar.panellist` + `main`�
 - 页面组件 `McpSettingsSection`：只渲染 `McpPanel`，不加标题、不加返回按钮——设置外壳已有标题与关闭按钮；也不额外加外层 padding，沿用设置内容列的边距，实机过挤再补。
 - `id` 与主页侧栏相同不是因为共用一个槽位，只是文档与日志里统一叫法；两个槽位互不影响。
 
-### 2.3 设置页「插件」标签页（旧位置）
+### 2.3 设置页「内置插件」标签页（旧位置）
 
 - 保持 `settings.plugins.tab`：`id: "projectMcp"`、`order: 30`、`label: tab`（“插件：MCP 管理”），组件仍是 `McpPanel`。
 - 没有外壳，因此**没有**返回按钮。
@@ -62,7 +62,7 @@ v0.11.1 有两个 UI 入口：左侧栏图标行（`sidebar.panellist` + `main`�
 | 主页页面 | `main` | `key: "project-mcp"` | `McpSidebarPage` |
 | 设置页左侧栏 | `settings.section` | `id: "project-mcp"`、`order: 20` | `McpSettingsSection` |
 | 设置页左侧栏图标 | `settings.section.icon` | `id: "project-mcp"` | `McpPanelIcon` |
-| 设置页「插件」标签页 | `settings.plugins.tab` | `id: "projectMcp"`、`order: 30` | `McpPanel` |
+| 设置页「内置插件」标签页 | `settings.plugins.tab` | `id: "projectMcp"`、`order: 30` | `McpPanel` |
 | 设置 → 通用行 | `settings.general.item` | `id: "mcp-entries"`、`order: 12` | `McpEntriesRow` |
 
 ## 3. 入口显隐设置
@@ -73,7 +73,7 @@ v0.11.1 有两个 UI 入口：左侧栏图标行（`sidebar.panellist` + `main`�
 - 一行：标题「MCP 管理页入口」+ 说明「选择在哪些位置显示 MCP 管理页。」+ 右侧 `Button`「设置…」。
 - 点「设置…」打开 `Modal`（body portal，与面板现有弹窗同一个 primitive）：
   - 标题「MCP 管理页入口设置」；
-  - 三个 `Checkbox` 行：主页左侧栏、设置页左侧栏、设置页「插件」标签页；
+  - 三个 `Checkbox` 行：主页左侧栏、设置页左侧栏、设置页「内置插件」标签页；
   - 底部「取消 / 完成」；宽度约 440px。
 - 弹窗内是**草稿**：打开时从表单快照初始化，点「完成」把有变化的字段合成一次 `mutate` 提交，然后关闭；取消丢弃草稿。
 - 表单不可写（远程浏览器没有权限）时，三个勾选框禁用并显示说明；写入失败时保留弹窗并显示错误文案。
@@ -141,7 +141,7 @@ export const Config = Schema.object({
 
 ### 4.3 三处入口的差异
 
-| 项 | 主页左侧栏 | 设置页左侧栏 | 设置页「插件」标签页 |
+| 项 | 主页左侧栏 | 设置页左侧栏 | 设置页「内置插件」标签页 |
 |---|---|---|---|
 | 外壳 | `McpSidebarPage` | `McpSettingsSection` | 无（直接 `McpPanel`） |
 | 页面标题 | 有（`h1`） | 无（设置外壳） | 无（标签页） |
@@ -202,7 +202,7 @@ export const Config = Schema.object({
 | `entriesDialogTitle` | MCP 管理页入口设置 | MCP management page entries |
 | `entriesSidebar` | 主页左侧栏 | Main sidebar |
 | `entriesSettingsSection` | 设置页左侧栏 | Settings sidebar |
-| `entriesSettingsTab` | 设置页「插件」标签页 | Settings › Plugins tab |
+| `entriesSettingsTab` | 设置页「内置插件」标签页 | Settings › Built-in plugins tab |
 | `entriesDone` | 完成 | Done |
 | `entriesReadOnly` | 当前页面没有修改权限。 | This page cannot change these settings. |
 | `entriesWriteFailed` | 保存失败，请重试。 | Couldn't save. Try again. |

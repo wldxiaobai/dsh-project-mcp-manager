@@ -6,7 +6,7 @@ English | [中文](settings-ui.zh.md)
 
 The companion package `dsh-project-mcp-ui`, included in the default
 `dsh-project-mcp-manager` bundle, adds an **MCP Manager** page with three entries —
-main sidebar, settings sidebar, and a settings plugins tab. It lists the servers
+main sidebar, settings sidebar, and a Built-in plugins settings tab. It lists the servers
 the loader will run, shows whether each one is running, and lets you add,
 switch, and remove servers or single tools. Every change is written to a
 **managed `mcp.yml`**; the page never edits JSON files or the legacy
@@ -66,7 +66,7 @@ There are three entries, all opening the same page:
 
 **Choosing which entries appear.** On the **Settings → General** page, the
 **MCP management page entries** row has a **Configure…** button. Its dialog has
-one checkbox per entry: main sidebar, settings sidebar, and the plugins tab.
+one checkbox per entry: main sidebar, settings sidebar, and the Built-in plugins tab.
 Changes are drafted locally and saved together by **Done**; **Cancel** discards
 them. Another browser's changes sync in as well. All three can be switched off —
 the General row is not one of them and always stays as the way back. When the

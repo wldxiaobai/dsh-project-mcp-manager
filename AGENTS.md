@@ -2,7 +2,7 @@
 
 ## 项目概览
 
-`dsh-project-mcp-manager`（v0.12.0）是一个 **DSH 插件**（默认 bundle 含核心装载器与 `packages/ui/` 的 MCP 管理页：主页左侧栏、设置页左侧栏、设置「插件」标签页三处入口，外加设置 → 通用里的入口显隐行；UI 可单独停用）：为每个项目自动装载 MCP 服务器。项目配置放 `<projectRoot>/.dsh/mcp.yml`（原生受管块）或 `<projectRoot>/.dsh/mcp.json`（JSON 方言），dsh 会话在该项目开启时自动经 `@deepseek-ai/dsh-mcp-client` 装载，文件改动热重载，工具可见性按会话原始项目（`session.header.cwd`）隔离。dsh 0.2.1 的 `working_directory` 只改当前执行目录，不改 `header.cwd`，因此不挪焦点。用户层（`~/.dsh/mcp.yml`、`~/.dsh/mcp.json`、`~/.dsh/profiles/<name>/mcp.yml`、`~/.dsh/profiles/<name>/mcp.json`）为**全局装载**（宿主级一条连接）。遗留 Claude Code 项目文件 `<projectRoot>/.mcp.json` 只读兼容；`~/.claude.json` 自 v0.4.0 起不再读取。`dsh-mcp` CLI 可写原生 yml 或 DSH JSON。
+`dsh-project-mcp-manager`（v0.12.0）是一个 **DSH 插件**（默认 bundle 含核心装载器与 `packages/ui/` 的 MCP 管理页：主页左侧栏、设置页左侧栏、设置「内置插件」标签页三处入口，外加设置 → 通用里的入口显隐行；UI 可单独停用）：为每个项目自动装载 MCP 服务器。项目配置放 `<projectRoot>/.dsh/mcp.yml`（原生受管块）或 `<projectRoot>/.dsh/mcp.json`（JSON 方言），dsh 会话在该项目开启时自动经 `@deepseek-ai/dsh-mcp-client` 装载，文件改动热重载，工具可见性按会话原始项目（`session.header.cwd`）隔离。dsh 0.2.1 的 `working_directory` 只改当前执行目录，不改 `header.cwd`，因此不挪焦点。用户层（`~/.dsh/mcp.yml`、`~/.dsh/mcp.json`、`~/.dsh/profiles/<name>/mcp.yml`、`~/.dsh/profiles/<name>/mcp.json`）为**全局装载**（宿主级一条连接）。遗留 Claude Code 项目文件 `<projectRoot>/.mcp.json` 只读兼容；`~/.claude.json` 自 v0.4.0 起不再读取。`dsh-mcp` CLI 可写原生 yml 或 DSH JSON。
 
 - 语言：TypeScript（ESM，`"type": "module"`），`target ES2022` / `module NodeNext`，`strict: true`（`noImplicitAny: false`）。
 - 编译产物：`src/` → `lib/`（`main: lib/index.js`，`types: lib/index.d.ts`；`declaration: true`）。包入口再导出查询面视图类型；`exports` 不开放 `lib/` 深导入。
