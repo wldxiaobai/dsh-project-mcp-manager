@@ -60,6 +60,9 @@ headless profile 可以使用同一个 manager bundle。没有浏览器运行时
 过来。三个入口可以全部关掉；通用里的这一行不属于这三个开关，始终保留，是恢复
 入口。远程浏览器没有修改权限时，三个勾选框禁用并给出说明。
 
+同一行也出现在主页左侧栏 **插件 → `dsh-project-mcp-manager`** 页面里。两处改的
+是同一份配置，任一处保存后另一处立即同步。
+
 要隐藏整个页面，在插件管理器中展开 manager bundle 所含组件，只关闭
 `mcp-project-ui`，保留 `mcp-project` 启用。也可以在 profile patch 中按 id 覆盖
 禁用 UI 行。这样只停用 UI（三个入口一起消失），不停用装载器，也不移除 UI 依赖。

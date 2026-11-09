@@ -502,6 +502,11 @@ button.dsh-mcp-switch.dsh-mcp-switch-waiting[aria-checked="true"] > span {
   padding: 16px 0;
   border-bottom: 0.5px solid var(--dsw-alias-border-l2);
 }
+/* 插件管理页里的同一行：页面自己排间距，去掉通用行的分隔线和内边距。 */
+.dsh-mcp-entries-row-page {
+  padding: 0;
+  border-bottom: 0;
+}
 .dsh-mcp-entries-copy {
   min-width: 0;
 }

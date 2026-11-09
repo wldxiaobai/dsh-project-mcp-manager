@@ -10,7 +10,7 @@
  */
 import type { Context } from "@deepseek-ai/cordis";
 import { McpPanel, installPanelStyle } from "./McpPanel.tsx";
-import { McpEntriesRow } from "./entries-row.tsx";
+import { McpEntriesRow, McpPluginEntriesRow } from "./entries-row.tsx";
 import { McpPanelIcon, McpSettingsSection, McpSidebarPage } from "./entries.tsx";
 import { createEntriesController, leavePanelIfOpen, type PanelNavigator } from "./entries-controller.ts";
 import { entryRegistrations, NS, PANEL_ID, type EntriesObservable } from "./entries-registry.ts";
@@ -108,4 +108,9 @@ export function apply(ctx: Context): void {
   // The General row always exists, whatever the three checkboxes say: it is the
   // only way to bring a hidden entry back from inside the page.
   slots.inject("settings.general.item", () => slots.register(registrations.generalRow, McpEntriesRow));
+
+  // The same row also sits on the plugin manager's page for this bundle. The
+  // key is the bundle package name, which is how the manager addresses a
+  // bundle's config section.
+  slots.inject("plugins.bundle.config", () => slots.register(registrations.pluginEntries, McpPluginEntriesRow));
 }

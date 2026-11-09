@@ -10,6 +10,8 @@ import type { McpUiLocaleKey } from "./locales.ts";
 export const PANEL_ID = "project-mcp";
 /** 设置 → 通用 那一行的 id；它不属于三个入口，始终存在。 */
 export const ENTRIES_ROW_ID = "mcp-entries";
+/** manager bundle 的包名，同时是插件管理页 bundle 配置项的 key。 */
+export const MANAGER_BUNDLE = "dsh-project-mcp-manager";
 /** 语言字典命名空间。 */
 export const NS = "settings.projectMcp";
 
@@ -40,6 +42,8 @@ export interface EntryRegistrations {
   readonly settingsTab: object;
   /** 设置 → 通用 里的入口开关行。 */
   readonly generalRow: object;
+  /** 插件管理页 → dsh-project-mcp-manager 页面里的入口开关行。 */
+  readonly pluginEntries: object;
 }
 
 export function entryRegistrations(t: Translate, deps: EntriesRegistryDeps): EntryRegistrations {
@@ -81,6 +85,12 @@ export function entryRegistrations(t: Translate, deps: EntriesRegistryDeps): Ent
       name: "settings.general.item",
       id: ENTRIES_ROW_ID,
       order: 12,
+      locale: NS,
+      inject: () => ({ hooks: { entries: deps.entries }, save: deps.save })
+    },
+    pluginEntries: {
+      name: "plugins.bundle.config",
+      key: MANAGER_BUNDLE,
       locale: NS,
       inject: () => ({ hooks: { entries: deps.entries }, save: deps.save })
     }

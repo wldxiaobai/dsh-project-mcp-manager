@@ -30,7 +30,9 @@ No loader, service, CLI, API route, or config-file behavior changed.
   with one checkbox per entry; changes are drafted locally and written as one
   `configForms.mutate` on **Done**, and **Cancel** discards them. All three can
   be switched off because the General row is not one of them. Read-only pages
-  keep the checkboxes disabled with a note.
+  keep the checkboxes disabled with a note. The same row is also contributed to
+  the plugin manager's page for the bundle (`plugins.bundle.config`, keyed by
+  `dsh-project-mcp-manager`); both places edit one shared form.
 - **Current workspace header.** The panel starts with a **Current workspace**
   block: workspace name, full path, `N servers · M running · K waiting for a
   session · J disabled` (non-zero parts only), and the scope note. Multiple

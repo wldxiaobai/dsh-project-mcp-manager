@@ -73,6 +73,11 @@ the General row is not one of them and always stays as the way back. When the
 page has no write permission (for example a remote browser), the checkboxes are
 disabled and the dialog says so.
 
+The same row also appears on the manager bundle's page in the plugin manager
+(main sidebar **Plugins → `dsh-project-mcp-manager`**). Both places edit the
+same configuration, so a change saved in one is immediately reflected in the
+other.
+
 To hide the whole page, open the manager bundle's contained components in the
 plugin manager and switch off only `mcp-project-ui`, leaving `mcp-project`
 enabled. Alternatively, disable the UI row by its id in a profile patch

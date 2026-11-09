@@ -135,6 +135,7 @@ function harness(initialValue = {}) {
 const keys = (entries) => [...entries.keys()].sort();
 const ALL_KEYS = [
   "main:project-mcp",
+  "plugins.bundle.config:dsh-project-mcp-manager",
   "settings.general.item:mcp-entries",
   "settings.plugins.tab:projectMcp",
   "settings.section.icon:project-mcp",
@@ -148,7 +149,7 @@ const ALL_KEYS = [
   assert.deepEqual(keys(h.entries), ALL_KEYS, "all entries default to visible, plus the General row");
   assert.deepEqual(h.entries.get("settings.plugins.tab:projectMcp").options.label(), "t:tab");
   assert.deepEqual(h.entries.get("main:project-mcp").options.key, "project-mcp");
-  pass("apply registers three entries and the General row by default");
+  pass("apply registers three entries and both config rows by default");
 }
 
 {
@@ -162,10 +163,13 @@ const ALL_KEYS = [
   const row = h.entries.get("settings.general.item:mcp-entries").options.inject();
   assert.equal(typeof row.hooks.entries.getSnapshot, "function");
   assert.equal(typeof row.save, "function");
+  const pluginRow = h.entries.get("plugins.bundle.config:dsh-project-mcp-manager").options.inject();
+  assert.equal(pluginRow.hooks.entries, row.hooks.entries, "both rows share the one config form");
+  assert.equal(pluginRow.save, row.save, "both rows share the one write path");
   assert.equal(await row.save([{ op: "set", path: ["sidebar"], value: false }]), true);
   assert.deepEqual(h.mutations[0].ops, [{ op: "set", path: ["sidebar"], value: false }]);
   assert.equal(h.mutations[0].revision, 1, "the row writes against the snapshot revision");
-  pass("the page and the General row expose their inject faces");
+  pass("the page and both config rows expose their inject faces");
 }
 
 {
@@ -193,7 +197,7 @@ const ALL_KEYS = [
   const h = harness();
   client.apply(h.ctx);
   h.setValue({ sidebar: false, settingsSection: false, settingsTab: false });
-  assert.deepEqual(keys(h.entries), ["settings.general.item:mcp-entries"], "the General row always survives");
+  assert.deepEqual(keys(h.entries), ["plugins.bundle.config:dsh-project-mcp-manager", "settings.general.item:mcp-entries"], "both config rows always survive");
   h.setValue({ sidebar: true, settingsSection: true, settingsTab: true });
   assert.deepEqual(keys(h.entries), ALL_KEYS, "entries come back without a reload");
   pass("all three entries can be closed and restored");
@@ -224,7 +228,7 @@ const ALL_KEYS = [
   const h = harness();
   client.apply(h.ctx);
   for (const dispose of h.unsubscribers) dispose();
-  assert.deepEqual(keys(h.entries), ["settings.general.item:mcp-entries"], "controller-owned entries are released on teardown");
+  assert.deepEqual(keys(h.entries), ["plugins.bundle.config:dsh-project-mcp-manager", "settings.general.item:mcp-entries"], "controller-owned entries are released on teardown");
   pass("teardown releases every managed entry once");
 }
 

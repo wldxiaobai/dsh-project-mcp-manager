@@ -216,7 +216,7 @@ export const Config = Schema.object({
 | 卡片页 | 不采用 | `main` 选中即卸载会话，卡片背后不是会话；无法达成“不脱离当前会话” |
 | 面板挂载即弹 Modal + 交还会话 | 不采用 | 会话组件卸载重挂，滚动位置与输入焦点可能丢；首帧有风险 |
 | 从「更多」菜单弹 Modal | 延后 | 干净、能保留会话，但入口不是图标行；以后要浮层再考虑 |
-| `plugins.row.config` 插件页配置 | 不采用 | 用户选择“设置 → 通用”；插件页行配置路径更深 |
+| `plugins.row.config` 插件页配置 | 不采用 | 用户选择“设置 → 通用”；插件页行配置路径更深。v0.12.0 起另在 bundle 级 `plugins.bundle.config` 加了同一行，见 §11 |
 | localStorage | 不采用 | 桌面端每次启动端口可能变化，origin 变则配置丢失 |
 | 会话头部计数下拉（MCP · N） | 延后 | 本次只做页面抬头；需要把面板的数据订阅提成共享 store |
 | 工作区树的会话行标记 | 延后 | 每个会话行都标会显得吵，收益比不高 |
@@ -274,4 +274,8 @@ export const Config = Schema.object({
 - 测试：`test/test-ui-workspace.mjs`、`test/test-ui-entries.mjs`、
   `test/test-ui-client-wiring.mjs`（加载构建后的浏览器 bundle 驱动 `apply()`），
   并更新 `test/test-bundle.mjs` 与 `test/test-ui-lifecycle.mjs`。
+- 追加：同一个入口显隐行也注册到插件管理页的 `plugins.bundle.config`（key 为
+  bundle 包名 `dsh-project-mcp-manager`），显示在主页 →「插件」→
+  `dsh-project-mcp-manager` 页面；两处共用同一个表单与提交函数，行组件用
+  `variant="page"` 去掉通用行的分隔线。仍不采用 `plugins.row.config`。
 - 未做：真机点击回归；§8.1 的「Config 写入是否触发该行重载」未实测。

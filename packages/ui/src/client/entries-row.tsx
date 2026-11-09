@@ -1,4 +1,4 @@
-/** 设置 → 通用 里的一行：三个入口的显隐开关。弹窗里是草稿，点「完成」一次提交。 */
+/** 设置 → 通用 与插件管理页共用的一行：三个入口的显隐开关。弹窗里是草稿，点「完成」一次提交。 */
 import { useState } from "react";
 import { Button, Checkbox, IconWarningOutlineRegular, Modal } from "@deepseek-ai/dsh-client-ui-primitives";
 import {
@@ -18,9 +18,11 @@ export interface McpEntriesRowProps {
   useEntries: <S>(selector: (snapshot: EntriesFormSnapshot) => S) => S;
   /** 一次提交多个字段；返回宿主是否接受。 */
   save: (ops: readonly EntryOp[]) => Promise<boolean>;
+  /** `settings` 保留通用行的分隔线与内边距；`page` 作为插件页里的普通内容块。 */
+  variant?: "settings" | "page";
 }
 
-export function McpEntriesRow({ t, useEntries, save }: McpEntriesRowProps) {
+export function McpEntriesRow({ t, useEntries, save, variant = "settings" }: McpEntriesRowProps) {
   const snapshot = useEntries((value) => value);
   const flags = entryFlagsFromSnapshot(snapshot);
   const readOnly = entriesReadOnly(snapshot);
@@ -60,7 +62,7 @@ export function McpEntriesRow({ t, useEntries, save }: McpEntriesRowProps) {
   };
 
   return (
-    <div className="dsh-mcp-entries-row">
+    <div className={variant === "page" ? "dsh-mcp-entries-row dsh-mcp-entries-row-page" : "dsh-mcp-entries-row"}>
       <div className="dsh-mcp-entries-copy">
         <div className="dsh-mcp-entries-title">{t("entriesTitle")}</div>
         <div className="dsh-mcp-entries-description">{t("entriesHint")}</div>
@@ -94,4 +96,9 @@ export function McpEntriesRow({ t, useEntries, save }: McpEntriesRowProps) {
       </Modal>
     </div>
   );
+}
+
+/** 插件管理页 → dsh-project-mcp-manager 页面里的同一行，去掉通用行的分隔线与内边距。 */
+export function McpPluginEntriesRow(props: McpEntriesRowProps) {
+  return <McpEntriesRow {...props} variant="page" />;
 }
