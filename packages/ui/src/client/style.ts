@@ -61,6 +61,60 @@ export const PANEL_CSS = `
   line-height: 18px;
   color: var(--dsw-alias-label-tertiary);
 }
+/* 「当前工作区」抬头：平面文本块，不加卡片边框。 */
+.dsh-mcp-ui .workspace-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.dsh-mcp-ui .workspace-label {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsh-mcp-ui .workspace-name {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+  color: var(--dsw-alias-label-primary);
+  overflow-wrap: anywhere;
+}
+.dsh-mcp-ui .workspace-path {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--ds-font-family-code);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
+.dsh-mcp-ui .workspace-status {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
+.dsh-mcp-ui .workspace-note {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsh-mcp-ui .dsh-mcp-group-tag {
+  flex: none;
+}
+.dsh-mcp-ui .group-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
 .dsh-mcp-ui .groups {
   display: flex;
   flex-direction: column;

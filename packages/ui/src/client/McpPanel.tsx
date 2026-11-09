@@ -21,6 +21,7 @@ import { collapseServers, partitionShadowed, type LogicalServer } from "./collap
 import { displayHomePath, profileNameFromFile, serverActionsOpen } from "./display.ts";
 import { parsePastedConfig, type PasteConfigFailure } from "./paste-config.ts";
 import { addPathForTarget, badgeTone, confirmationDisplay, emptyDraft, partitionRows, profileEnd, validateAddDraft, type AddDraft, type AddScope } from "./panel-helpers.ts";
+import { orderWorkspaceGroups, workspaceGroupMarker, workspaceHeader, type WorkspaceGroupMarker } from "./workspace.ts";
 import { PANEL_CSS } from "./style.ts";
 
 export interface McpPanelProps {
@@ -139,6 +140,23 @@ function groupedLogical(rows: McpUiServer[], keyOf: (server: LogicalServer<McpUi
     else list.push(server);
   }
   return [...map.entries()];
+}
+
+/** 一个分组：标题是工作区路径或用户层文件；marker 只给工作区分组。 */
+interface DisplayGroup {
+  label: string;
+  servers: LogicalServer<McpUiServer>[];
+  marker?: WorkspaceGroupMarker;
+}
+
+function displayGroups(
+  groups: ReadonlyArray<readonly [string, LogicalServer<McpUiServer>[]]>,
+  markerOf?: (label: string, servers: LogicalServer<McpUiServer>[]) => WorkspaceGroupMarker | null
+): DisplayGroup[] {
+  return groups.map(([label, servers]) => {
+    const marker = markerOf?.(label, servers) ?? null;
+    return marker === null ? { label, servers } : { label, servers, marker };
+  });
 }
 
 export function McpPanel({ t }: McpPanelProps) {
@@ -369,9 +387,14 @@ export function McpPanel({ t }: McpPanelProps) {
 
   const homeDir = state?.homeDir;
   const showUserPath = (path: string) => displayHomePath(path, homeDir);
-  const { projectRows, userRows, profileBuckets } = partitionRows(state?.servers ?? []);
-  const projectGroups = groupedLogical(projectRows, (server) => server.winner.projectRoot);
-  const userGroups = groupedLogical(userRows, (server) => showUserPath(server.winner.filePath));
+  const servers = state?.servers ?? [];
+  const activeProject = state?.activeProject ?? null;
+  const { projectRows, userRows, profileBuckets } = partitionRows(servers);
+  const projectGroups = displayGroups(
+    orderWorkspaceGroups(groupedLogical(projectRows, (server) => server.winner.projectRoot), activeProject),
+    (label, groupServers) => workspaceGroupMarker(label, groupServers.map((server) => server.winner), activeProject)
+  );
+  const userGroups = displayGroups(groupedLogical(userRows, (server) => showUserPath(server.winner.filePath)));
   const profileTitle = (name: string) => name === "" ? t("profileLayerPlain") : t("profileLayer", { end: profileEnd(name, t) });
   const openLabel = (target: McpUiState["openTargets"][number]) => {
     if (target.source === "dsh-user-yml") return t("userFile");
@@ -391,6 +414,7 @@ export function McpPanel({ t }: McpPanelProps) {
 
   return (
     <div className="dsh-mcp-ui">
+      <WorkspaceHeader activeProject={activeProject} servers={servers} t={t} />
       <div className="intro">
         <p>{t("intro")}</p>
         <Tooltip label={t("introHelp")} side="right" portal maxWidth={420} openOnClick>
@@ -436,7 +460,7 @@ export function McpPanel({ t }: McpPanelProps) {
 
       <ServerGroups title={t("projectLayer")} groups={projectGroups} busy={busy} t={t} homeDir={homeDir} writeTargets={state?.writeTargets ?? []} onToggle={(row, enabled) => askOrRun({ kind: "server", action: enabled ? "enable" : "disable", row })} onRemove={(row) => askOrRun({ kind: "server", action: "remove", row })} onTools={(row) => void openTools(row)} />
       {profileBuckets.map(([name, rows]) => (
-        <ServerGroups key={name === "" ? "profile" : name} title={profileTitle(name)} groups={groupedLogical(rows, (server) => showUserPath(server.winner.filePath))} busy={busy} t={t} homeDir={homeDir} writeTargets={state?.writeTargets ?? []} onToggle={(row, enabled) => askOrRun({ kind: "server", action: enabled ? "enable" : "disable", row })} onRemove={(row) => askOrRun({ kind: "server", action: "remove", row })} onTools={(row) => void openTools(row)} />
+        <ServerGroups key={name === "" ? "profile" : name} title={profileTitle(name)} groups={displayGroups(groupedLogical(rows, (server) => showUserPath(server.winner.filePath)))} busy={busy} t={t} homeDir={homeDir} writeTargets={state?.writeTargets ?? []} onToggle={(row, enabled) => askOrRun({ kind: "server", action: enabled ? "enable" : "disable", row })} onRemove={(row) => askOrRun({ kind: "server", action: "remove", row })} onTools={(row) => void openTools(row)} />
       ))}
       <ServerGroups title={t("userLayer")} groups={userGroups} busy={busy} t={t} homeDir={homeDir} writeTargets={state?.writeTargets ?? []} onToggle={(row, enabled) => askOrRun({ kind: "server", action: enabled ? "enable" : "disable", row })} onRemove={(row) => askOrRun({ kind: "server", action: "remove", row })} onTools={(row) => void openTools(row)} />
 
@@ -593,7 +617,7 @@ export function McpPanel({ t }: McpPanelProps) {
 
 function ServerGroups({ title, groups, busy, t, homeDir, writeTargets, onToggle, onRemove, onTools }: {
   title: string;
-  groups: Array<[string, LogicalServer<McpUiServer>[]]>;
+  groups: DisplayGroup[];
   busy: boolean;
   t: McpPanelProps["t"];
   homeDir: string | undefined;
@@ -607,19 +631,49 @@ function ServerGroups({ title, groups, busy, t, homeDir, writeTargets, onToggle,
     <section className="section">
       <h3>{title}</h3>
       <div className="groups">
-        {groups.map(([label, servers]) => (
-          <div className="group" key={label}>
+        {groups.map((group) => (
+          <div className="group" key={group.label}>
             <div className="group-head">
               <IconFolderCloseRegular size={16} />
-              <span className="group-path" title={label}>{label}</span>
-              <span className="group-count">{t("serverCount", { count: servers.length })}</span>
+              <span className="group-path" title={group.label}>{group.label}</span>
+              <span className="group-count">{t("serverCount", { count: group.servers.length })}</span>
+              {group.marker !== undefined && (
+                <Tag className="dsh-mcp-group-tag" tone={group.marker === "current" ? "neutral" : "quiet"}>
+                  {group.marker === "current" ? t("workspaceCurrent") : t("workspaceIdle")}
+                </Tag>
+              )}
             </div>
-            {servers.map((server) => (
+            {group.marker === "idle" && <p className="group-note">{t("workspaceIdleHint")}</p>}
+            {group.servers.map((server) => (
               <ServerCard key={server.winner.source + server.winner.filePath + server.winner.serverName} server={server} busy={busy} locked={!serverActionsOpen(server.winner, writeTargets)} t={t} homeDir={homeDir} onToggle={(enabled) => onToggle(server.winner, enabled)} onRemove={() => onRemove(server.winner)} onTools={() => onTools(server.winner)} />
             ))}
           </div>
         ))}
       </div>
+    </section>
+  );
+}
+
+/** 「当前工作区」抬头：名称、路径、计数与范围说明。三个入口都渲染同一个面板，因此都带上这一块。 */
+function WorkspaceHeader({ activeProject, servers, t }: {
+  activeProject: string | null;
+  servers: McpUiServer[];
+  t: McpPanelProps["t"];
+}) {
+  const header = workspaceHeader(activeProject, servers);
+  return (
+    <section className="workspace-head">
+      <p className="workspace-label">{t("currentWorkspace")}</p>
+      <p className="workspace-name">{header.known ? header.name : t("workspaceUnknown")}</p>
+      {header.path !== null && <p className="workspace-path" title={header.path}>{header.path}</p>}
+      {header.segments.length > 0 && (
+        <p className="workspace-status">
+          {header.segments.map((segment, index) => (
+            <span key={segment.key}>{index === 0 ? "" : " · "}{t(segment.key, { count: segment.count })}</span>
+          ))}
+        </p>
+      )}
+      <p className="workspace-note">{header.known ? t("workspaceScopeNote") : t("workspaceUnknownHint")}</p>
     </section>
   );
 }

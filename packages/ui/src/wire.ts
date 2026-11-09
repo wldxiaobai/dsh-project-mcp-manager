@@ -50,6 +50,8 @@ export interface McpUiState {
   servers: McpUiServer[];
   openTargets: McpUiOpenTarget[];
   writeTargets: McpUiWriteTarget[];
+  /** 当前工作区（`writeTargets()` 的项目项）；多个工作区且尚无焦点时为 null。 */
+  activeProject: string | null;
   /** OS user home. The page uses it to show `~` for user and profile paths. */
   homeDir: string;
 }

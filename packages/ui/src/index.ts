@@ -185,11 +185,15 @@ function applyConnected(ctx: Context) {
 
   const state = async (): Promise<McpUiState> => {
     const snapshot = await mcp.snapshot();
+    const writeTargets = mcp.writeTargets();
     return {
       revision,
       servers: serversFrom(snapshot, mcp),
       openTargets: openTargetsFrom(snapshot, mcp),
-      writeTargets: mcp.writeTargets(),
+      writeTargets,
+      // 抬头与「添加 MCP」默认写入位置同源：有焦点时是当前工作区，只有一个已知
+      // 工作区时也是它，多个工作区且没有焦点时为空。
+      activeProject: writeTargets.find((target) => target.id === "project")?.projectRoot ?? null,
       homeDir: homedir()
     };
   };

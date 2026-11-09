@@ -104,7 +104,19 @@ export type McpUiLocaleKey =
   | "userFile"
   | "profileFile"
   | "profileFileNamed"
-  | "projectFile";
+  | "projectFile"
+  | "currentWorkspace"
+  | "workspaceUnknown"
+  | "workspaceUnknownHint"
+  | "workspaceScopeNote"
+  | "workspaceCurrent"
+  | "workspaceIdle"
+  | "workspaceIdleHint"
+  | "workspaceServerCountOne"
+  | "workspaceServerCount"
+  | "workspaceRunningCount"
+  | "workspaceWaitingCount"
+  | "workspaceDisabledCount";
 
 export const en: Record<McpUiLocaleKey, string> = {
   tab: "Plugin: MCP Manager",
@@ -210,7 +222,19 @@ export const en: Record<McpUiLocaleKey, string> = {
   userFile: "User mcp.yml",
   profileFile: "Profile mcp.yml",
   profileFileNamed: "Profile mcp.yml ({end})",
-  projectFile: "Workspace .dsh/mcp.yml"
+  projectFile: "Workspace .dsh/mcp.yml",
+  currentWorkspace: "Current workspace",
+  workspaceUnknown: "Current workspace not determined",
+  workspaceUnknownHint: "Open a session or send a message to determine it.",
+  workspaceScopeNote: "Only this workspace's servers are loaded; others load when you switch.",
+  workspaceCurrent: "Current",
+  workspaceIdle: "Idle",
+  workspaceIdleHint: "Loads when you switch to this workspace.",
+  workspaceServerCountOne: "1 server",
+  workspaceServerCount: "{count} servers",
+  workspaceRunningCount: "{count} running",
+  workspaceWaitingCount: "{count} waiting for a session",
+  workspaceDisabledCount: "{count} disabled"
 };
 
 export const zh: Record<McpUiLocaleKey, string> = {
@@ -317,5 +341,17 @@ export const zh: Record<McpUiLocaleKey, string> = {
   userFile: "用户层 mcp.yml",
   profileFile: "profile 层 mcp.yml",
   profileFileNamed: "profile 层 mcp.yml（{end}）",
-  projectFile: "工作区层 .dsh/mcp.yml"
+  projectFile: "工作区层 .dsh/mcp.yml",
+  currentWorkspace: "当前工作区",
+  workspaceUnknown: "当前工作区未确定",
+  workspaceUnknownHint: "打开一个会话或发送一条消息后确定。",
+  workspaceScopeNote: "只装载当前工作区的服务器；切到其它工作区后自动装载。",
+  workspaceCurrent: "当前",
+  workspaceIdle: "空闲",
+  workspaceIdleHint: "切到该工作区时装载。",
+  workspaceServerCountOne: "1 个服务器",
+  workspaceServerCount: "{count} 个服务器",
+  workspaceRunningCount: "{count} 运行中",
+  workspaceWaitingCount: "{count} 待会话",
+  workspaceDisabledCount: "{count} 已禁用"
 };

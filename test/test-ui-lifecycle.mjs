@@ -24,13 +24,14 @@ function pass(name) {
   console.log("PASS  " + name);
 }
 
-function mockProjectMcp() {
+function mockProjectMcp(options = {}) {
   const listeners = new Set();
   const counts = { subscribed: 0, unsubscribed: 0 };
+  let writeTargets = options.writeTargets ?? [];
   const service = {
-    snapshot: async () => [],
+    snapshot: async () => options.snapshot ?? [],
     managedPathFor: () => undefined,
-    writeTargets: () => [],
+    writeTargets: () => writeTargets,
     toolStates: () => [{ name: "mock-tool", enabled: true }],
     subscribeUpdated(callback) {
       listeners.add(callback);
@@ -45,6 +46,9 @@ function mockProjectMcp() {
     service,
     listeners,
     counts,
+    setWriteTargets(next) {
+      writeTargets = next;
+    },
     updated() {
       for (const listener of listeners) listener();
     }
@@ -204,7 +208,13 @@ async function assertClosed(stream) {
     assert.deepEqual(state.servers, []);
     assert.deepEqual(state.openTargets, []);
     assert.deepEqual(state.writeTargets, []);
+    assert.equal(state.activeProject, null, "no focused workspace is reported as null");
     assert.equal(typeof state.homeDir, "string");
+    mcp.setWriteTargets([{ id: "project", source: "dsh-project", projectRoot: "D:\\work", path: "D:\\work\\.dsh\\mcp.yml" }]);
+    const focused = await readState(connection);
+    assert.deepEqual(focused.writeTargets, [{ id: "project", source: "dsh-project", projectRoot: "D:\\work", path: "D:\\work\\.dsh\\mcp.yml" }]);
+    assert.equal(focused.activeProject, "D:\\work", "the active workspace follows the project write target");
+    mcp.setWriteTargets([]);
     const { route: toolRoute } = connection.routes.get("/api/project-mcp/tools");
     const invalid = await toolRoute.fetch(new Request("http://localhost" + toolRoute.path, {
       method: "POST", body: "{}", headers: { "content-type": "application/json" }
