@@ -8,7 +8,8 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import { openNativeTextFile } from "@deepseek-ai/dsh-native-command";
-import { serviceIdentityKeyOf, type McpRowSource, type ProjectFileState } from "dsh-project-mcp-manager";
+import Schema from "@deepseek-ai/schemastery";
+import { projectKeyOf, serviceIdentityKeyOf, type McpRowSource, type ProjectFileState } from "dsh-project-mcp-manager";
 import {
   MCP_UI_ADD_PATH,
   MCP_UI_OPEN_PATH,
@@ -26,6 +27,21 @@ import {
 export const name = "dsh-project-mcp-ui";
 /** projectMcp 是硬依赖；connection 在子作用域里等待，headless 下 UI 行仍可 active。 */
 export const inject = ["projectMcp"];
+
+/**
+ * 三个 UI 入口的显隐。三个默认值都是 true，与 v0.11.1 的行为一致。
+ * 值落宿主设置文档（`mcp-project-ui` 这一条），浏览器经 `ctx.configForms` 读写，
+ * 不写 profile patch。
+ *
+ * 三个字段都标 `.volatile()`：宿主只把 volatile 字段投影进设置表单
+ * （`settings.volatileForm`），不标的话这个命名空间不会出现在 `describe()` 里，
+ * 页面也就读不到、改不了。
+ */
+export const Config = Schema.object({
+  sidebar: Schema.boolean().default(true).volatile(),
+  settingsSection: Schema.boolean().default(true).volatile(),
+  settingsTab: Schema.boolean().default(true).volatile()
+});
 
 const YML_SOURCES = new Set<McpRowSource>(["dsh-project", "dsh-profile-user-yml", "dsh-user-yml"]);
 
@@ -62,6 +78,8 @@ function serverFrom(
     serverName: server.serverName,
     source,
     projectRoot: projectRoot === "" ? file.project : projectRoot,
+    // 项目身份一律由宿主按自己的平台算：浏览器只比较这个键，不猜路径规则。
+    projectKey: projectRoot === "" ? "" : projectKeyOf(projectRoot),
     filePath: file.path,
     managedPath,
     needsYmlTakeover: !YML_SOURCES.has(source),
@@ -185,11 +203,18 @@ function applyConnected(ctx: Context) {
 
   const state = async (): Promise<McpUiState> => {
     const snapshot = await mcp.snapshot();
+    const writeTargets = mcp.writeTargets();
+    // 抬头与「添加 MCP」默认写入位置同源：有焦点时是当前工作区，只有一个已知
+    // 工作区时也是它，多个工作区且没有焦点时为空。
+    const activeProject = writeTargets.find((target) => target.id === "project")?.projectRoot ?? null;
     return {
       revision,
       servers: serversFrom(snapshot, mcp),
       openTargets: openTargetsFrom(snapshot, mcp),
-      writeTargets: mcp.writeTargets(),
+      writeTargets,
+      activeProject,
+      // 身份键由宿主按 projectKeyOf() 算，浏览器拿到的是可直接比较的值。
+      activeProjectKey: activeProject === null ? null : projectKeyOf(activeProject),
       homeDir: homedir()
     };
   };

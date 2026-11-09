@@ -5,13 +5,13 @@ English | [中文](settings-ui.zh.md)
 [← README](../../README.md) ｜ Related: [configuration sources and layers](layers.md) · [configuration format](format.md) · [`${VAR}` expansion](env-expansion.md)
 
 The companion package `dsh-project-mcp-ui`, included in the default
-`dsh-project-mcp-manager` bundle, adds an **MCP Manager** page with two entries —
-one in the left sidebar and one in settings. It lists the servers the loader
-will run, shows whether each one is running, and lets you add, switch, and
-remove servers or single tools. Every change is written to a **managed
-`mcp.yml`**; the page never edits JSON files or the legacy `.mcp.json`. The
-loader does the rest through its normal file watch, so the page and the
-[CLI](cli.md) can be used side by side.
+`dsh-project-mcp-manager` bundle, adds an **MCP Manager** page with three entries —
+main sidebar, settings sidebar, and a Built-in plugins settings tab. It lists the servers
+the loader will run, shows whether each one is running, and lets you add,
+switch, and remove servers or single tools. Every change is written to a
+**managed `mcp.yml`**; the page never edits JSON files or the legacy
+`.mcp.json`. The loader does the rest through its normal file watch, so the page
+and the [CLI](cli.md) can be used side by side.
 
 ## Install
 
@@ -21,6 +21,10 @@ Install **only the manager** into the profile you use:
 dsh plugin --profile web add dsh-project-mcp-manager@latest
 dsh plugin --profile desktop add dsh-project-mcp-manager@latest
 ```
+
+The plugin is mounted through a **bundle patch**: once the package is in
+`dsh.profile.bundles`, dsh turns each bundle's patch (the `cordis.patch.yml`
+pointed to by `dsh.bundle.patch`) into plugin rows at startup, in order.
 
 The manager depends on `dsh-project-mcp-ui` at the **same exact version**, so
 the UI is installed automatically. Its default bundle contains `mcp-project`
@@ -49,23 +53,6 @@ registers no routes; only its connection-scoped integration waits,
 not the core loader or MCP mounting. The UI row can be active independently.
 Connection arrival registers that integration, and connection disposal cleans
 it up.
-
-There are two entries, both opening the same page:
-
-- **MCP Manager** in the left sidebar (中文界面：左侧栏「MCP 管理」). While the
-  sidebar is collapsed to the 56px rail only the icon shows; hover or keyboard
-  focus reveals the name. On narrow layouts or a collapsed macOS sidebar, expand
-  the sidebar first.
-- **Settings → Built-in plugins → Plugin: MCP Manager** (中文界面：设置 → 内置插件 →
-  插件：MCP 管理). Older hosts may label the middle item Plugins. The settings
-  surface floats over the session, so closing it returns you to where you were —
-  handy mid-conversation.
-
-To hide the page, open the manager bundle's contained components in the plugin
-manager and switch off only `mcp-project-ui`, leaving `mcp-project` enabled.
-Alternatively, disable the UI row by its id in a profile patch override. This
-stops the UI (both entries disappear) without
-stopping the loader; it does not remove the UI dependency.
 
 ### Migrating from a separately installed UI
 
@@ -97,6 +84,77 @@ loading the new manager bundle** with this profile patch row override:
 
 Disabling the old standalone bundle alone does not disable the manager's new
 UI component; without that override the default UI is enabled.
+
+## Entries
+
+There are three entries, all opening the same page:
+
+- **MCP Manager** in the left sidebar (中文界面：左侧栏「MCP 管理」). While the
+  sidebar is collapsed to the 56px rail only the icon shows; hover or keyboard
+  focus reveals the name. On narrow layouts or a collapsed macOS sidebar, expand
+  the sidebar first. This entry replaces the conversation column, so its title
+  row carries a **Back to current workspace** button; it returns to the
+  conversation surface without changing the current session.
+- **Settings → MCP Manager** in the settings sidebar (中文界面：设置 →「MCP 管理」).
+  The settings panel floats over the session, so closing it returns you to where
+  you were — handy mid-conversation.
+- **Settings → Built-in plugins → Plugin: MCP Manager** (中文界面：设置 → 内置插件 →
+  插件：MCP 管理). Older hosts may label the middle item Plugins.
+
+### Entry settings
+
+Go to **Settings → General → MCP management page entries** and choose
+**Configure…**. The dialog has one checkbox each for the main sidebar, the
+settings sidebar, and the Built-in plugins tab. **Done** saves the dialog's
+changes; **Cancel** discards them. Changes made in another browser sync in too.
+
+- A save only writes the checkboxes you touched in this dialog. Settings changed
+  in another window at the same time are not rolled back; if you changed
+  nothing, **Done** just closes the dialog and writes nothing.
+- If the Host refuses the write (usually because another window saved first),
+  the dialog keeps your choices and says so. **Done** again retries against the
+  revision that just synced in and still writes only the fields you changed;
+  when both sides changed one field, the choice you just confirmed wins.
+- You can turn off all three entries. The General row is not one of them and
+  always stays, so you can turn entries back on.
+- The same row is on the main sidebar's **Plugins → `dsh-project-mcp-manager`**
+  page, and both places change the same setting. That page's README follows
+  the UI language: Chinese shows `docs/README.zh.md`, other languages show the
+  root `README.md`.
+- When the page has no write permission (for example a remote browser), the
+  checkboxes are disabled and the dialog says so.
+
+### Hiding the whole page
+
+Open the manager bundle's contained components in the plugin manager and
+switch off only `mcp-project-ui`, leaving `mcp-project` enabled. Alternatively,
+disable the UI row by its id in a profile patch override. This removes all
+three entries without stopping the loader; it does not remove the UI
+dependency.
+
+## Current workspace
+
+All three entries render the same panel, so all three open with the same
+**Current workspace** header. It answers "which workspace am I looking at?":
+
+- the **Current workspace** label;
+- the workspace name (the last path segment) and the full path on one line,
+  with the path ellipsized when long and shown in full on hover;
+- a status line — `N servers · M running · K waiting for a session · J disabled`
+  — with only the non-zero parts;
+- the note "Automatically loads the MCP servers of the workspace you are in."
+
+When the host cannot tell yet (several workspaces and no session focus), the
+name reads **Current workspace not determined**, the path is hidden, and the
+note becomes "Open a session or send a message to determine it." The counts
+cover only rows in that workspace; user and profile servers never count. Starting,
+failed, and other states are not listed separately but still count in the total.
+
+Workspace groups follow the same focus. The current group moves to the top and
+gets a **Current** tag; other groups that still have a row waiting for a
+session get an **Idle** tag and the sentence "Loads when you switch to this
+workspace." A row skipped for a more specific reason (a missing environment
+variable, a taken name, and so on) does not add the Idle tag.
 
 ## What the list shows
 

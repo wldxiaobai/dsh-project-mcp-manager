@@ -61,6 +61,70 @@ export const PANEL_CSS = `
   line-height: 18px;
   color: var(--dsw-alias-label-tertiary);
 }
+/* 「当前工作区」抬头：平面文本块，不加卡片边框。 */
+.dsh-mcp-ui .workspace-head {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.dsh-mcp-ui .workspace-label {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+/* 工作区名与完整路径同一行：名字保持原样，路径占余下宽度并省略。 */
+.dsh-mcp-ui .workspace-title {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+.dsh-mcp-ui .workspace-name {
+  flex: none;
+  max-width: 100%;
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+  color: var(--dsw-alias-label-primary);
+  overflow-wrap: anywhere;
+}
+.dsh-mcp-ui .workspace-path {
+  flex: 1 1 auto;
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--ds-font-family-code);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
+.dsh-mcp-ui .workspace-status {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
+.dsh-mcp-ui .workspace-note {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsh-mcp-ui .dsh-mcp-group-tag {
+  flex: none;
+}
+.dsh-mcp-ui .group-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
 .dsh-mcp-ui .groups {
   display: flex;
   flex-direction: column;
@@ -413,11 +477,67 @@ button.dsh-mcp-switch.dsh-mcp-switch-waiting[aria-checked="true"] > span {
   gap: 12px;
   max-width: 960px;
 }
+.dsh-mcp-page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
 .dsh-mcp-page-title {
   margin: 0;
   font-size: 20px;
   line-height: 28px;
   font-weight: 600;
   color: var(--dsw-alias-label-primary);
+}
+
+/* 设置 → 通用 的入口行：与内置行一样用底部分隔线，右侧只放一个按钮。 */
+.dsh-mcp-entries-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 16px 0;
+  border-bottom: 0.5px solid var(--dsw-alias-border-l2);
+}
+/* 插件管理页里的同一行：页面自己排间距，去掉通用行的分隔线和内边距。 */
+.dsh-mcp-entries-row-page {
+  padding: 0;
+  border-bottom: 0;
+}
+.dsh-mcp-entries-copy {
+  min-width: 0;
+}
+.dsh-mcp-entries-title {
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-primary);
+}
+.dsh-mcp-entries-description {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
+.dsh-mcp-entries-dialog {
+  width: min(440px, 100%);
+  font-family: var(--dsw-font-family);
+  color: var(--dsw-alias-label-primary);
+}
+.dsh-mcp-entries-options {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.dsh-mcp-entries-note {
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsh-mcp-entries-error {
+  margin-top: 12px;
 }
 `;

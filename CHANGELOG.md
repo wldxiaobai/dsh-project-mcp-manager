@@ -7,6 +7,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Workspace names avoid quadratic regex backtracking.** Display-name parsing
+  now scans trailing separators and locates the last path separator directly,
+  preserving existing names and root-path display while handling long separator
+  runs in linear time.
+- **Entry settings no longer overwrite concurrent edits.** The visibility
+  dialog (Settings → General and the plugin manager page) now keeps the
+  `revision` it read when it opened and passes it through to
+  `configForms.mutate` as the write fence; the wiring layer no longer swaps in
+  the latest revision. Only the fields the user toggled in that dialog are
+  submitted, so a stale draft cannot revert a checkbox changed in another
+  window. When the Host refuses the write, the draft is kept, the reloaded
+  revision becomes the next fence, and the dialog says that confirming again
+  writes only the fields the user changed.
+- **Workspace identity follows the host platform.** `McpUiState` now carries
+  `activeProjectKey` and every server row carries `projectKey`; both are
+  computed by the core `projectKeyOf()` (case-insensitive on Windows only). The
+  browser no longer lowercases paths or rewrites separators, so two
+  case-different POSIX workspaces stay separate in the current-workspace counts,
+  group markers, and group ordering. The package entry now also exports
+  `projectKeyOf`.
+- **Global rows no longer count as the current workspace.** `workspaceCounts()`
+  filters on `layer === "project"` instead of comparing `projectRoot` alone, so
+  user/profile rows (whose `projectRoot` is the config directory) are excluded
+  even when `DSH_HOME` or a profile directory happens to be the workspace root.
+
+## [0.12.0] - 2026-11-09
+
+Versioned together with `dsh-project-mcp-ui` 0.12.0. This source version and
+Git tag do not imply that either package has been published to npm.
+
+Host alignment is unchanged (dsh **0.2.2-rc.1** and later `0.2` releases).
+No loader, service, CLI, API route, or config-file behavior changed.
+
+### Added
+
+- **Settings sidebar entry.** `dsh-project-mcp-ui` now also registers
+  `settings.section` and `settings.section.icon` under the same `project-mcp`
+  id, rendering the existing `McpPanel` with no extra shell. Settings now has
+  three ways into the page: the main sidebar row and page, this settings
+  section, and the restored plugins tab.
+- **Per-entry visibility.** The `mcp-project-ui` host entry exports a
+  `Config` schema with `sidebar`, `settingsSection`, and `settingsTab`
+  booleans (all default `true`, all marked `.volatile()` so the host settings
+  form serves them without a plugin remount). A **Settings → General** row
+  (`settings.general.item`, id `mcp-entries`, order 12) opens a small dialog
+  with one checkbox per entry; changes are drafted locally and written as one
+  `configForms.mutate` on **Done**, and **Cancel** discards them. All three can
+  be switched off because the General row is not one of them. Read-only pages
+  keep the checkboxes disabled with a note. The same row is also contributed to
+  the plugin manager's page for the bundle (`plugins.bundle.config`, keyed by
+  `dsh-project-mcp-manager`); both places edit one shared form.
+- **Localised README in the plugin manager.** `locale/zh.json` declares
+  `meta.detail: docs/README.zh.md` and `locale/en.json` declares
+  `meta.detail: README.md`. The plugin manager picks the file by display
+  language (`zh-CN` → `zh` → `en`), so a Chinese UI reads the Chinese README
+  and every other language falls back to English. Both locale files and both
+  READMEs are packed.
+- **Current workspace header.** The panel starts with a **Current workspace**
+  block: workspace name, full path, `N servers · M running · K waiting for a
+  session · J disabled` (non-zero parts only), and the scope note. Multiple
+  workspaces without a focus show **Current workspace not determined** instead
+  of guessing. `McpUiState.activeProject` carries the same value the Add MCP
+  dialog writes to, so no service contract changed.
+- **Workspace group markers.** The active workspace group moves to the top and
+  gets a **Current** tag; other groups whose rows are waiting for a session get
+  an **Idle** tag and "Loads when you switch to this workspace." A more
+  specific skip reason never adds the Idle tag.
+- **Back button.** The main sidebar page's title row has **Back to current
+  workspace** (`ctx.layout.selectPanel(null)`). It returns to the conversation
+  surface without changing the current session and appears only on that entry.
+
+### Changed
+
+- The browser half injects `layout` and `configForms` in addition to `slots`
+  and `locale`. Deployments without the settings domain keep the UI plugin
+  inactive, the same way a missing settings slot package already behaved.
+- Entry registrations are installed and released through disposable
+  controllers. Closing the main entry first leaves the `main` panel (if it is
+  showing the page), then releases the sidebar row and page together; the
+  settings section releases its nav row and glyph together.
+- The UI package declares `@deepseek-ai/schemastery` for the new host `Config`.
+
 ## [0.11.1] - 2026-11-08
 
 Versioned together with `dsh-project-mcp-ui` 0.11.1. This source version and

@@ -150,5 +150,4 @@ If both plugins run in one host, the same `serverName` can be spawned twice.
 Prefer a single plugin per project, or keep this plugin on `.dsh/mcp.yml` and
 the other on `.dsh/mcp.json`. `globalNames()` only sees official loader patch
 rows, not tools the other plugin registered at runtime, so rename-to-avoid
-does not cover that other instance. See the README section
-[Coexistence with other MCP manager plugins](../../README.md#coexistence-with-other-mcp-manager-plugins).
+does not cover that other instance.

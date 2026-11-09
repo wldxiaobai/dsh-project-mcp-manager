@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
+import { createRequire } from "node:module";
 import { Context } from "@deepseek-ai/cordis";
 // The host entry imports ./wire.js, so exercise its compiled output after the root build.
 import * as ui from "../packages/ui/lib/index.js";
+import { projectKeyOf } from "../lib/index.js";
 
 // FiberState is a const enum in Cordis' public declarations, not a runtime export.
 const PENDING = 0;
@@ -18,19 +20,27 @@ const expectedRoutes = [
   ["/api/project-mcp/events", ["GET"]]
 ];
 
+// Keep deterministic UTF-16 code-unit order, independent of the host locale.
+function byCodeUnit(a, b) {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
 let passed = 0;
 function pass(name) {
   passed += 1;
   console.log("PASS  " + name);
 }
 
-function mockProjectMcp() {
+function mockProjectMcp(options = {}) {
   const listeners = new Set();
   const counts = { subscribed: 0, unsubscribed: 0 };
+  let writeTargets = options.writeTargets ?? [];
   const service = {
-    snapshot: async () => [],
+    snapshot: async () => options.snapshot ?? [],
     managedPathFor: () => undefined,
-    writeTargets: () => [],
+    writeTargets: () => writeTargets,
     toolStates: () => [{ name: "mock-tool", enabled: true }],
     subscribeUpdated(callback) {
       listeners.add(callback);
@@ -45,6 +55,9 @@ function mockProjectMcp() {
     service,
     listeners,
     counts,
+    setWriteTargets(next) {
+      writeTargets = next;
+    },
     updated() {
       for (const listener of listeners) listener();
     }
@@ -92,7 +105,7 @@ function connectionScope(ctx, uiFiber) {
 }
 
 function assertRoutes(connection) {
-  assert.deepEqual([...connection.routes.keys()].sort(), expectedRoutes.map(([path]) => path).sort());
+  assert.deepEqual([...connection.routes.keys()].sort(byCodeUnit), expectedRoutes.map(([path]) => path).sort(byCodeUnit));
   for (const [path, methods] of expectedRoutes) {
     const { route } = connection.routes.get(path);
     assert.deepEqual(route.methods, methods);
@@ -169,6 +182,17 @@ async function assertClosed(stream) {
 
 {
   assert.deepEqual(ui.inject, ["projectMcp"]);
+  // The host settings service only projects volatile Config fields into forms
+  // (`settings.volatileForm`); without this the three toggles are unreachable.
+  const requireFromUi = createRequire(new URL("../packages/ui/package.json", import.meta.url));
+  const Schema = requireFromUi("@deepseek-ai/schemastery");
+  const config = new Schema(ui.Config.toJSON());
+  assert.equal(config.type, "object");
+  assert.deepEqual(Object.keys(config.dict).sort(byCodeUnit), ["settingsSection", "settingsTab", "sidebar"]);
+  for (const key of ["sidebar", "settingsSection", "settingsTab"]) {
+    assert.equal(config.dict[key].meta.volatile, true, `${key} must be volatile`);
+    assert.equal(config.dict[key].meta.default, true, `${key} defaults to visible`);
+  }
   const ctx = new Context();
   const mcp = mockProjectMcp();
   const connection = mockConnection();
@@ -204,7 +228,16 @@ async function assertClosed(stream) {
     assert.deepEqual(state.servers, []);
     assert.deepEqual(state.openTargets, []);
     assert.deepEqual(state.writeTargets, []);
+    assert.equal(state.activeProject, null, "no focused workspace is reported as null");
+    assert.equal(state.activeProjectKey, null, "no focused workspace has no identity key");
     assert.equal(typeof state.homeDir, "string");
+    mcp.setWriteTargets([{ id: "project", source: "dsh-project", projectRoot: String.raw`D:\work`, path: String.raw`D:\work\.dsh\mcp.yml` }]);
+    const focused = await readState(connection);
+    assert.deepEqual(focused.writeTargets, [{ id: "project", source: "dsh-project", projectRoot: String.raw`D:\work`, path: String.raw`D:\work\.dsh\mcp.yml` }]);
+    assert.equal(focused.activeProject, String.raw`D:\work`, "the active workspace follows the project write target");
+    assert.equal(focused.activeProjectKey, projectKeyOf(String.raw`D:\work`),
+      "the workspace identity is the host's projectKeyOf(), not a browser-side guess");
+    mcp.setWriteTargets([]);
     const { route: toolRoute } = connection.routes.get("/api/project-mcp/tools");
     const invalid = await toolRoute.fetch(new Request("http://localhost" + toolRoute.path, {
       method: "POST", body: "{}", headers: { "content-type": "application/json" }
@@ -272,6 +305,56 @@ async function assertClosed(stream) {
     assert.equal(mcp.listeners.size, 0);
     assert.equal(mcpProvider.state, ACTIVE);
     pass("disposing headless UI prevents a later connection from resurrecting routes");
+  } finally {
+    await ctx.fiber.dispose();
+  }
+}
+
+{
+  // 每行的工作区身份也由宿主算：项目行给 projectKeyOf()，全局层给空串。
+  const ctx = new Context();
+  const snapshot = [
+    {
+      project: String.raw`D:\work`,
+      path: String.raw`D:\work\.dsh\mcp.yml`,
+      ok: true,
+      error: null,
+      source: "dsh-project",
+      servers: [
+        { serverName: "alpha", transport: "stdio", command: "npx", enabled: true, fiberPhase: "active", skipReason: null, toolCount: 2 }
+      ]
+    },
+    {
+      project: String.raw`C:\Users\me\.dsh\profiles\web`,
+      path: String.raw`C:\Users\me\.dsh\profiles\web\mcp.yml`,
+      kind: "global",
+      ok: true,
+      error: null,
+      source: "dsh-profile-user-yml",
+      servers: [
+        { serverName: "beta", transport: "streamable-http", url: "https://mcp.example/mcp", enabled: true, fiberPhase: "active", skipReason: null, toolCount: 1 }
+      ]
+    }
+  ];
+  const mcp = mockProjectMcp({ snapshot });
+  const connection = mockConnection();
+  try {
+    const mcpProvider = provide(ctx, "projectMcp", mcp.service);
+    const connectionProvider = provide(ctx, "connection", connection.service);
+    await mcpProvider;
+    await connectionProvider;
+    const uiFiber = ctx.plugin(ui);
+    await uiFiber;
+    await connectionScope(ctx, uiFiber).await();
+
+    const state = await readState(connection);
+    assert.equal(state.servers.length, 2);
+    assert.equal(state.servers[0].layer, "project");
+    assert.equal(state.servers[0].projectRoot, String.raw`D:\work`);
+    assert.equal(state.servers[0].projectKey, projectKeyOf(String.raw`D:\work`), "project rows carry the host project key");
+    assert.equal(state.servers[1].layer, "user");
+    assert.equal(state.servers[1].projectKey, "", "global rows have no workspace identity");
+    pass("state rows carry host-computed workspace keys and global rows stay empty");
   } finally {
     await ctx.fiber.dispose();
   }

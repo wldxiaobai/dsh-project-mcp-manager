@@ -104,12 +104,36 @@ export type McpUiLocaleKey =
   | "userFile"
   | "profileFile"
   | "profileFileNamed"
-  | "projectFile";
+  | "projectFile"
+  | "currentWorkspace"
+  | "workspaceUnknown"
+  | "workspaceUnknownHint"
+  | "workspaceScopeNote"
+  | "workspaceCurrent"
+  | "workspaceIdle"
+  | "workspaceIdleHint"
+  | "workspaceServerCountOne"
+  | "workspaceServerCount"
+  | "workspaceRunningCount"
+  | "workspaceWaitingCount"
+  | "workspaceDisabledCount"
+  | "backToWorkspace"
+  | "entriesTitle"
+  | "entriesHint"
+  | "entriesOpen"
+  | "entriesDialogTitle"
+  | "entriesSidebar"
+  | "entriesSettingsSection"
+  | "entriesSettingsTab"
+  | "entriesDone"
+  | "entriesReadOnly"
+  | "entriesWriteFailed"
+  | "entriesConflict";
 
 export const en: Record<McpUiLocaleKey, string> = {
   tab: "Plugin: MCP Manager",
   panelLabel: "MCP Manager",
-  intro: "MCP servers available right now.",
+  intro: "Configured MCP servers are listed here.",
   introHelp: "Adding, switching, and removing write to the mcp.yml managed by the mcp-manager plugin.\nFor a server read from another file, you confirm first, then the managed mcp.yml is written.",
   open: "MCP config",
   add: "Add MCP",
@@ -210,13 +234,37 @@ export const en: Record<McpUiLocaleKey, string> = {
   userFile: "User mcp.yml",
   profileFile: "Profile mcp.yml",
   profileFileNamed: "Profile mcp.yml ({end})",
-  projectFile: "Workspace .dsh/mcp.yml"
+  projectFile: "Workspace .dsh/mcp.yml",
+  currentWorkspace: "Current workspace",
+  workspaceUnknown: "Current workspace not determined",
+  workspaceUnknownHint: "Open a session or send a message to determine it.",
+  workspaceScopeNote: "Automatically loads the MCP servers of the workspace you are in.",
+  workspaceCurrent: "Current",
+  workspaceIdle: "Idle",
+  workspaceIdleHint: "Loads when you switch to this workspace.",
+  workspaceServerCountOne: "1 server",
+  workspaceServerCount: "{count} servers",
+  workspaceRunningCount: "{count} running",
+  workspaceWaitingCount: "{count} waiting for a session",
+  workspaceDisabledCount: "{count} disabled",
+  backToWorkspace: "Back to current workspace",
+  entriesTitle: "MCP management page entries",
+  entriesHint: "Choose where the MCP management page appears.",
+  entriesOpen: "Configure…",
+  entriesDialogTitle: "MCP management page entries",
+  entriesSidebar: "Main sidebar",
+  entriesSettingsSection: "Settings sidebar",
+  entriesSettingsTab: "Settings › Built-in plugins tab",
+  entriesDone: "Done",
+  entriesReadOnly: "This page cannot change these settings.",
+  entriesWriteFailed: "Couldn't save. Try again.",
+  entriesConflict: "These settings changed elsewhere. Press Done again to write only the fields you changed."
 };
 
 export const zh: Record<McpUiLocaleKey, string> = {
   tab: "插件：MCP 管理",
   panelLabel: "MCP 管理",
-  intro: "这里列出当前可用的 MCP 服务器。",
+  intro: "这里列出已配置的 MCP 服务器。",
   introHelp: "添加、开关和删除都会写入受 mcp-manager 插件管理的 mcp.yml。\n对从其他文件读到的服务器，改动前会先确认，再写入受管 mcp.yml。",
   open: "MCP 配置",
   add: "添加 MCP",
@@ -317,5 +365,29 @@ export const zh: Record<McpUiLocaleKey, string> = {
   userFile: "用户层 mcp.yml",
   profileFile: "profile 层 mcp.yml",
   profileFileNamed: "profile 层 mcp.yml（{end}）",
-  projectFile: "工作区层 .dsh/mcp.yml"
+  projectFile: "工作区层 .dsh/mcp.yml",
+  currentWorkspace: "当前工作区",
+  workspaceUnknown: "当前工作区未确定",
+  workspaceUnknownHint: "打开一个会话或发送一条消息后确定。",
+  workspaceScopeNote: "将自动装载当前所在工作区的 MCP 服务器。",
+  workspaceCurrent: "当前",
+  workspaceIdle: "空闲",
+  workspaceIdleHint: "切到该工作区时装载。",
+  workspaceServerCountOne: "1 个服务器",
+  workspaceServerCount: "{count} 个服务器",
+  workspaceRunningCount: "{count} 运行中",
+  workspaceWaitingCount: "{count} 待会话",
+  workspaceDisabledCount: "{count} 已禁用",
+  backToWorkspace: "回到当前工作区",
+  entriesTitle: "MCP 管理页入口",
+  entriesHint: "选择在哪些位置显示 MCP 管理页。",
+  entriesOpen: "设置…",
+  entriesDialogTitle: "MCP 管理页入口设置",
+  entriesSidebar: "主页左侧栏",
+  entriesSettingsSection: "设置页左侧栏",
+  entriesSettingsTab: "设置页「内置插件」标签页",
+  entriesDone: "完成",
+  entriesReadOnly: "当前页面没有修改权限。",
+  entriesWriteFailed: "保存失败，请重试。",
+  entriesConflict: "这些设置已在别处更新。再次点「完成」只会提交你改动过的项。"
 };
