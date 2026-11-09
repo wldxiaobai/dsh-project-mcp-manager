@@ -26,7 +26,7 @@ export function McpSidebarPage({ t, onBack }: McpSidebarPageProps) {
         <div className="dsh-mcp-page-head">
           <h1 className="dsh-mcp-page-title">{t("panelLabel")}</h1>
           {onBack !== undefined && (
-            <Button variant="outline" size="sm" type="button" icon={<IconChevronLeftOutlineMedium size={16} />} onClick={onBack}>
+            <Button variant="outline" size="md" type="button" icon={<IconChevronLeftOutlineMedium size={16} />} onClick={onBack}>
               {t("backToWorkspace")}
             </Button>
           )}
