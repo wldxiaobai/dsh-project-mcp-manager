@@ -2,7 +2,22 @@
 
 [← 记录索引](<../records.zh.md>) · [上一轮代码审查](<review-v0.9.0-to-v0.12.0.zh.md>)
 
-## 1. 范围与结论
+## 最新跟进：剩余 S1523 已移除字符串执行
+
+2026-11-10 后续查询[用户给出的新代码 issue 列表](<https://sonarcloud.io/project/issues?id=wldxiaobai_dsh-project-mcp-manager&pullRequest=29&s=IMPACT_RANK&sinceLeakPeriod=true&issueStatuses=OPEN%2CCONFIRMED>)，对应 [API](<https://sonarcloud.io/api/issues/search?componentKeys=wldxiaobai_dsh-project-mcp-manager&pullRequest=29&sinceLeakPeriod=true&issueStatuses=OPEN%2CCONFIRMED&ps=100&p=1&additionalFields=rules>) 的 `total=1`：仍为 `AaHBVPzPSIHBt2A01lxz` / `javascript:S1523`，定位到[接线测试](<../../test/test-ui-client-wiring.mjs>)中的 `new Function`。
+
+**复评结论**：未发现不可信数据进入执行器，首轮“不构成生产接口注入”的安全判断仍成立；但保留 `new Function` 并非唯一能测试真实 bundle 的方法。改用固定字面量路径的 `await import("../packages/ui/lib/client.js")`，让 Node 模块加载器加载同一份构建产物，去掉 `readFile` + 源码字符串执行。不使用 eval、Function、node:vm、data URL，也不添加扫描抑制。
+
+- 暂时设置 `globalThis.window.__ModuleLoader__` 捕获同一 wrapper 的注册，随后仍调用原 `factory` 并运行全部接线断言，未改成只测源码或伪造模块。
+- 在 `finally` 中恢复完整的原 `window` 属性描述符；原本没有该属性时删除，并用断言检查没有全局污染。
+- [正式测试命令](<../../package.json>)为该测试增加 `--disallow-code-generation-from-strings`，防止重新引入字符串执行。模块加载仍需信任仓库和构建产物，不将 import 描述为隔离沙箱。
+- 接线测试以单独 Node 进程运行，只需首次导入，标准 ESM 缓存不影响现有测试方式。
+- 定向测试在禁用字符串代码生成时 7 项全部通过；另以预先存在的不可写、可配置 `window` 属性启动，原描述符及对象身份均被还原。
+- 正式命令加入禁用选项后，再次执行 `pnpm test`（含 core/UI 构建），全部测试通过；`git diff --check` 通过。此次只调整测试装载与测试命令，不改生产装载器或浏览器 bundle。
+
+下面第 1–5 节保留首轮 86 项快照及当时处置作为历史记录；其中“85 项修改、1 项保留”和建议远端 False Positive 已由本节的代码调整取代。**现在原 86 项都有对应代码调整，但本轮尚未重新运行远端扫描，不声称 issue 已关闭或 Quality Gate 已通过。** 新查询带 `sinceLeakPeriod=true`，不能仅凭这一个过滤视图推断全项目所有历史问题已清零。此次 PR 元数据接口仍返回首轮提交信息，故不将其误写为本次新扫描提交。
+
+## 1. 范围与结论（首轮记录）
 
 - **处理日期**：2026-11-10（Asia/Shanghai）。
 - **来源**：[用户指定的 PR #29 issue 列表](<https://sonarcloud.io/project/issues?id=wldxiaobai_dsh-project-mcp-manager&pullRequest=29&issueStatuses=OPEN%2CCONFIRMED&s=IMPACT_RANK>)。

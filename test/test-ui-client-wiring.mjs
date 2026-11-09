@@ -7,7 +7,6 @@
  * the main page and the Settings → General row.
  */
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 
 // Keep deterministic UTF-16 code-unit order, independent of the host locale.
@@ -26,19 +25,29 @@ function pass(name) {
 const requireFromUi = createRequire(new URL("../packages/ui/package.json", import.meta.url));
 const react = requireFromUi("react");
 const jsxRuntime = requireFromUi("react/jsx-runtime");
-const source = await readFile(new URL("../packages/ui/lib/client.js", import.meta.url), "utf8");
+const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
 let definition;
-// The browser loader shim: evaluate the bundle with a `window` that captures
-// the module definition, then call its factory like the real loader does.
-// Only execute our fixed local build artifact, never request data or an arbitrary path.
-// This intentionally tests the browser module wrapper; node:vm is not a security boundary.
-new Function("window", source)({
-  __ModuleLoader__: {
-    load(candidate) {
-      definition = candidate;
+// Import the fixed local build artifact through Node's module loader, rather
+// than reading and executing source text. The shim only captures its wrapper.
+try {
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    writable: true,
+    value: {
+      __ModuleLoader__: {
+        load(candidate) {
+          definition = candidate;
+        }
+      }
     }
-  }
-});
+  });
+  await import("../packages/ui/lib/client.js");
+} finally {
+  if (windowDescriptor === undefined) delete globalThis.window;
+  else Object.defineProperty(globalThis, "window", windowDescriptor);
+}
+assert.deepEqual(Object.getOwnPropertyDescriptor(globalThis, "window"), windowDescriptor,
+  "the browser global shim must not leak beyond bundle loading");
 assert.equal(definition?.id, "dsh-project-mcp-ui", "the bundle declares its module identity");
 
 const stub = () => null;
