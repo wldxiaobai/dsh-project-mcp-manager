@@ -1,9 +1,12 @@
 /**
  * 「当前工作区」抬头与工作区分组标记的纯函数。数据只来自 `state.activeProject`
- * 与 `state.servers`，不读文件、不依赖 React。
+ * / `state.activeProjectKey` 与 `state.servers`，不读文件、不依赖 React。
  *
- * 当前工作区取 UI 宿主半区的 `writeTargets()` 项目项：有焦点时是当前工作区，
- * 只有一个已知工作区时也是它，多个工作区且无焦点时为空。
+ * 工作区身份一律用宿主算好的项目键（核心 `projectKeyOf()`：Windows 下小写化，
+ * POSIX 保持大小写）。浏览器不自己对路径做规范化：浏览器可能远程访问另一个
+ * 平台的宿主，用浏览器操作系统猜规则会把 POSIX 上大小写不同的两个工作区并成
+ * 一个。当前工作区取 UI 宿主半区的 `writeTargets()` 项目项：有焦点时是当前
+ * 工作区，只有一个已知工作区时也是它，多个工作区且无焦点时为空。
  */
 import type { McpUiLocaleKey } from "./locales.ts";
 import type { McpUiServer } from "../wire.ts";
@@ -37,17 +40,12 @@ export interface WorkspaceHeaderModel extends WorkspaceCounts {
 
 const EMPTY_COUNTS: WorkspaceCounts = { total: 0, running: 0, waiting: 0, disabled: 0 };
 
-/** 比较用的工作区路径：分隔符统一、去尾分隔符、忽略大小写（Windows 盘符与目录名不区分大小写）。 */
-export function normalizeProjectPath(path: string): string {
-  return path.trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+/** 两个工作区键相同才算同一个工作区；空键（全局层、未确定）永远不算。 */
+export function sameWorkspace(key: string | null | undefined, activeKey: string | null | undefined): boolean {
+  return key !== null && key !== undefined && key !== "" && key === activeKey;
 }
 
-export function sameProjectPath(left: string | null | undefined, right: string | null | undefined): boolean {
-  if (left == null || right == null || left === "" || right === "") return false;
-  return normalizeProjectPath(left) === normalizeProjectPath(right);
-}
-
-/** 路径最后一段作为工作区名；`D:\` 这类根路径退回去掉尾分隔符的形式。 */
+/** 路径最后一段作为工作区名；`D:\` 这类根路径退回去掉尾分隔符的形式。只用做显示。 */
 export function workspaceNameOf(projectRoot: string): string {
   const trimmed = projectRoot.trim().replace(/[\\/]+$/, "");
   if (trimmed === "") return projectRoot.trim();
@@ -55,15 +53,16 @@ export function workspaceNameOf(projectRoot: string): string {
   return parts[parts.length - 1] ?? trimmed;
 }
 
-/** 只统计属于当前工作区的行；运行中、待会话、已禁用互斥。 */
-export function workspaceCounts(servers: readonly McpUiServer[], activeProject: string | null): WorkspaceCounts {
-  if (activeProject === null || activeProject === "") return EMPTY_COUNTS;
+/** 只统计当前工作区的项目层行；运行中、待会话、已禁用互斥。全局层行不计入。 */
+export function workspaceCounts(servers: readonly McpUiServer[], activeProjectKey: string | null): WorkspaceCounts {
+  if (activeProjectKey === null || activeProjectKey === "") return EMPTY_COUNTS;
   let total = 0;
   let running = 0;
   let waiting = 0;
   let disabled = 0;
   for (const row of servers) {
-    if (!sameProjectPath(row.projectRoot, activeProject)) continue;
+    if (row.layer !== "project") continue;
+    if (!sameWorkspace(row.projectKey, activeProjectKey)) continue;
     total += 1;
     if (!row.enabled) {
       disabled += 1;
@@ -89,11 +88,15 @@ export function workspaceCountSegments(counts: WorkspaceCounts): WorkspaceCountS
 }
 
 /** 抬头模型：未确定时不给名称、路径和计数，由组件换成「未确定」文案。 */
-export function workspaceHeader(activeProject: string | null, servers: readonly McpUiServer[]): WorkspaceHeaderModel {
+export function workspaceHeader(
+  activeProject: string | null,
+  activeProjectKey: string | null,
+  servers: readonly McpUiServer[]
+): WorkspaceHeaderModel {
   if (activeProject === null || activeProject === "") {
     return { ...EMPTY_COUNTS, known: false, name: "", path: null, segments: [] };
   }
-  const counts = workspaceCounts(servers, activeProject);
+  const counts = workspaceCounts(servers, activeProjectKey);
   return {
     ...counts,
     known: true,
@@ -108,24 +111,24 @@ export function workspaceHeader(activeProject: string | null, servers: readonly 
  * 已有更具体的跳过原因（env-missing、env-invalid、name-taken 等）不覆盖这个判断。
  */
 export function workspaceGroupMarker(
-  projectRoot: string,
+  projectKey: string,
   rows: readonly Pick<McpUiServer, "skipReason">[],
-  activeProject: string | null
+  activeProjectKey: string | null
 ): WorkspaceGroupMarker | null {
-  if (sameProjectPath(projectRoot, activeProject)) return "current";
+  if (sameWorkspace(projectKey, activeProjectKey)) return "current";
   return rows.some((row) => row.skipReason === "idle") ? "idle" : null;
 }
 
-/** 当前工作区那一组置顶，其余保持原有顺序。 */
+/** 当前工作区那一组置顶，其余保持原有顺序。分组以宿主给的工作区键为键。 */
 export function orderWorkspaceGroups<T>(
   groups: ReadonlyArray<readonly [string, T]>,
-  activeProject: string | null
+  activeProjectKey: string | null
 ): Array<readonly [string, T]> {
-  if (activeProject === null || activeProject === "") return [...groups];
+  if (activeProjectKey === null || activeProjectKey === "") return [...groups];
   const current: Array<readonly [string, T]> = [];
   const rest: Array<readonly [string, T]> = [];
   for (const group of groups) {
-    if (sameProjectPath(group[0], activeProject)) current.push(group);
+    if (sameWorkspace(group[0], activeProjectKey)) current.push(group);
     else rest.push(group);
   }
   return [...current, ...rest];

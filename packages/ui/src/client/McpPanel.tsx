@@ -142,6 +142,28 @@ function groupedLogical(rows: McpUiServer[], keyOf: (server: LogicalServer<McpUi
   return [...map.entries()];
 }
 
+/** 一个工作区分组：键是宿主的工作区身份，标签是行上带原始大小写的路径。 */
+interface WorkspaceGroup {
+  readonly label: string;
+  readonly servers: LogicalServer<McpUiServer>[];
+}
+
+/**
+ * 项目层按宿主给的工作区键分组。用键而不是路径做分组键，同一工作区的不同
+ * 写法（尾分隔符、Windows 大小写）不会裂成两组，POSIX 上大小写不同的两个
+ * 工作区也不会被并成一组。
+ */
+function groupProjectRows(rows: McpUiServer[]): Array<readonly [string, WorkspaceGroup]> {
+  const map = new Map<string, WorkspaceGroup>();
+  for (const server of collapseServers(rows)) {
+    const key = server.winner.projectKey;
+    const group = map.get(key);
+    if (group === undefined) map.set(key, { label: server.winner.projectRoot, servers: [server] });
+    else group.servers.push(server);
+  }
+  return [...map.entries()];
+}
+
 /** 一个分组：标题是工作区路径或用户层文件；marker 只给工作区分组。 */
 interface DisplayGroup {
   label: string;
@@ -149,14 +171,8 @@ interface DisplayGroup {
   marker?: WorkspaceGroupMarker;
 }
 
-function displayGroups(
-  groups: ReadonlyArray<readonly [string, LogicalServer<McpUiServer>[]]>,
-  markerOf?: (label: string, servers: LogicalServer<McpUiServer>[]) => WorkspaceGroupMarker | null
-): DisplayGroup[] {
-  return groups.map(([label, servers]) => {
-    const marker = markerOf?.(label, servers) ?? null;
-    return marker === null ? { label, servers } : { label, servers, marker };
-  });
+function displayGroups(groups: ReadonlyArray<readonly [string, LogicalServer<McpUiServer>[]]>): DisplayGroup[] {
+  return groups.map(([label, servers]) => ({ label, servers }));
 }
 
 export function McpPanel({ t }: McpPanelProps) {
@@ -389,11 +405,12 @@ export function McpPanel({ t }: McpPanelProps) {
   const showUserPath = (path: string) => displayHomePath(path, homeDir);
   const servers = state?.servers ?? [];
   const activeProject = state?.activeProject ?? null;
+  const activeProjectKey = state?.activeProjectKey ?? null;
   const { projectRows, userRows, profileBuckets } = partitionRows(servers);
-  const projectGroups = displayGroups(
-    orderWorkspaceGroups(groupedLogical(projectRows, (server) => server.winner.projectRoot), activeProject),
-    (label, groupServers) => workspaceGroupMarker(label, groupServers.map((server) => server.winner), activeProject)
-  );
+  const projectGroups: DisplayGroup[] = orderWorkspaceGroups(groupProjectRows(projectRows), activeProjectKey).map(([key, group]) => {
+    const marker = workspaceGroupMarker(key, group.servers.map((server) => server.winner), activeProjectKey);
+    return marker === null ? { label: group.label, servers: group.servers } : { label: group.label, servers: group.servers, marker };
+  });
   const userGroups = displayGroups(groupedLogical(userRows, (server) => showUserPath(server.winner.filePath)));
   const profileTitle = (name: string) => name === "" ? t("profileLayerPlain") : t("profileLayer", { end: profileEnd(name, t) });
   const openLabel = (target: McpUiState["openTargets"][number]) => {
@@ -414,7 +431,7 @@ export function McpPanel({ t }: McpPanelProps) {
 
   return (
     <div className="dsh-mcp-ui">
-      <WorkspaceHeader activeProject={activeProject} servers={servers} t={t} />
+      <WorkspaceHeader activeProject={activeProject} activeProjectKey={activeProjectKey} servers={servers} t={t} />
       <div className="intro">
         <p>{t("intro")}</p>
         <Tooltip label={t("introHelp")} side="right" portal maxWidth={420} openOnClick>
@@ -655,12 +672,13 @@ function ServerGroups({ title, groups, busy, t, homeDir, writeTargets, onToggle,
 }
 
 /** 「当前工作区」抬头：名称、路径、计数与范围说明。三个入口都渲染同一个面板，因此都带上这一块。 */
-function WorkspaceHeader({ activeProject, servers, t }: {
+function WorkspaceHeader({ activeProject, activeProjectKey, servers, t }: {
   activeProject: string | null;
+  activeProjectKey: string | null;
   servers: McpUiServer[];
   t: McpPanelProps["t"];
 }) {
-  const header = workspaceHeader(activeProject, servers);
+  const header = workspaceHeader(activeProject, activeProjectKey, servers);
   return (
     <section className="workspace-head">
       <p className="workspace-label">{t("currentWorkspace")}</p>
