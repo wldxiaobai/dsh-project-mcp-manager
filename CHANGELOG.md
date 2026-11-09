@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Workspace names avoid quadratic regex backtracking.** Display-name parsing
+  now scans trailing separators and locates the last path separator directly,
+  preserving existing names and root-path display while handling long separator
+  runs in linear time.
 - **Entry settings no longer overwrite concurrent edits.** The visibility
   dialog (Settings → General and the plugin manager page) now keeps the
   `revision` it read when it opened and passes it through to

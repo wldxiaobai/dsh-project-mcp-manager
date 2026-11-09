@@ -47,10 +47,14 @@ export function sameWorkspace(key: string | null | undefined, activeKey: string 
 
 /** 路径最后一段作为工作区名；`D:\` 这类根路径退回去掉尾分隔符的形式。只用做显示。 */
 export function workspaceNameOf(projectRoot: string): string {
-  const trimmed = projectRoot.trim().replace(/[\\/]+$/, "");
-  if (trimmed === "") return projectRoot.trim();
-  const parts = trimmed.split(/[\\/]/);
-  return parts[parts.length - 1] ?? trimmed;
+  const trimmed = projectRoot.trim();
+  // Scan backwards: an unanchored /[\\/]+$/ retries every separator when a
+  // long run is followed by a non-separator, producing quadratic backtracking.
+  let end = trimmed.length;
+  while (end > 0 && (trimmed[end - 1] === "/" || trimmed[end - 1] === "\\")) end -= 1;
+  if (end === 0) return trimmed;
+  const separator = Math.max(trimmed.lastIndexOf("/", end - 1), trimmed.lastIndexOf("\\", end - 1));
+  return trimmed.slice(separator + 1, end);
 }
 
 /** 只统计当前工作区的项目层行；运行中、待会话、已禁用互斥。全局层行不计入。 */
