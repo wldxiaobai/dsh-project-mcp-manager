@@ -271,6 +271,7 @@ export const Config = Schema.object({
 - 三个入口：主页侧栏行 + `main`（返回按钮经 slot `inject` 传入）、设置页
   `settings.section` + `settings.section.icon`、`settings.plugins.tab`，外加
   `settings.general.item` 的显隐行（id `mcp-entries`、order 12）。
-- 测试：`test/test-ui-workspace.mjs`、`test/test-ui-entries.mjs`，
+- 测试：`test/test-ui-workspace.mjs`、`test/test-ui-entries.mjs`、
+  `test/test-ui-client-wiring.mjs`（加载构建后的浏览器 bundle 驱动 `apply()`），
   并更新 `test/test-bundle.mjs` 与 `test/test-ui-lifecycle.mjs`。
 - 未做：真机点击回归；§8.1 的「Config 写入是否触发该行重载」未实测。
