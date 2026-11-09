@@ -47,6 +47,7 @@
 - [7e0088d 至 804662f（审查落地复查）](code-review/ts-review-7e0088d-to-804662f.zh.md)
 - [feat/adapt-dsh-0.2.0-rc.2（v0.7.0）](code-review/review-feat-adapt-dsh-0.2.0-rc.2.zh.md)
 - [v0.9.0 至 v0.12.0](code-review/review-v0.9.0-to-v0.12.0.zh.md)
+- [SonarCloud PR #29 全部 issues 研判与修复](code-review/sonar-pr29.zh.md)
 
 ## 测试与维护
 
