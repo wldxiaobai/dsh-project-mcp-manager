@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-09
+
+Versioned together with `dsh-project-mcp-ui` 0.12.0. This source version and
+Git tag do not imply that either package has been published to npm.
+
+Host alignment is unchanged (dsh **0.2.2-rc.1** and later `0.2` releases).
+No loader, service, CLI, API route, or config-file behavior changed.
+
+### Added
+
+- **Settings sidebar entry.** `dsh-project-mcp-ui` now also registers
+  `settings.section` and `settings.section.icon` under the same `project-mcp`
+  id, rendering the existing `McpPanel` with no extra shell. Settings now has
+  three ways into the page: the main sidebar row and page, this settings
+  section, and the restored plugins tab.
+- **Per-entry visibility.** The `mcp-project-ui` host entry exports a
+  `Config` schema with `sidebar`, `settingsSection`, and `settingsTab`
+  booleans (all default `true`). A **Settings → General** row
+  (`settings.general.item`, id `mcp-entries`, order 12) opens a small dialog
+  with one checkbox per entry; changes are drafted locally and written as one
+  `configForms.mutate` on **Done**, and **Cancel** discards them. All three can
+  be switched off because the General row is not one of them. Read-only pages
+  keep the checkboxes disabled with a note.
+- **Current workspace header.** The panel starts with a **Current workspace**
+  block: workspace name, full path, `N servers · M running · K waiting for a
+  session · J disabled` (non-zero parts only), and the scope note. Multiple
+  workspaces without a focus show **Current workspace not determined** instead
+  of guessing. `McpUiState.activeProject` carries the same value the Add MCP
+  dialog writes to, so no service contract changed.
+- **Workspace group markers.** The active workspace group moves to the top and
+  gets a **Current** tag; other groups whose rows are waiting for a session get
+  an **Idle** tag and "Loads when you switch to this workspace." A more
+  specific skip reason never adds the Idle tag.
+- **Back button.** The main sidebar page's title row has **Back to current
+  workspace** (`ctx.layout.selectPanel(null)`). It returns to the conversation
+  surface without changing the current session and appears only on that entry.
+
+### Changed
+
+- The browser half injects `layout` and `configForms` in addition to `slots`
+  and `locale`. Deployments without the settings domain keep the UI plugin
+  inactive, the same way a missing settings slot package already behaved.
+- Entry registrations are installed and released through disposable
+  controllers. Closing the main entry first leaves the `main` panel (if it is
+  showing the page), then releases the sidebar row and page together; the
+  settings section releases its nav row and glyph together.
+- The UI package declares `@deepseek-ai/schemastery` for the new host `Config`.
+
 ## [0.11.1] - 2026-11-08
 
 Versioned together with `dsh-project-mcp-ui` 0.11.1. This source version and
