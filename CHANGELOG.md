@@ -37,6 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Lazy proxy context cost.** The visible `mcp_search`, `mcp_describe`, and
+  `mcp_call` definitions now count in the MCP total once as a shared proxy group,
+  not once per Lazy server. Lazy-only sessions keep the header tag; the breakdown
+  labels the group “Lazy proxies (shared)”. No discovery or connection is started
+  to calculate it. Hidden/deferred proxies and remote catalogs are not counted.
+
 - A new session whose first tool restriction cannot be applied now fails
   closed: all registered MCP tools are temporarily denied until the next
   successful sweep, instead of leaving the session able to see every

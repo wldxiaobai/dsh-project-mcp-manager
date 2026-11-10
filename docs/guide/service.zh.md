@@ -43,7 +43,8 @@
 
 `contextCost()` 读的是**会话作用域**已经暴露的那份工具 schema——也就是本插件
 `tools.restrict({ deny })` 与条目 `tools.allow` / `tools.deny` 过滤之后仍然可见的
-部分——把其中每个 `mcp__<生效名>__<工具>` 计价：
+部分——把其中每个 `mcp__<生效名>__<工具>`，以及可见的 `mcp_search`、
+`mcp_describe`、`mcp_call` 定义计价：
 
 ```text
 estTokens = ceil(JSON.stringify(tools).length / 4) + 4
@@ -53,6 +54,12 @@ estTokens = ceil(JSON.stringify(tools).length / 4) + 4
 宿主的上下文分解对上。它是**估算**，不是 provider 计数，也不含服务器
 `instructions`（那部分走系统提示，不在工具列表里）。标了 `deferLoading` 的工具
 不进本次请求，不计入。
+
+三个 Lazy 代理在 `servers` 里合成一个共享分项，保留名为 `[lazy proxies]`，并带可选
+`kind: "lazy-proxy"`；普通服务器不带 `kind`。按当前会话实际可见的定义只计一次，不随
+Lazy 服务器数量倍增，不连接服务器或计入内存中的远端目录。被 deny 的代理不计入；
+搜索、描述和调用结果属于消息历史，不在工具定义指标内。会话作用域查询不可用时，
+全局回退至少排除本插件按项目隔离隐藏的代理，但无法重建其它宿主策略。
 
 还没有会话时 `sessionId` 为 `null`，调用方据此区分「没有会话」与「有会话但没有
 MCP 工具」。分项按各自那一组单独计价，与总数可能差几个 token。结果自带

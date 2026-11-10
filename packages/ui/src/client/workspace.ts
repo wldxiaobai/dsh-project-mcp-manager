@@ -148,7 +148,7 @@ export interface ContextCostView {
   readonly percent: number | null;
   readonly level: McpUiContextCost["level"];
   /** 定义最大的几台服务器，供说明气泡分项列出。 */
-  readonly top: readonly { name: string; tools: number; tokens: string }[];
+  readonly top: readonly { name: string; kind?: "lazy-proxy"; tools: number; tokens: string }[];
 }
 
 /** 千位以上折成一位小数的 `k`；`3.0k` 写作 `3k`。 */
@@ -177,6 +177,7 @@ export function contextCostView(cost: McpUiContextCost | undefined, topCount = 3
     level: cost.level,
     top: cost.servers.slice(0, topCount).map((server) => ({
       name: server.name,
+      ...(server.kind === "lazy-proxy" ? { kind: server.kind } : {}),
       tools: server.tools,
       tokens: formatTokenCount(server.estTokens)
     }))

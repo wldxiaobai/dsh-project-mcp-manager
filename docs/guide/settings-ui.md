@@ -156,7 +156,11 @@ shows only the number; clicking it opens the detail:
   for tool schemas — not a provider count, and it excludes server
   `instructions` and conversation history;
 - the detail gives the share of the context window and the three largest
-  servers;
+  definition groups (servers or **Lazy proxies (shared)**);
+- visible `mcp_search`, `mcp_describe`, and `mcp_call` definitions count once as
+  shared Lazy overhead, not once per Lazy server. A Lazy-only session therefore
+  still shows the tag. Remote catalogs and search/describe/call results in message
+  history are not added to this tool-definition estimate;
 - at 5,000 the tag turns to the reminder colour and the detail suggests lazy
   loading; at 10,000 it turns to the warning colour and gains a warning icon.
   The number always stays visible, so colour is never the only signal, and the

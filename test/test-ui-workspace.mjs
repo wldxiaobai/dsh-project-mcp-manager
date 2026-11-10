@@ -232,6 +232,19 @@ test("contextCostView hides itself when there is no session or no MCP tool", () 
   assert.equal(contextCostView(cost({ tools: 0, servers: [] })), null, "a session without MCP tools shows nothing");
 });
 
+test("contextCostView includes a Lazy-only session and keeps the shared proxy marker", () => {
+  const view = contextCostView(cost({
+    tools: 3,
+    estTokens: 400,
+    servers: [{ name: "[lazy proxies]", kind: "lazy-proxy", tools: 3, estTokens: 400 }]
+  }));
+  assert.ok(view !== null, "a Lazy-only session still has MCP tool definitions");
+  assert.equal(view.tokens, "400");
+  assert.deepEqual(view.top, [{ name: "[lazy proxies]", kind: "lazy-proxy", tools: 3, tokens: "400" }]);
+  assert.equal(zh.contextCostLazyProxies, "Lazy 代理（共享）");
+  assert.equal(en.contextCostLazyProxies, "Lazy proxies (shared)");
+});
+
 test("contextCostView keeps the value short and the breakdown capped", () => {
   const view = contextCostView(cost({
     estTokens: 3400,

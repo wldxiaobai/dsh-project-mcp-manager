@@ -738,7 +738,11 @@ function ContextCostTag({ cost, warnTokens, alertTokens, t }: {
     share === ""
       ? t("contextCostHelpNoWindow", { tokens: cost.tokens })
       : t("contextCostHelp", { tokens: cost.tokens, share }),
-    ...cost.top.map((server) => t("contextCostServerLine", { name: server.name, count: server.tools, tokens: server.tokens })),
+    ...cost.top.map((server) => t("contextCostServerLine", {
+      name: server.kind === "lazy-proxy" ? t("contextCostLazyProxies") : server.name,
+      count: server.tools,
+      tokens: server.tokens
+    })),
     ...(cost.level === "alert"
       ? [t("contextCostAlert", { alert: formatTokenCount(alertTokens) })]
       : cost.level === "warn" ? [t("contextCostWarn", { warn: formatTokenCount(warnTokens) })] : [])

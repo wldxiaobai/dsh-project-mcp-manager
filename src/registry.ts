@@ -2946,7 +2946,8 @@ export class ProjectMcpRegistry {
 
   /**
    * 该会话可见的工具 schema。优先用 agent 作用域：那里已经扣掉本插件的 deny
-   * 与条目 allow/deny；作用域取不到时退回全局工具层（会偏大，但不至于没有数）。
+   * 与条目 allow/deny；作用域取不到时退回全局工具层（Eager 可能偏大），
+   * 但仍扣除本项目不可见的 Lazy 代理，不按配置数量合成 schema。
    */
   private schemasForAgent(agent: any): unknown[] {
     const scoped = agent?.ctx?.tools;
@@ -2960,7 +2961,10 @@ export class ProjectMcpRegistry {
     }
     try {
       const list = this.ctx?.tools?.schemas?.();
-      return Array.isArray(list) ? list : [];
+      if (!Array.isArray(list)) return [];
+      const project = this.agentProjects.get(agent?.id);
+      if (this.visibleLazyMounts(project).length > 0) return list;
+      return list.filter((schema) => !LAZY_TOOL_NAMES.some((name) => name === schemaToolId(schema)));
     } catch {
       return [];
     }

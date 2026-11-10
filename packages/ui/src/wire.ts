@@ -47,7 +47,7 @@ export interface McpUiContextCost {
   /** 模型上下文窗口；宿主不知道时省略。 */
   contextWindow?: number;
   /** 按估算 token 从大到小。 */
-  servers: { name: string; tools: number; estTokens: number }[];
+  servers: { name: string; kind?: "lazy-proxy"; tools: number; estTokens: number }[];
   warnTokens: number;
   alertTokens: number;
 }

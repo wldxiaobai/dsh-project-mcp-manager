@@ -48,7 +48,8 @@ trigger a reconcile. JSON files and `.mcp.json` are never written.
 
 `contextCost()` reads the tool schemas the **session scope** already exposes — the
 ones its `tools.restrict({ deny })` and the row `tools.allow` / `tools.deny`
-filters leave visible — and prices every `mcp__<effective>__<tool>` entry:
+filters leave visible — and prices every `mcp__<effective>__<tool>` entry plus
+any visible `mcp_search`, `mcp_describe`, and `mcp_call` definitions:
 
 ```text
 estTokens = ceil(JSON.stringify(tools).length / 4) + 4
@@ -59,6 +60,15 @@ so the number lines up with the host's own context breakdown for the MCP share.
 It is an **estimate**, not a provider count, and it excludes server
 `instructions` (those ride the system prompt, not the tool list). Tools marked
 `deferLoading` are skipped because they are not in the next request.
+
+The three Lazy proxies form one shared item in `servers`, with the reserved name
+`[lazy proxies]` and optional `kind: "lazy-proxy"`; ordinary server items omit
+`kind`. The item counts the actual visible definitions once, regardless of the
+number of Lazy servers. It does not connect to a server or price its cached remote
+catalog. Denied proxies are not counted; search/describe/call results in message
+history are outside this tool-definition metric. If the scoped schema query is
+unavailable, the global fallback at least removes proxies hidden by this plugin's
+project visibility; other host restrictions cannot be reconstructed there.
 
 `sessionId` is `null` when no session exists yet, which is how a caller tells
 "no session" from "a session with no MCP tools". Per-server totals are priced

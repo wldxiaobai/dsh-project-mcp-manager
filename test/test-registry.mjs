@@ -2643,6 +2643,26 @@ for await (const line of createInterface({ input: process.stdin })) {
     assert.ok(outsider.denies.some((deny) => deny.includes("mcp_call")));
     await assert.rejects(() => execute("mcp_call", { server: "demo", tool: "echo" }, outsider), /unavailable in this session/);
     assert.equal(await pathExists(trace), false, "cross-project rejection must happen before connecting");
+
+    // Count the actual registered proxy definitions without discovery/spawn.
+    const proxyChars = JSON.stringify([...registered.values()].map(({ name, description, parameters }) =>
+      ({ name, description, parameters }))).length;
+    const proxyCost = registry.contextCost(agent.id);
+    assert.equal(proxyCost.tools, 3);
+    assert.equal(proxyCost.chars, proxyChars);
+    assert.equal(proxyCost.estTokens, Math.ceil(proxyChars / 4) + 4);
+    assert.equal(proxyCost.servers.length, 1);
+    assert.equal(proxyCost.servers[0].kind, "lazy-proxy");
+    assert.equal(registry.contextCost(outsider.id).tools, 0, "global fallback excludes another project's denied proxies");
+    outsider.ctx.tools.schemas = () => { throw new Error("scope unavailable"); };
+    assert.equal(registry.contextCost(outsider.id).tools, 0, "a failing scoped view must not leak proxy cost across projects");
+    agent.ctx.tools.schemas = () => [];
+    assert.equal(registry.contextCost(agent.id).tools, 0, "a valid empty scoped view wins over the global catalog");
+    agent.ctx.tools.schemas = () => [...registered.values()].filter(({ name }) => name !== "mcp_call");
+    assert.equal(registry.contextCost(agent.id).tools, 2, "count only proxies still visible under host restrictions");
+    delete agent.ctx.tools.schemas;
+    assert.equal(await pathExists(trace), false, "context-cost reads never connect or discover a Lazy server");
+
     const [search] = await Promise.all([
       execute("mcp_search", { query: "fixture" }),
       execute("mcp_search", { server: "demo" })
@@ -2793,6 +2813,10 @@ await withLazyProjects({
   await registry.reconcileNow();
   assert.deepEqual([...registered.keys()], ["mcp_search", "mcp_describe", "mcp_call"]);
   assert.equal(ctx.mounts.length, 0, "Lazy rows must not mount the official client");
+  const aProxyCost = registry.contextCost(agentA.id);
+  const bProxyCost = registry.contextCost(agentB.id);
+  assert.equal(aProxyCost.tools, 3, "multiple Lazy servers still share three proxy definitions");
+  assert.deepEqual(aProxyCost.servers, bProxyCost.servers, "two projects share the same proxy schema cost, not per-server copies");
   assert.equal(await pathExists(traceFor("a-demo")), false, "startup must not spawn a Lazy server");
 
   const aViews = await viewsOf(projA);
@@ -2925,6 +2949,9 @@ await withLazyProjects({
   await switchAndVerify(agentA, projA);
   await switchAndVerify(agentB, projB);
   await switchAndVerify(agentA, projA);
+  // 常驻挂载后焦点切换不再卸载代理：两个会话各自仍计一组共享代理定义。
+  assert.equal(registry.contextCost(agentA.id).tools, 3, "resident mounts keep one shared proxy group visible to A after switches");
+  assert.equal(registry.contextCost(agentB.id).tools, 3, "resident mounts keep one shared proxy group visible to B after switches");
   await Promise.all(["a-shared", "b-beta"].map(async (label) => {
     const lines = await readTraceLines(traceFor(label));
     assert.equal(lines.filter((line) => line === `method:${label}:initialize`).length, 1, "switches reuse the same Lazy connection");

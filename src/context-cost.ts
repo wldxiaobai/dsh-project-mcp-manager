@@ -2,10 +2,12 @@
  * 会话级 MCP 工具定义的上下文占用估算（纯函数）。
  *
  * 输入是某个会话可见的工具 schema（`agent.ctx` 视角的 `tools.schemas()`，已经过
- * 本插件的 deny 与条目 allow/deny）。只统计 MCP 工具：`mcp__<生效名>__<工具>`。
+ * 本插件的 deny 与条目 allow/deny）。统计 `mcp__<生效名>__<工具>` 及可见的三个 Lazy 代理。
  * token 按 DSH token-meter 的同一口径估算：`ceil(JSON.stringify(tools).length / 4) + 4`，
  * 不是 provider 精确计数，也不含服务器 instructions。
  */
+
+import { LAZY_PROXY_GROUP_NAME, LAZY_TOOL_NAMES } from "./lazy/tool-names.js";
 
 export const MCP_TOOL_PREFIX = "mcp__";
 /** 提醒阈值：达到后抬头标签变为提醒色。 */
@@ -19,8 +21,10 @@ const BLOCK_OVERHEAD = 4;
 export type ContextCostLevel = "ok" | "warn" | "alert";
 
 export interface McpServerContextCost {
-  /** 生效名（工具名里 `mcp__` 与下一个 `__` 之间的部分）。 */
+  /** 服务器生效名；Lazy 公共代理使用保留的合成组名 `[lazy proxies]`。 */
   name: string;
+  /** 仅共享代理组设置；缺省仍为普通服务器，兼容既有调用方。 */
+  kind?: "lazy-proxy";
   tools: number;
   chars: number;
   estTokens: number;
@@ -105,6 +109,7 @@ export interface ContextCostInput {
 
 /**
  * 汇总一份会话工具视图里的 MCP 定义占用。`deferLoading` 的工具不进本次请求，不计。
+ * 共享 Lazy 代理按会话工具列表只计一组，不按服务器数量复制，也不连接/读取远端目录。
  * 总数按整组 schema 一次估算（与 DSH 对 `header.tools` 的口径一致），
  * 各服务器分别按自己那组估算，所以分项之和与总数可能差几个 token。
  */
@@ -115,7 +120,9 @@ export function mcpContextCost(input: ContextCostInput): McpContextCost {
   const all: unknown[] = [];
   for (const schema of input.schemas) {
     if ((schema as any)?.deferLoading === true) continue;
-    const server = mcpServerOfTool(toolNameOf(schema), input.knownServers);
+    const name = toolNameOf(schema);
+    const isLazyProxy = LAZY_TOOL_NAMES.some((proxy) => proxy === name);
+    const server = isLazyProxy ? LAZY_PROXY_GROUP_NAME : mcpServerOfTool(name, input.knownServers);
     if (server === undefined) continue;
     const facing = modelFacing(schema);
     all.push(facing);
@@ -125,7 +132,13 @@ export function mcpContextCost(input: ContextCostInput): McpContextCost {
   }
   const servers: McpServerContextCost[] = [...groups].map(([name, tools]) => {
     const chars = serializedLength(tools);
-    return { name, tools: tools.length, chars, estTokens: estimateSchemaTokens(chars) };
+    return {
+      name,
+      ...(name === LAZY_PROXY_GROUP_NAME ? { kind: "lazy-proxy" as const } : {}),
+      tools: tools.length,
+      chars,
+      estTokens: estimateSchemaTokens(chars)
+    };
   });
   servers.sort((a, b) => b.estTokens - a.estTokens || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   const chars = all.length === 0 ? 0 : serializedLength(all);
@@ -145,5 +158,5 @@ export function mcpContextCost(input: ContextCostInput): McpContextCost {
 
 /** 推送去重用的签名：只含会改变显示的字段。 */
 export function contextCostSignature(cost: McpContextCost): string {
-  return JSON.stringify([cost.sessionId, cost.estTokens, cost.contextWindow ?? null, cost.servers.map((s) => [s.name, s.tools, s.estTokens])]);
+  return JSON.stringify([cost.sessionId, cost.estTokens, cost.contextWindow ?? null, cost.servers.map((s) => [s.name, s.tools, s.estTokens, s.kind ?? null])]);
 }
