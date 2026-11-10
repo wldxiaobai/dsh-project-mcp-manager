@@ -98,6 +98,8 @@ export class LazyServer {
     let closing: Promise<void>;
     do {
       closing = this.closing;
+      // This is a generation fence, not independent work: a newer shutdown can
+      // replace the awaited promise. Never parallelize or skip this re-check.
       await abortable(closing, signal);
     } while (closing !== this.closing);
     signal.throwIfAborted();
@@ -171,6 +173,7 @@ export class LazyServer {
   dispose(): Promise<void> {
     this.disposed = true;
     clearTimeout(this.idleTimer);
-    return this.disposal ??= this.close();
+    this.disposal ??= this.close();
+    return this.disposal;
   }
 }
