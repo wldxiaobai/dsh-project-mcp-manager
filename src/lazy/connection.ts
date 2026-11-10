@@ -62,6 +62,21 @@ export class LazyServer {
       } } }
     });
     const abort = new AbortController();
+    // The SDK can close fire-and-forget on handshake failure. Its stdio close()
+    // clears the process handle before awaiting exit, so concurrent close calls
+    // would otherwise appear finished while a process is still starting/exiting.
+    const start = transport.start.bind(transport);
+    const close = transport.close.bind(transport);
+    let starting: Promise<void> | undefined;
+    let transportClosing = Promise.resolve();
+    transport.start = () => starting = Promise.resolve().then(() => {
+      abort.signal.throwIfAborted();
+      return start();
+    });
+    transport.close = () => transportClosing = transportClosing.catch(() => {}).then(async () => {
+      await starting?.catch(() => {});
+      await close();
+    });
     // Publish the generation before connect can settle or a transport callback runs.
     const connection: Connection = { client, transport, abort, ready: Promise.resolve(), requests: 0 };
     connection.ready = Promise.resolve().then(async () => {
@@ -138,12 +153,12 @@ export class LazyServer {
       this.connection = undefined;
       clearTimeout(this.idleTimer);
     }
-    connection.abort.abort();
     // During SDK auto negotiation client.transport is still undefined. Closing the
     // original transport is what cancels the disposable stdio sibling probe.
     const closeTransport = () => (connection.client.transport === undefined
       ? connection.transport.close() : connection.client.close()).catch(() => {});
     connection.shutdown = Promise.resolve().then(async () => {
+      connection.abort.abort();
       await closeTransport();
       await connection.ready.catch(() => {});
       // A connect racing the first close may have attached the transport meanwhile.
