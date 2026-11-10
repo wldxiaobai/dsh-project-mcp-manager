@@ -2,7 +2,7 @@
 
 English | [中文](service.zh.md)
 
-[← README](../../README.md) ｜ Related: [configuration sources and layers](layers.md) · [CLI `dsh-mcp`](cli.md) · [settings page](settings-ui.md)
+[← README](../../README.md) ｜ Related: [configuration sources and layers](layers.md) · [CLI `dsh-mcp`](cli.md) · [settings page](settings-ui.md) · [Lazy mode design record (Chinese)](../design/lazy-mcp.md)
 
 Other plugins and the companion UI read mount state through the cordis service
 `ctx.projectMcp`. The core service stays in-process: it emits when a reconcile
@@ -20,6 +20,7 @@ the SSE channel provided by the bundled companion UI.
 | `writeTargets()` | Managed yml locations the add dialog can write: the current workspace, the user layer, and the active profile. |
 | `addServer(source, projectRoot, draft)` | Appends one managed yml row from the form (creating the file when it is missing) and schedules a reconcile. Rejects a name already in that file and leaves the file unchanged. |
 | `setServerEnabled(source, projectRoot, rawName, enabled)` | Flips `disabled` on the managed yml row. For a row from another source, writes a full copy (enable) or a `disabled: true` placeholder (disable) to the managed yml of that scope. |
+| `setLoadingMode(source, projectRoot, rawName, mode)` | Writes `mode` (`eager` or `lazy`) into the managed yml row of that scope. A row from another source is copied in full when no managed row exists yet; the original JSON / `.mcp.json` file is not touched. `disabled` is preserved. Rejects a placeholder without a valid connection config and leaves the file unchanged. Schedules a reconcile and returns the path; it does not wait for that reconcile. |
 | `removeServer(source, projectRoot, rawName)` | Deletes the managed yml row, or leaves a `disabled: true` placeholder when a lower layer still has the same name or service identity. A row from another source gets a placeholder. |
 | `setToolEnabled(source, projectRoot, rawName, tool, enabled)` | Writes one exact tool name into the managed row's `tools.allow` / `tools.deny`. Glob characters are rejected. |
 | `toolStates(projectRoot, rawName)` | Registered tools (short names) and whether each is visible. Empty when the server is not active. |
@@ -29,14 +30,42 @@ the SSE channel provided by the bundled companion UI.
 | `subscribeUpdated(listener)` | Subscribes to the update signal described below; returns an unsubscribe function. |
 
 The server/tool mutation methods (`addServer`, `setServerEnabled`,
-`removeServer`, `setToolEnabled`) only touch the three managed yml files
-(workspace `.dsh/mcp.yml`, `~/.dsh/mcp.yml`,
+`setLoadingMode`, `removeServer`, `setToolEnabled`) only touch the three managed
+yml files (workspace `.dsh/mcp.yml`, `~/.dsh/mcp.yml`,
 `~/.dsh/profiles/<active>/mcp.yml`), validate the allowed target, and reject
-non-focused workspaces before any file changes. Each mutation schedules a
-reconcile. Path lookup and file preparation/opening do not imply those mutation
-checks or trigger a reconcile. JSON files and `.mcp.json` are never written.
+non-focused workspaces before any file changes. `setLoadingMode` also re-parses
+the selected row as a server input first; a placeholder without a valid
+connection config is rejected before the write. Each mutation schedules a
+reconcile after the file write; the method returns before that reconcile
+necessarily finishes. Call `reload()` when the next read must see the settled
+result. Path lookup and file preparation/opening do not imply those mutation checks or
+trigger a reconcile. JSON files and `.mcp.json` are never written.
 
 `snapshot()` / `serverView()` / `globalState()` do not emit.
+
+## Loading mode
+
+`McpLoadingMode` is `"eager" | "lazy"`. The field is optional everywhere;
+absent means Eager. `McpServerView.mode` is present only when the row sets
+`lazy` or `eager`; `McpAddDraft.mode` is optional and the add form sends it only
+for Lazy; `snapshot()` and `serverView()` expose it.
+
+`setLoadingMode()` only writes the managed yml. If the managed row exists, it
+replaces `config.mode`; if the row comes from JSON / `.mcp.json` and no managed
+row exists yet, it copies the full row into the managed yml and then writes
+`mode`, leaving the original file untouched. Before that write it re-parses the
+selected row as a server input; a placeholder without a valid connection config
+(for example a hand-written disabled row with only an id) is rejected and the
+file is left unchanged. It does not change `disabled`: a disabled row stays
+disabled. The target must be in `writeTargets()` — the current workspace, the
+user layer, or the active profile; another workspace is rejected before the
+write.
+
+The write schedules one `reconcileAll`, but the method itself does not wait for
+it. Call `reload()` when the next read must see the settled result. Runtime
+differences, the five-minute idle close, search fan-out, and limitations are in
+[configuration format](format.md#loading-mode) and the
+[Lazy mode design record (Chinese)](../design/lazy-mcp.md).
 
 ## Event
 
@@ -72,6 +101,8 @@ import {
   PROJECT_MCP_SERVICE,
   PROJECT_MCP_UPDATED_EVENT,
   type FiberPhaseView,
+  type McpAddDraft,
+  type McpLoadingMode,
   type McpRowSource,
   type McpScopeInfo,
   type McpServerRuntimeView,
@@ -90,6 +121,8 @@ import {
 `ProjectFileState` is what `snapshot()` returns. Each row is an
 `McpServerRuntimeView` (`McpServerView` plus `source`, `fiberPhase`,
 `skipReason`, and `toolCount`). `globalState()` returns `ProjectServerState`.
+`McpServerView.mode` is optional; absent means Eager. `McpAddDraft.mode` is also
+optional; the add form sends it only for Lazy.
 
 ## Semver for the companion UI
 
@@ -101,6 +134,14 @@ exported above follow semantic versioning **for the companion UI**:
 | patch | Fixes that keep the methods, the event, and the view shape. |
 | minor | Additive fields, methods, or events. |
 | major | Removals, renames, or a change in meaning. |
+
+`setLoadingMode` is a new method, and `McpLoadingMode`, `McpAddDraft.mode`, and
+`McpServerView.mode` are new types/fields: all are additive **minor** changes.
+An older UI still works and ignores `mode`; a newer UI that calls
+`setLoadingMode` requires the matching core, so an old core cannot be paired
+with the new UI. Both packages must be bumped and released together, never one
+alone. This source change does not bump the version; the release step performs
+the minor bump for both packages.
 
 The manager lists `dsh-project-mcp-ui` as a runtime dependency pinned to the
 **same exact version**. The UI keeps this package as a peer dependency at that

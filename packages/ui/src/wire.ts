@@ -12,6 +12,7 @@ export type McpUiLayer = "project" | "user";
 
 export interface McpUiServer {
   serverName: string;
+  mode?: "eager" | "lazy";
   source: string;
   /** 工作区路径，用于显示与写回请求。用户层 / profile 层是配置文件所在目录。 */
   projectRoot: string;

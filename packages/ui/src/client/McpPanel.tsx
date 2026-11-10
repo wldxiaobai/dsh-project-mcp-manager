@@ -30,6 +30,7 @@ export interface McpPanelProps {
 
 type Pending =
   | { kind: "server"; action: "enable" | "disable" | "remove"; row: McpUiServer }
+  | { kind: "server"; action: "mode"; row: McpUiServer; mode: "eager" | "lazy" }
   | { kind: "tool"; row: McpUiServer; tool: string; enabled: boolean };
 
 const SOURCE_LABEL: Record<string, string> = {
@@ -119,6 +120,7 @@ function runningLabel(count: number, t: McpPanelProps["t"]): string {
 function runtimeStatus(row: McpUiServer, t: McpPanelProps["t"]): RuntimeStatus {
   if (!row.enabled) return { label: t("statusOff"), detail: null, tone: "off" };
   if (row.fiberPhase === "failed") return { ...problemStatus(row.skipReason, t), tone: "error" };
+  if (row.active && row.mode === "lazy") return { label: t("statusLazyReady"), detail: null, tone: "waiting" };
   if (row.active) return { label: runningLabel(row.toolCount, t), detail: null, tone: "running" };
   if (row.fiberPhase === "loading") return { label: t("statusStarting"), detail: null, tone: "starting" };
   if (row.skipReason === "idle" || row.skipReason == null || row.skipReason === "" || row.fiberPhase === "pending" || row.fiberPhase === null) {
@@ -302,7 +304,8 @@ export function McpPanel({ t }: McpPanelProps) {
     if (next.kind === "tool") {
       await run({ ...common, tool: next.tool, enabled: next.enabled }, MCP_UI_TOOL_PATH);
     } else {
-      await run({ ...common, action: next.action === "remove" ? "remove" : next.action }, MCP_UI_SERVER_PATH);
+      const mode = next.action === "mode" ? { mode: next.mode } : {};
+      await run({ ...common, action: next.action, ...mode }, MCP_UI_SERVER_PATH);
     }
     setPending(null);
     if (toolsFor?.serverName === next.row.serverName) void openTools(next.row);
@@ -428,6 +431,7 @@ export function McpPanel({ t }: McpPanelProps) {
   const addPath = addPathForTarget(addTarget, showUserPath);
 
   const { removes: pendingRemoves, title: pendingTitle, will: pendingWill, wont: pendingWont } = confirmationDisplay(pending, showUserPath, t);
+  const changeMode = (row: McpUiServer, mode: "eager" | "lazy") => askOrRun({ kind: "server", action: "mode", row, mode });
 
   return (
     <div className="dsh-mcp-ui">
@@ -475,11 +479,11 @@ export function McpPanel({ t }: McpPanelProps) {
       {state === null && error === null && <p className="empty">{t("loading")}</p>}
       {state !== null && state.servers.length === 0 && <p className="empty">{t("empty")}</p>}
 
-      <ServerGroups title={t("projectLayer")} groups={projectGroups} busy={busy} t={t} homeDir={homeDir} writeTargets={state?.writeTargets ?? []} onToggle={(row, enabled) => askOrRun({ kind: "server", action: enabled ? "enable" : "disable", row })} onRemove={(row) => askOrRun({ kind: "server", action: "remove", row })} onTools={(row) => void openTools(row)} />
+      <ServerGroups title={t("projectLayer")} groups={projectGroups} busy={busy} t={t} homeDir={homeDir} writeTargets={state?.writeTargets ?? []} onMode={changeMode} onToggle={(row, enabled) => askOrRun({ kind: "server", action: enabled ? "enable" : "disable", row })} onRemove={(row) => askOrRun({ kind: "server", action: "remove", row })} onTools={(row) => void openTools(row)} />
       {profileBuckets.map(([name, rows]) => (
-        <ServerGroups key={name === "" ? "profile" : name} title={profileTitle(name)} groups={displayGroups(groupedLogical(rows, (server) => showUserPath(server.winner.filePath)))} busy={busy} t={t} homeDir={homeDir} writeTargets={state?.writeTargets ?? []} onToggle={(row, enabled) => askOrRun({ kind: "server", action: enabled ? "enable" : "disable", row })} onRemove={(row) => askOrRun({ kind: "server", action: "remove", row })} onTools={(row) => void openTools(row)} />
+        <ServerGroups key={name === "" ? "profile" : name} title={profileTitle(name)} groups={displayGroups(groupedLogical(rows, (server) => showUserPath(server.winner.filePath)))} busy={busy} t={t} homeDir={homeDir} writeTargets={state?.writeTargets ?? []} onMode={changeMode} onToggle={(row, enabled) => askOrRun({ kind: "server", action: enabled ? "enable" : "disable", row })} onRemove={(row) => askOrRun({ kind: "server", action: "remove", row })} onTools={(row) => void openTools(row)} />
       ))}
-      <ServerGroups title={t("userLayer")} groups={userGroups} busy={busy} t={t} homeDir={homeDir} writeTargets={state?.writeTargets ?? []} onToggle={(row, enabled) => askOrRun({ kind: "server", action: enabled ? "enable" : "disable", row })} onRemove={(row) => askOrRun({ kind: "server", action: "remove", row })} onTools={(row) => void openTools(row)} />
+      <ServerGroups title={t("userLayer")} groups={userGroups} busy={busy} t={t} homeDir={homeDir} writeTargets={state?.writeTargets ?? []} onMode={changeMode} onToggle={(row, enabled) => askOrRun({ kind: "server", action: enabled ? "enable" : "disable", row })} onRemove={(row) => askOrRun({ kind: "server", action: "remove", row })} onTools={(row) => void openTools(row)} />
 
       <Modal
         open={pending !== null}
@@ -541,6 +545,10 @@ export function McpPanel({ t }: McpPanelProps) {
           <div className="dsh-mcp-add-field">
             <label className="dsh-mcp-add-label" htmlFor="dsh-mcp-add-name">{t("addName")}</label>
             <Input id="dsh-mcp-add-name" className="dsh-mcp-add-input" value={draft.name} placeholder={t("addNamePlaceholder")} disabled={busy} autoComplete="off" spellCheck={false} data-modal-autofocus onChange={(event) => updateDraft({ name: event.target.value })} />
+          </div>
+          <div className="dsh-mcp-add-field">
+            <span className="dsh-mcp-add-label" aria-hidden="true">{t("loadingMode")}</span>
+            <LoadingMode value={draft.mode} disabled={busy} t={t} onChange={(mode) => updateDraft({ mode })} />
           </div>
           <div className="dsh-mcp-add-field">
             <span className="dsh-mcp-add-label" aria-hidden="true">{t("addTransport")}</span>
@@ -632,16 +640,29 @@ export function McpPanel({ t }: McpPanelProps) {
   );
 }
 
-function ServerGroups({ title, groups, busy, t, homeDir, writeTargets, onToggle, onRemove, onTools }: {
-  title: string;
-  groups: DisplayGroup[];
-  busy: boolean;
-  t: McpPanelProps["t"];
-  homeDir: string | undefined;
-  writeTargets: McpUiState["writeTargets"];
-  onToggle: (row: McpUiServer, enabled: boolean) => void;
-  onRemove: (row: McpUiServer) => void;
-  onTools: (row: McpUiServer) => void;
+function LoadingMode({ value, disabled, t, onChange }: {
+  readonly value: McpUiServer["mode"];
+  readonly disabled: boolean;
+  readonly t: McpPanelProps["t"];
+  readonly onChange: (mode: "eager" | "lazy") => void;
+}) {
+  return <SegmentedControl label={t("loadingMode")} value={value ?? "eager"} disabled={disabled} onChange={onChange} options={[
+    { value: "eager", label: t("loadingModeEager") },
+    { value: "lazy", label: t("loadingModeLazy") }
+  ]} />;
+}
+
+function ServerGroups({ title, groups, busy, t, homeDir, writeTargets, onToggle, onRemove, onTools, onMode }: {
+  readonly title: string;
+  readonly groups: DisplayGroup[];
+  readonly busy: boolean;
+  readonly t: McpPanelProps["t"];
+  readonly homeDir: string | undefined;
+  readonly writeTargets: McpUiState["writeTargets"];
+  readonly onToggle: (row: McpUiServer, enabled: boolean) => void;
+  readonly onRemove: (row: McpUiServer) => void;
+  readonly onTools: (row: McpUiServer) => void;
+  readonly onMode: (row: McpUiServer, mode: "eager" | "lazy") => void;
 }) {
   if (groups.length === 0) return null;
   return (
@@ -662,7 +683,7 @@ function ServerGroups({ title, groups, busy, t, homeDir, writeTargets, onToggle,
             </div>
             {group.marker === "idle" && <p className="group-note">{t("workspaceIdleHint")}</p>}
             {group.servers.map((server) => (
-              <ServerCard key={server.winner.source + server.winner.filePath + server.winner.serverName} server={server} busy={busy} locked={!serverActionsOpen(server.winner, writeTargets)} t={t} homeDir={homeDir} onToggle={(enabled) => onToggle(server.winner, enabled)} onRemove={() => onRemove(server.winner)} onTools={() => onTools(server.winner)} />
+              <ServerCard key={server.winner.source + server.winner.filePath + server.winner.serverName} server={server} busy={busy} locked={!serverActionsOpen(server.winner, writeTargets)} t={t} homeDir={homeDir} onToggle={(enabled) => onToggle(server.winner, enabled)} onRemove={() => onRemove(server.winner)} onTools={() => onTools(server.winner)} onMode={(mode) => onMode(server.winner, mode)} />
             ))}
           </div>
         ))}
@@ -698,15 +719,16 @@ function WorkspaceHeader({ activeProject, activeProjectKey, servers, t }: {
   );
 }
 
-function ServerCard({ server, busy, locked, t, homeDir, onToggle, onRemove, onTools }: {
-  server: LogicalServer<McpUiServer>;
-  busy: boolean;
-  locked: boolean;
-  t: McpPanelProps["t"];
-  homeDir: string | undefined;
-  onToggle: (enabled: boolean) => void;
-  onRemove: () => void;
-  onTools: () => void;
+function ServerCard({ server, busy, locked, t, homeDir, onToggle, onRemove, onTools, onMode }: {
+  readonly server: LogicalServer<McpUiServer>;
+  readonly busy: boolean;
+  readonly locked: boolean;
+  readonly t: McpPanelProps["t"];
+  readonly homeDir: string | undefined;
+  readonly onToggle: (enabled: boolean) => void;
+  readonly onRemove: () => void;
+  readonly onTools: () => void;
+  readonly onMode: (mode: "eager" | "lazy") => void;
 }) {
   const row = server.winner;
   const status = runtimeStatus(row, t);
@@ -746,7 +768,8 @@ function ServerCard({ server, busy, locked, t, homeDir, onToggle, onRemove, onTo
         {identityNames !== "" && <p className="shadow-note">{t("shadowedIdentityNote", { names: identityNames, winner: row.serverName })}</p>}
       </div>
       <div className="actions">
-        <Button variant="outline" size="sm" disabled={busy} onClick={onTools}>{t("tools")}</Button>
+        <LoadingMode value={row.mode} disabled={busy || locked} t={t} onChange={onMode} />
+        {row.mode !== "lazy" && <Button variant="outline" size="sm" disabled={busy} onClick={onTools}>{t("tools")}</Button>}
         <span className="danger-wrap" title={locked ? t("workspaceLocked") : undefined}>
           <Button className="danger" variant="ghost" size="sm" disabled={busy || locked} icon={<IconTrashOutlineRegular size={16} />} onClick={onRemove}>{t("remove")}</Button>
         </span>

@@ -118,6 +118,7 @@ const jsonReconnectSchema = z
  * `transport` 与 `httpUrl` 为原生/Gemini 方言别名，由 jsonEntryToInput 归一。
  */
 export const jsonServerEntrySchema = z.looseObject({
+  mode: z.enum(["eager", "lazy"]).optional(),
   type: z.string().optional(),
   transport: z.string().optional(),
   command: z.string().optional(),
@@ -150,6 +151,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 /** DSH 透传键：只在条目显式给出时并入输入（缺省由 mcpServerInputSchema 的 default 补）。 */
 function passthroughKeys(entry: JsonServerEntry): Record<string, unknown> {
   const out: Record<string, unknown> = {};
+  if (entry.mode !== undefined) out.mode = entry.mode;
   if (entry.toolCallTimeoutMs !== undefined) out.toolCallTimeoutMs = entry.toolCallTimeoutMs;
   if (entry.failOnStartupError !== undefined) out.failOnStartupError = entry.failOnStartupError;
   if (entry.maxInstructionBytes !== undefined) out.maxInstructionBytes = entry.maxInstructionBytes;

@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Per-server Lazy mode. The MCP Manager and project config support opt-in
+  discovery and invocation through three session-scoped proxies.
+- `projectMcp.setLoadingMode` and optional `mode` fields on drafts/views;
+  additive minor API changes require a synchronized manager/UI minor release.
+- Lazy lifecycle, two-project authorization, official naming parity and dependency
+  compatibility regression tests. See the [Gate 1 review](docs/code-review/pr30-lazy-gate1.zh.md).
+
+### Fixed
+
+- Lazy cancellation now releases the final waiter's pending connection without
+  cancelling other callers. Generation shutdown is serialized with reconnects,
+  including SDK stdio negotiation, idle close, mode changes and repeated disposal.
+- Discovery has a separate 30-second timeout, and MCP client metadata uses the
+  package version instead of a stale literal.
+- Invalid disabled placeholders cannot be turned into incomplete mode-only rows;
+  Lazy standby rows are not counted as running in the workspace header.
+
+### Architecture
+
+- Keep explicit SDK `@modelcontextprotocol/client@2.2.0` and environment-scrubbing
+  `@deepseek-ai/dsh-subprocess@0.2.2-rc.1` dependencies for the Lazy path. The
+  alternatives, naming-policy coupling and host-policy limitations are recorded
+  in the [design decision](docs/design/lazy-mcp.md). Dependency upgrades must pass
+  the compatibility and official public-bridge naming tests.
+
 ## [0.12.0] - 2026-11-10
 
 Versioned together with `dsh-project-mcp-ui` 0.12.0. This source version and

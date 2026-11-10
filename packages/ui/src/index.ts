@@ -76,6 +76,7 @@ function serverFrom(
   const managedPath = mcp.managedPathFor(source, projectRoot === "" ? file.project : projectRoot) ?? null;
   return {
     serverName: server.serverName,
+    ...(server.mode === undefined ? {} : { mode: server.mode }),
     source,
     projectRoot: projectRoot === "" ? file.project : projectRoot,
     // 项目身份一律由宿主按自己的平台算：浏览器只比较这个键，不猜路径规则。
@@ -158,6 +159,11 @@ function asString(value: unknown, label: string): string {
 function asTransport(value: unknown): "stdio" | "streamable-http" {
   if (value === "stdio" || value === "streamable-http") return value;
   throw new Error("传输只支持本地命令或远程地址");
+}
+
+function asLoadingMode(value: unknown): "eager" | "lazy" {
+  if (value === "eager" || value === "lazy") return value;
+  throw new Error("加载模式只支持 eager 或 lazy");
 }
 
 function optionalString(value: unknown, label: string): string | undefined {
@@ -256,6 +262,7 @@ function applyConnected(ctx: Context) {
         const path = await mcp.addServer(source, projectRoot, {
           serverName: asString(body.serverName, "serverName"),
           transport: asTransport(body.transport),
+          mode: body.mode === undefined ? undefined : asLoadingMode(body.mode),
           command: optionalString(body.command, "command"),
           args: optionalStringList(body.args, "args"),
           env: optionalStringMap(body.env, "env"),
@@ -281,6 +288,10 @@ function applyConnected(ctx: Context) {
             managedPath: mcp.managedPathFor(source, projectRoot) ?? null,
             filePath: typeof body.filePath === "string" ? body.filePath : ""
           });
+        }
+        if (action === "mode") {
+          const path = await mcp.setLoadingMode(source, projectRoot, rawName, asLoadingMode(body.mode));
+          return Response.json({ ok: true, path });
         }
         if (action !== "enable" && action !== "disable" && action !== "remove") throw new Error(`未知操作：${action}`);
         const path = action === "remove"

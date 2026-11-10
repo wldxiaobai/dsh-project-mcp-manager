@@ -2,13 +2,14 @@
 
 English | [中文](settings-ui.zh.md)
 
-[← README](../../README.md) ｜ Related: [configuration sources and layers](layers.md) · [configuration format](format.md) · [`${VAR}` expansion](env-expansion.md)
+[← README](../../README.md) ｜ Related: [configuration sources and layers](layers.md) · [configuration format](format.md) · [`${VAR}` expansion](env-expansion.md) · [Lazy mode design record (Chinese)](../design/lazy-mcp.md)
 
 The companion package `dsh-project-mcp-ui`, included in the default
 `dsh-project-mcp-manager` bundle, adds an **MCP Manager** page with three entries —
 main sidebar, settings sidebar, and a Built-in plugins settings tab. It lists the servers
 the loader will run, shows whether each one is running, and lets you add,
-switch, and remove servers or single tools. Every change is written to a
+switch, and remove servers; choose a per-server loading mode; or manage single
+tools. Every change is written to a
 **managed `mcp.yml`**; the page never edits JSON files or the legacy
 `.mcp.json`. The loader does the rest through its normal file watch, so the page
 and the [CLI](cli.md) can be used side by side.
@@ -140,7 +141,7 @@ All three entries render the same panel, so all three open with the same
 - the **Current workspace** label;
 - the workspace name (the last path segment) and the full path on one line,
   with the path ellipsized when long and shown in full on hover;
-- a status line — `N servers · M running · K waiting for a session · J disabled`
+- a status line — `N servers · M running · K on standby · J disabled`
   — with only the non-zero parts;
 - the note "Automatically loads the MCP servers of the workspace you are in."
 
@@ -149,6 +150,10 @@ name reads **Current workspace not determined**, the path is hidden, and the
 note becomes "Open a session or send a message to determine it." The counts
 cover only rows in that workspace; user and profile servers never count. Starting,
 failed, and other states are not listed separately but still count in the total.
+Active Lazy rows count as **on standby**, not running. This is a display
+projection: a Lazy row may already have an open on-demand connection; the card
+and header do not project connection state, so the standby count is not proof
+that no connection exists.
 
 Workspace groups follow the same focus. The current group moves to the top and
 gets a **Current** tag; other groups that still have a row waiting for a
@@ -188,6 +193,7 @@ through a confirmation (see below).
 | Status | Meaning |
 |---|---|
 | Running · N tools | Connected, tools registered. Green switch. |
+| Available on demand | Enabled Lazy row. Its on-demand connection is not projected and may already be open from a recent call; the next `mcp_search` / `mcp_describe` / `mcp_call` uses it, reconnecting if it was closed. |
 | Enabled · waiting for a session | Switched on but not mounted, e.g. no session in that workspace yet, or unmounted after the idle grace. White switch. |
 | Starting | Mount in progress. The page keeps refreshing until it settles. |
 | Failed to start | The connection failed. |
@@ -208,8 +214,9 @@ Choose **Add MCP**:
    profile cannot be resolved.
 2. **Name**: 1–32 letters, digits, `_` or `-`. A name already in that file is
    rejected and the file is left unchanged.
-3. **Type**: Local command (stdio) or Remote URL (Streamable HTTP).
-4. Local command: command, arguments (one per line), environment variables
+3. **Loading mode**: Eager (default) or Lazy; see [Loading mode](#loading-mode).
+4. **Type**: Local command (stdio) or Remote URL (Streamable HTTP).
+5. Local command: command, arguments (one per line), environment variables
    (one `KEY=value` per line). Remote URL: URL, headers (one `Name: value` per
    line). `${VAR}` references are written through literally and expanded at
    mount time ([`${VAR}` expansion](env-expansion.md)).
@@ -228,6 +235,44 @@ clipboard permission. The save location stays whatever is selected.
 The form does not cover `tools.allow`/`deny` patterns, `reconnect`,
 timeouts, or `maxInstructionBytes`. Use **MCP config** for those.
 
+## Loading mode
+
+Every server card has a **Loading mode** control: **Eager** (default) or
+**Lazy**; the add dialog has the same control. The choice is stored as
+`config.mode` in the managed yml; omitting it means Eager, and an explicit
+`config.mode: eager` is equivalent.
+
+- **Eager** keeps the existing behavior: the server connects when mounted and
+  each tool is registered in DSH. Use it for server instructions, DSH
+  Resources, host policies that target individual registered tool names, or the
+  **Manage tools** switches.
+- **Lazy** does not connect at mount. The first `mcp_search`, `mcp_describe`,
+  or `mcp_call` connects it; a `mcp_search` without `server` connects every
+  visible Lazy server in the session, which can be slow and can start several
+  processes at once. The connection caches the tool list and closes after five
+  idle minutes, when the row is unloaded, or when the mode changes. Cancelling
+  one proxy call does not cancel other callers sharing the connection; the last
+  cancelled waiter starts closing it. Lazy rows
+  show **Available on demand**; the **Manage tools** button is hidden because
+  no per-tool tools are registered. The page does not probe a Lazy server; a
+  failure surfaces only on the first search or call. Edit `tools.allow` /
+  `deny` in the row's source file, or switch to Eager for per-tool switches.
+- A mode change writes only the managed yml and does not enable a disabled row:
+  a disabled row stays disabled. If the target row has no valid connection
+  config (for example a hand-written disabled placeholder), the change is
+  rejected and the file is left unchanged. JSON files and `.mcp.json` are never
+  rewritten: the page asks for confirmation and writes a higher-priority
+  overlay in the managed yml of the same scope. The existing write-target rules
+  still apply (current workspace only; user and profile when resolvable).
+- Lazy is not a security boundary: a stdio command still starts on first use,
+  and `mcp_call` can invoke any tool that passes the row's `tools.allow` /
+  `deny` and is visible to the session. Host policies that target
+  `mcp__<server>__<tool>` names do not see Lazy tools; use Eager for those.
+- The complete set of differences (connection timing, instructions/Resources,
+  `reconnect`, `maxInstructionBytes`, timeouts) is in
+  [configuration format](format.md#loading-mode) and the
+  [Lazy mode design record (Chinese)](../design/lazy-mcp.md).
+
 ## MCP config
 
 The menu beside Add MCP opens a managed `mcp.yml` in the system's default
@@ -245,6 +290,7 @@ file is also selected in Explorer. Syntax is in [configuration format](format.md
 - **Manage tools**: lists the tools the running server registered, with one
   switch each. Switching writes the exact tool name into that row's
   `tools.allow` / `tools.deny`. A server that is not running shows no tools.
+  The button is hidden for Lazy rows (see [Loading mode](#loading-mode)).
 
 **Rows from JSON files or `.mcp.json`** are not edited in place. Every change
 first shows a confirmation, then writes a higher-priority row to the managed
@@ -259,7 +305,8 @@ yml of the same scope, and the original file stays unchanged:
 Enabling copies the whole entry; disabling or removing writes a
 `disabled: true` placeholder that holds the name (see
 [configuration sources and layers](layers.md) for how `disabled` shadows lower
-layers).
+layers). Changing the loading mode also writes the overlay and keeps the
+`disabled` state.
 
 **Workspace cards can only be changed for the current workspace.** Cards of
 other workspaces are greyed out ("This workspace cannot be edited right now").
@@ -268,7 +315,9 @@ User and profile cards are always editable.
 ## Security
 
 Adding a local-command server from this page is the same as writing a `stdio`
-row by hand: the dsh host spawns that command. The page's routes
-(`/api/project-mcp/*`) are served on the dsh connection, so anyone who can use
-this dsh web GUI can add and start servers through it. Treat access to the GUI
-as access to the managed config files.
+row by hand: the dsh host spawns that command. Lazy defers the connection, not
+the trust decision: the first search or call still starts the stdio command,
+and a search without `server` connects every visible Lazy server. The page's
+routes (`/api/project-mcp/*`) are served on the dsh connection, so anyone who
+can use this dsh web GUI can add and start servers through it. Treat access to
+the GUI as access to the managed config files.

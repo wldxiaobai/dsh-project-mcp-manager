@@ -293,8 +293,12 @@ const reconnectSchema = z.object({
   maxAttempts: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).default(DEFAULT_RECONNECT.maxAttempts)
 }).default({ ...DEFAULT_RECONNECT });
 
+export const mcpLoadingModeSchema = z.enum(["eager", "lazy"]);
+export type McpLoadingMode = z.infer<typeof mcpLoadingModeSchema>;
+
 export const stdioServerSchema = z.object({
   serverName: serverNameSchema,
+  mode: mcpLoadingModeSchema.optional(),
   transport: z.literal("stdio"),
   command: z.string().min(1),
   args: z.array(z.string()).default([]),
@@ -309,6 +313,7 @@ export const stdioServerSchema = z.object({
 
 export const httpServerSchema = z.object({
   serverName: serverNameSchema,
+  mode: mcpLoadingModeSchema.optional(),
   transport: z.literal("streamable-http"),
   url: z.string().refine(isUrlOrEnvRef, "url 必须是合法 URL 或含 ${VAR} 占位的串"),
   headers: secretMapSchema,
@@ -525,7 +530,7 @@ function instructionBytesField(input: McpServerInput): { maxInstructionBytes?: n
 }
 
 /** 面板输入 → 官方 @deepseek-ai/dsh-mcp-client 配置。 */
-export function toOfficialConfig(input: McpServerInput): Record<string, unknown> {
+export function toOfficialConfig(input: McpServerInput): import("@deepseek-ai/dsh-mcp-client").Config & Record<string, unknown> {
   const common = {
     serverName: input.serverName,
     toolCallTimeoutMs: input.toolCallTimeoutMs,
@@ -554,6 +559,7 @@ export function toOfficialConfig(input: McpServerInput): Record<string, unknown>
 /** 输入 → cordis.patch.yml / 项目 mcp.yml 行。 */
 export function toPatchRow(input: McpServerInput, enabled = true): PatchRow {
   const config = toOfficialConfig(input);
+  if (input.mode !== undefined) config.mode = input.mode;
   if (input.tools !== undefined) config.tools = input.tools;
   return {
     id: rowIdForServerName(input.serverName),
@@ -596,6 +602,7 @@ export function configFromPatchRow(row: PatchRow | undefined): Record<string, un
 
 export interface McpServerView {
   serverName: string;
+  mode?: McpLoadingMode;
   transport: McpTransport | "unknown";
   enabled: boolean;
   entryId: string | undefined;
@@ -692,6 +699,7 @@ export function patchRowToView(row: PatchRow, scope?: McpScopeInfo, effectiveSer
   return {
     serverName,
     transport,
+    ...(config.mode === "lazy" || config.mode === "eager" ? { mode: config.mode } : {}),
     enabled: row.disabled !== true,
     entryId: row.id,
     ...(scope === undefined ? {} : { scope }),
@@ -717,6 +725,7 @@ export function inputFromPatchRow(row: PatchRow): McpServerInput {
   const serverName = asString(config.serverName, serverNameFromRowId(row.id) ?? "");
   const common = {
     serverName,
+    ...(config.mode === undefined ? {} : { mode: config.mode }),
     toolCallTimeoutMs: asNumber(config.toolCallTimeoutMs, DEFAULT_TOOL_CALL_TIMEOUT_MS),
     failOnStartupError: asBoolean(config.failOnStartupError, false),
     ...(typeof config.maxInstructionBytes === "number" ? { maxInstructionBytes: config.maxInstructionBytes } : {}),

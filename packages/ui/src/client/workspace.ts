@@ -15,7 +15,7 @@ export interface WorkspaceCounts {
   /** 该工作区里的全部行，含启动中、失败等不单列的状态。 */
   readonly total: number;
   readonly running: number;
-  /** 已启用但还在等会话（`skipReason === "idle"`）。 */
+  /** 已启用待使用：active Lazy（可按需连接）或 idle（等会话）。 */
   readonly waiting: number;
   readonly disabled: number;
 }
@@ -57,7 +57,10 @@ export function workspaceNameOf(projectRoot: string): string {
   return trimmed.slice(separator + 1, end);
 }
 
-/** 只统计当前工作区的项目层行；运行中、待会话、已禁用互斥。全局层行不计入。 */
+/**
+ * 只统计当前工作区的项目层行；运行中、待使用、已禁用互斥。全局层行不计入。
+ * Lazy 的 active 表示可按需使用，并非实际连接状态，归入 waiting。
+ */
 export function workspaceCounts(servers: readonly McpUiServer[], activeProjectKey: string | null): WorkspaceCounts {
   if (activeProjectKey === null || activeProjectKey === "") return EMPTY_COUNTS;
   let total = 0;
@@ -70,9 +73,9 @@ export function workspaceCounts(servers: readonly McpUiServer[], activeProjectKe
     total += 1;
     if (!row.enabled) {
       disabled += 1;
-    } else if (row.active) {
+    } else if (row.active && row.mode !== "lazy") {
       running += 1;
-    } else if (row.skipReason === "idle") {
+    } else if (row.active || row.skipReason === "idle") {
       waiting += 1;
     }
   }

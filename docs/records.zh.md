@@ -20,6 +20,7 @@
 - [JSON 配置层设计提案](design/proposal-json-mcp-config.md)
 - [运行时稳健性与 JSON 互通提案](design/proposal-runtime-robustness-and-json-interop.md)
 - [UI 入口与当前工作区提案](design/proposal-ui-entries-and-workspace.md)
+- [Lazy MCP 架构与依赖决策](design/lazy-mcp.md)
 
 ## 发布说明
 
@@ -48,6 +49,8 @@
 - [feat/adapt-dsh-0.2.0-rc.2（v0.7.0）](code-review/review-feat-adapt-dsh-0.2.0-rc.2.zh.md)
 - [v0.9.0 至 v0.12.0](code-review/review-v0.9.0-to-v0.12.0.zh.md)
 - [SonarCloud PR #29 全部 issues 研判与修复](code-review/sonar-pr29.zh.md)
+- [PR #30 Lazy MCP Gate 1 审查与修复](code-review/pr30-lazy-gate1.zh.md)
+- [SonarCloud PR #30 全部 33 项 issues 研判与必要修复](code-review/sonar-pr30.zh.md)
 
 ## 测试与维护
 

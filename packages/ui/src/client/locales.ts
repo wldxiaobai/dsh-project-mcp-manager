@@ -19,6 +19,10 @@ export type McpUiLocaleKey =
   | "addTransport"
   | "addTransportStdio"
   | "addTransportHttp"
+  | "loadingMode"
+  | "loadingModeEager"
+  | "loadingModeLazy"
+  | "statusLazyReady"
   | "addName"
   | "addNamePlaceholder"
   | "addCommand"
@@ -149,6 +153,10 @@ export const en: Record<McpUiLocaleKey, string> = {
   addTransport: "Type",
   addTransportStdio: "Local command",
   addTransportHttp: "Remote URL",
+  loadingMode: "Loading mode",
+  loadingModeEager: "Eager",
+  loadingModeLazy: "Lazy",
+  statusLazyReady: "Available on demand",
   addName: "Name",
   addNamePlaceholder: "gitlab",
   addCommand: "Command",
@@ -245,7 +253,7 @@ export const en: Record<McpUiLocaleKey, string> = {
   workspaceServerCountOne: "1 server",
   workspaceServerCount: "{count} servers",
   workspaceRunningCount: "{count} running",
-  workspaceWaitingCount: "{count} waiting for a session",
+  workspaceWaitingCount: "{count} on standby",
   workspaceDisabledCount: "{count} disabled",
   backToWorkspace: "Back to current workspace",
   entriesTitle: "MCP management page entries",
@@ -280,6 +288,10 @@ export const zh: Record<McpUiLocaleKey, string> = {
   addTransport: "类型",
   addTransportStdio: "本地命令",
   addTransportHttp: "远程地址",
+  loadingMode: "加载模式",
+  loadingModeEager: "直接加载",
+  loadingModeLazy: "按需加载",
+  statusLazyReady: "可按需连接",
   addName: "名称",
   addNamePlaceholder: "gitlab",
   addCommand: "命令",
@@ -376,7 +388,7 @@ export const zh: Record<McpUiLocaleKey, string> = {
   workspaceServerCountOne: "1 个服务器",
   workspaceServerCount: "{count} 个服务器",
   workspaceRunningCount: "{count} 运行中",
-  workspaceWaitingCount: "{count} 待会话",
+  workspaceWaitingCount: "{count} 待使用",
   workspaceDisabledCount: "{count} 已禁用",
   backToWorkspace: "回到当前工作区",
   entriesTitle: "MCP 管理页入口",

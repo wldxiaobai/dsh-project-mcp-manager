@@ -2,7 +2,7 @@
 
 [English](service.md) | 中文
 
-[← 返回 README](../README.zh.md) ｜ 相关：[配置来源与分层](layers.zh.md) · [CLI `dsh-mcp`](cli.zh.md) · [设置页](settings-ui.zh.md)
+[← 返回 README](../README.zh.md) ｜ 相关：[配置来源与分层](layers.zh.md) · [CLI `dsh-mcp`](cli.zh.md) · [设置页](settings-ui.zh.md) · [Lazy 设计记录](../design/lazy-mcp.md)
 
 其它插件和配套 UI 经 cordis 服务 `ctx.projectMcp` 读装载状态。核心服务只在进程内
 发事件：对账成功结束时通知一次，装载在那之后才完成时再通知一次。浏览器走 bundle
@@ -19,6 +19,7 @@
 | `writeTargets()` | 添加对话框当前能写的受管 yml：当前工作区、用户层、当前 profile。 |
 | `addServer(source, projectRoot, draft)` | 按表单追加一条受管 yml 行（没有文件就创建）并排一次对账。同名已在该文件里则拒绝，文件不动。 |
 | `setServerEnabled(source, projectRoot, rawName, enabled)` | 受管 yml 行就地翻 `disabled`。其它来源的行在同作用域受管 yml 里落一条：启用写完整拷贝，停用写 `disabled: true` 占位。 |
+| `setLoadingMode(source, projectRoot, rawName, mode)` | 把 `mode`（`eager`/`lazy`）写进该作用域的受管 yml 行。其它来源的行在受管 yml 还没有对应行时完整复制过去；原 JSON / `.mcp.json` 不动；`disabled` 保持原值。缺少有效连接配置的占位行会被拒绝，文件不动。写完排一次对账并返回文件路径，**不等待对账结束**。 |
 | `removeServer(source, projectRoot, rawName)` | 删掉受管 yml 行；低层还有同名或同服务身份时改留 `disabled: true` 占位。其它来源的行落一条占位。 |
 | `setToolEnabled(source, projectRoot, rawName, tool, enabled)` | 把一个精确工具名写进受管行的 `tools.allow` / `tools.deny`。含 glob 字符的拒绝。 |
 | `toolStates(projectRoot, rawName)` | 已注册工具（短名）与各自是否可见。服务器未 active 时为空。 |
@@ -27,13 +28,33 @@
 | `openConfigFile(source, projectRoot)` | 经宿主注入的 opener 打开受管 yml。 |
 | `subscribeUpdated(listener)` | 订阅下文的更新信号；返回退订函数。 |
 
-服务器与工具修改方法（`addServer`、`setServerEnabled`、`removeServer`、
-`setToolEnabled`）只碰三份受管 yml（工作区 `.dsh/mcp.yml`、`~/.dsh/mcp.yml`、
-`~/.dsh/profiles/<当前>/mcp.yml`），会校验允许的写入位置；非焦点工作区在改文件前
-拒绝。每次修改都排一次对账。路径查询、文件准备和打开接口不代表相同的修改权限
-检查，也不触发对账。JSON 文件与 `.mcp.json` 从不写。
+服务器与工具修改方法（`addServer`、`setServerEnabled`、`setLoadingMode`、
+`removeServer`、`setToolEnabled`）只碰三份受管 yml（工作区 `.dsh/mcp.yml`、
+`~/.dsh/mcp.yml`、`~/.dsh/profiles/<当前>/mcp.yml`），会校验允许的写入位置；非焦点
+工作区在改文件前拒绝。`setLoadingMode` 还会先把选中的行重新按服务器输入解析；没有
+有效连接配置的占位行在写盘前拒绝。每次修改都在写文件后排一次对账，返回时对账可能
+尚未完成；要等对账结束再读结果，调用 `reload()`。路径查询、文件准备和打开接口不代表
+相同的修改权限检查，也不触发对账。JSON 文件与 `.mcp.json` 从不写。
 
 `snapshot()` / `serverView()` / `globalState()` 不发事件。
+
+## 加载模式
+
+`McpLoadingMode` 是 `"eager" | "lazy"`。`mode` 在所有结构里都是可选字段，省略等价于
+`eager`：`McpServerView.mode` 只在行里显式写了 `lazy`/`eager` 时出现，
+`McpAddDraft.mode` 由添加表单按需携带（只在选 Lazy 时发送），`snapshot()` /
+`serverView()` 返回的视图会带上它。
+
+`setLoadingMode()` 只写受管 yml：受管行已存在时只替换 `config.mode`；行来自 JSON /
+`.mcp.json` 且受管 yml 还没有对应行时，把整行复制进受管 yml 再写 `mode`，原文件不动。
+写盘前会重新按服务器输入解析选中的行；没有有效连接配置的占位行（例如只有 id 的手写
+disabled 行）会被拒绝，文件保持不变。它不改 `disabled`：给停用行切模式，行仍然停用。
+目标位置必须是 `writeTargets()` 里的当前工作区 / 用户层 / 当前 profile；其它工作区
+在写文件前拒绝。
+
+写文件后排一次 `reconcileAll`，但方法本身不等待对账结束；要等对账完成再读结果，调用
+`reload()`。两种模式的运行差异、五分钟空闲关闭、搜索扇出和限制见
+[配置格式](format.zh.md#加载模式) 与 [Lazy 设计记录](../design/lazy-mcp.md)。
 
 ## 事件
 
@@ -64,6 +85,8 @@ import {
   PROJECT_MCP_SERVICE,
   PROJECT_MCP_UPDATED_EVENT,
   type FiberPhaseView,
+  type McpAddDraft,
+  type McpLoadingMode,
   type McpRowSource,
   type McpScopeInfo,
   type McpServerRuntimeView,
@@ -81,7 +104,8 @@ import {
 
 `snapshot()` 的元素类型是 `ProjectFileState`。每一行是 `McpServerRuntimeView`
 （`McpServerView` 再加 `source`、`fiberPhase`、`skipReason`、`toolCount`）。
-`globalState()` 返回 `ProjectServerState`。
+`globalState()` 返回 `ProjectServerState`。`McpServerView.mode` 可选；缺省表示 Eager。
+`McpAddDraft.mode` 同样可选，添加表单只在选 Lazy 时发送。
 
 ## 对配套 UI 的语义化版本
 
@@ -93,6 +117,12 @@ import {
 | patch | 修复，方法、事件和视图形状不变。 |
 | minor | 只增加字段、方法或事件。 |
 | major | 删除、改名，或改变含义。 |
+
+`setLoadingMode` 是新增方法，`McpLoadingMode`、`McpAddDraft.mode`、`McpServerView.mode`
+是新增类型/字段，按上表都属于 **minor** additive 变更。旧 UI 忽略 `mode` 字段仍然
+可用；新 UI 调用 `setLoadingMode` 时要求核心已经提供该方法，所以不能用旧核心配新
+UI。包含这些改动的两个包必须一起升版、一起发布，不能只升其中一个。本次源码改动不改
+版本号；发版时再按 minor 一起提升两个包。
 
 manager 以**同一精确版本**的运行时 dependency 依赖 `dsh-project-mcp-ui`；UI
 保留同一精确版本的 manager peer dependency。发布后的两份契约都不用 `^` 或

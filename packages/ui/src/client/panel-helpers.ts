@@ -9,6 +9,7 @@ export interface AddDraft {
   readonly scope: AddScope;
   readonly name: string;
   readonly transport: AddKind;
+  readonly mode?: "eager" | "lazy";
   readonly command: string;
   readonly args: string;
   readonly url: string;
@@ -83,6 +84,7 @@ export function validateAddDraft(draft: AddDraft, targets: readonly McpUiWriteTa
       projectRoot: target.projectRoot,
       serverName: name,
       transport: draft.transport === "http" ? "streamable-http" : "stdio",
+      ...(draft.mode === "lazy" ? { mode: draft.mode } : {}),
       ...fields.fields
     }
   };
@@ -116,7 +118,7 @@ export type ConfirmationCopy =
 
 export function confirmationCopy(pending: {
   readonly kind: "server" | "tool";
-  readonly action?: "enable" | "disable" | "remove";
+  readonly action?: "enable" | "disable" | "remove" | "mode";
   readonly row: Pick<McpUiServer, "serverName" | "needsYmlTakeover">;
 }, file: string, yml: string): ConfirmationCopy {
   if (pending.kind === "server" && pending.action === "remove" && !pending.row.needsYmlTakeover) {
@@ -129,7 +131,7 @@ type PanelTranslate = (key: McpUiLocaleKey, params?: Record<string, unknown>) =>
 
 export interface ConfirmationPending {
   readonly kind: "server" | "tool";
-  readonly action?: "enable" | "disable" | "remove";
+  readonly action?: "enable" | "disable" | "remove" | "mode";
   readonly row: Pick<McpUiServer, "serverName" | "needsYmlTakeover" | "layer" | "filePath" | "managedPath">;
 }
 

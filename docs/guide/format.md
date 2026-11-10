@@ -2,7 +2,7 @@
 
 English | [中文](format.zh.md)
 
-[← README](../../README.md) ｜ Related: [configuration sources and layers](layers.md) · [`${VAR}` expansion](env-expansion.md) · [CLI `dsh-mcp`](cli.md)
+[← README](../../README.md) ｜ Related: [configuration sources and layers](layers.md) · [`${VAR}` expansion](env-expansion.md) · [CLI `dsh-mcp`](cli.md) · [Lazy mode design record (Chinese)](../design/lazy-mcp.md)
 
 Two dialects are read by the plugin: the **native YAML managed block**
 (`<projectRoot>/.dsh/mcp.yml`, `~/.dsh/mcp.yml`, `~/.dsh/profiles/<name>/mcp.yml`)
@@ -12,6 +12,71 @@ file `<projectRoot>/.mcp.json`). Which file belongs to which layer is described
 in [configuration sources and layers](layers.md). The
 [settings page](settings-ui.md) writes only the managed yml files, through the
 same managed block and lock as the CLI.
+
+## Loading mode
+
+`mode` is an optional per-row field: `eager` (default) or `lazy`. Omit it for
+Eager. In native YAML it lives inside the row's `config`; in the JSON dialect
+it is a top-level entry key:
+
+```yaml
+    - id: panel-mcp-gitlab
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: gitlab
+        mode: lazy
+        transport: stdio
+        command: npx
+```
+
+```json
+{ "mcpServers": { "gitlab": { "mode": "lazy", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-gitlab"] } } }
+```
+
+`mode` is read by this plugin and is never passed to
+`@deepseek-ai/dsh-mcp-client`. `dsh-mcp` has no `--mode` flag; write the key in
+the file or use the [settings page](settings-ui.md#loading-mode). If the target
+row has no valid connection config (for example a hand-written disabled
+placeholder with only an id), changing `mode` is rejected and the file is left
+unchanged.
+
+| Aspect | `eager` | `lazy` |
+|---|---|---|
+| Connection at mount | yes | no; first proxy call |
+| Tool registration | every tool as `mcp__<effective>__<tool>` | no remote tools; the global `mcp_search` / `mcp_describe` / `mcp_call` proxies |
+| Server instructions / DSH Resources | yes | no; use Eager |
+| Host policies keyed by an individual registered tool name | yes | no; only the row's `tools.allow` / `deny` |
+| `reconnect` / `failOnStartupError` | official policy | not used; the next request retries |
+| `maxInstructionBytes` | enforced by the official client | ignored (instructions are not read) |
+| `toolCallTimeoutMs` | per tool call | per tool call; connection and listing use a fixed 30s discovery timeout, independent of this value |
+| Idle | connection stays | closes five minutes after the last request; a cancelled last waiter starts closing, and new opens wait for that barrier |
+
+A Lazy row makes no connection at mount. The first `mcp_search`,
+`mcp_describe`, or `mcp_call` connects it. A `mcp_search` without `server`
+connects every visible Lazy server in the session, so the first search can be
+slow and can start several processes at once; pass `server` to limit it to one.
+Concurrent requests share one connection; cancel affects only the caller that
+aborted, and other in-flight callers keep it. The last waiter's cancellation
+closes that generation, and closing/opening is serialized so it cannot race the
+next request. The tool list is cached per connection and invalidated on
+`list_changed`. The connection closes after five idle minutes, when the row is
+unloaded, when the mode changes, or when the plugin is disposed; the next
+request reconnects. A failed connection is retried on the next request and is
+reported as a generic `Unable to connect to the MCP server`, without transport
+details. The `server` argument of `mcp_search` is the **effective
+name** (the `server` field in results); a renamed project row may be
+`p<hash>_<original>`, not the `serverName` written in the file.
+
+The three proxies are registered only when at least one enabled Lazy row
+exists; a session with no visible Lazy mount denies them, so an Eager-only
+session sees no extra tools.
+
+Lazy applies the row's `tools.allow` / `deny` before search, describe, and call.
+Full `mcp__<effective>__<tool>` patterns use the same normalization as Eager
+(64-character limit, invalid characters replaced, a 12-hex hash when
+normalization is lossy), so one filter means the same thing in both modes. Use
+Eager when you need server instructions, DSH Resources, or host policies that
+target individual registered tool names.
 
 ## Native YAML: `<projectRoot>/.dsh/mcp.yml`
 
@@ -40,7 +105,8 @@ Uses the same managed-block format as the profile `cordis.patch.yml` (a YAML
 ```
 
 `transport` supports `stdio` (command/args/env/cwd) and `streamable-http`
-(url/headers). Add `disabled: true` to a line to deactivate it. Content outside
+(url/headers). Add `disabled: true` to a line to deactivate it. A line may also
+set `config.mode`; see [Loading mode](#loading-mode). Content outside
 the markers is preserved byte-for-byte.
 
 Per-entry tool visibility (stripped before `ctx.plugin`; deny wins):
@@ -60,7 +126,9 @@ bare tool name, or look up the effective name in `dsh-mcp get` / a snapshot.
 Illegal character classes (for example `[z-a]`) warn once per entry and never
 match, instead of failing silently. JSON also accepts Gemini's
 `includeTools` → `allow` and `excludeTools` → `deny`; if both the DSH `tools`
-object and those keys are present, `tools.allow` / `tools.deny` win.
+object and those keys are present, `tools.allow` / `tools.deny` win. Lazy rows
+use the same rules for their on-demand catalog; full-name matching uses the
+same effective name and normalization as [Loading mode](#loading-mode).
 
 **Divergences from the native cordis dialect**: the `!!js` tag (a js-yaml
 expression evaluated by the profile loader, e.g. the official README's
@@ -75,7 +143,9 @@ is the official cap on attributed server instructions, default 32768 when the
 key is omitted. An oversized instruction rejects that connection inside
 `dsh-mcp-client` (the row still activates when `failOnStartupError` is false,
 then follows the official reconnect loop). `dsh-mcp` has no flag for this
-field; write it in the file. The project file is otherwise a superset
+field; write it in the file. These instruction behaviors apply to Eager only;
+Lazy does not read instructions and does not enforce this cap (see
+[Loading mode](#loading-mode)). The project file is otherwise a superset
 grammar: `env`/`headers` accept `KEY: null` to delete a key (stripped at
 mount), which the official mcp-client schema rejects — such lines would fail
 if moved back to `cordis.patch.yml`.
@@ -105,9 +175,10 @@ Follows the ecosystem (Cursor / Claude Code's `mcpServers` shape):
   already speaks Streamable HTTP, change `type` to `"http"`; or drop `type`
   and keep `url` (this plugin infers streamable-http). There is no implicit
   fallback. The DSH passthrough keys
-  `toolCallTimeoutMs`/`failOnStartupError`/`maxInstructionBytes`/`reconnect`, `enabled: false`
+  `mode`/`toolCallTimeoutMs`/`failOnStartupError`/`maxInstructionBytes`/`reconnect`, `enabled: false`
   (silently skipped, claims no name) and `disabled: true` (claims its name but
-  is not mounted).
+  is not mounted). `mode` is `eager`/`lazy`, omitted means `eager`; see
+  [Loading mode](#loading-mode).
 - Unknown keys are tolerated and ignored; names must match
   `[A-Za-z0-9_-]{1,32}`; bad entries error per entry and do not affect the
   rest.
@@ -115,8 +186,8 @@ Follows the ecosystem (Cursor / Claude Code's `mcpServers` shape):
   other top-level keys and key order, but JSON has no comments, so formatting
   and comments are not preserved. The host side (the loader and the settings
   page) is **read-only** for JSON and never writes these files; editing a
-  JSON-sourced row in the settings page writes the managed yml of the same
-  scope instead.
+  JSON-sourced row in the settings page (including a loading-mode change)
+  writes the managed yml of the same scope instead.
 - `${VAR}` has the same semantics as every other source (expanded at mount
   time, see [`${VAR}` expansion](env-expansion.md)).
 
