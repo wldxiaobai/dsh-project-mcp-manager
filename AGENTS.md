@@ -29,6 +29,7 @@
 - `docs/`：按用途分目录——`guide/`（功能文档中英双版：`format.md`/`.zh.md` 配置格式、`layers.md`/`.zh.md` 七层来源与影子优先序、`env-expansion.md`/`.zh.md` `${VAR}` 展开、`cli.md`/`.zh.md` `dsh-mcp` CLI、`service.md`/`.zh.md` 查询面、`settings-ui.md`/`.zh.md` MCP 管理页使用指南、`how-it-works.md`/`.zh.md` 工作原理）、`records.md`/`.zh.md`（设计、发布、审查与测试记录索引）、`releases/`（`v0.3.1.md`、`v0.4.0.md`、`v0.4.1.md`、`v0.4.2.md`、`v0.4.3.md`、`v0.6.0.md`、`v0.7.0.md`、`v0.7.1.md`、`v0.7.2.md`、`v0.10.0.md`、`v0.11.0.md`、`v0.11.1.md`、`v0.12.0.md` 发布说明）、`design/`（`adaptation-dsh-0.2.2-rc.1.md` / `adaptation-dsh-0.2.1-rc.5.md` / `adaptation-dsh-0.2.1-rc.2.md` / `adaptation-dsh-0.1.5-rc2.md` / `adaptation-dsh-0.1.5-rc1.md` / `adaptation-dsh-0.1.2-rc1.md` 宿主适配记录、`proposal-json-mcp-config.md` JSON 层设计提案、`proposal-runtime-robustness-and-json-interop.md` 运行时稳健性与 JSON 互通提案、`proposal-ui-entries-and-workspace.md` UI 入口与当前工作区提案）；`docs/README.zh.md` 为中文 README。
 - `docs/testing/`：归档 npm 下载与实机验证结果、本地测试产物说明。一次性联调使用隔离临时目录，结束后清理；可复用脚本进入 `test/`，长期文档进入 `docs/`，不要将认证日志、安装依赖与浏览器缓存长期留在 `.dsh/`。`.dsh/skills/` 为 DSH 固定位置发现的 skill 定义，不因 Markdown 后缀移入文档目录。
 - `CHANGELOG.md`：版本变更记录（`[Unreleased]` 起累积）。
+- `CONTRIBUTING.md` / `CONTRIBUTING.zh.md`：面向外部贡献者的 PR 规范（中英双版，README 末尾「参与贡献」小节链接）。改动 PR 流程、构建命令或文档同步要求时两版同步更新。合入外部 PR 后，在两版 README 末尾「致谢」小节补充贡献者，并在 CHANGELOG 对应条目注明 `@handle` 与 PR 号。
 
 ## 常用命令
 

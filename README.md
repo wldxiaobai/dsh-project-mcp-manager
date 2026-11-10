@@ -223,6 +223,11 @@ Feature documentation lives in `docs/`, English and Chinese side by side:
 
 Design, release, code review, and testing records: [records](docs/records.md).
 
+## Contributing
+
+Pull requests target `dev`. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup,
+the checklist, and commit conventions.
+
 ## Acknowledgments
 
 Thanks to everyone who has contributed code to this project:
