@@ -61,8 +61,12 @@ const lines = async (path) => {
     const rows = [];
     for (const line of (await readFile(path, "utf8")).split(/\r?\n/)) {
       if (line.trim() === "") continue;
-      try { rows.push(JSON.parse(line)); }
-      catch (error) { if (error instanceof SyntaxError) continue; throw error; }
+      try {
+        rows.push(JSON.parse(line));
+      } catch (error) {
+        if (error instanceof SyntaxError) continue;
+        throw error;
+      }
     }
     return rows;
   } catch (error) {
@@ -72,6 +76,7 @@ const lines = async (path) => {
 };
 const until = async (check, label) => {
   const deadline = Date.now() + 5000;
+  // Poll sequentially: each observation follows the previous check and delay.
   while (!await check()) {
     assert.ok(Date.now() < deadline, label);
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -80,8 +85,13 @@ const until = async (check, label) => {
 const seen = (trace, event) => until(async () => (await lines(trace)).some((row) => row.event === event), `missing ${event}`);
 const starts = async (trace) => (await lines(trace)).filter((row) => row.event === "start");
 const pidDead = (pid) => {
-  try { process.kill(pid, 0); return false; }
-  catch (error) { if (error.code === "ESRCH") return true; throw error; }
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    if (error.code === "ESRCH") return true;
+    throw error;
+  }
 };
 const reaped = (trace) => until(async () => (await starts(trace)).every(({ pid }) => pidDead(pid)), "all fixture/probe children must exit");
 /** Reap, then keep the trace quiet long enough that a late spawn would be observed. */
@@ -244,7 +254,8 @@ try {
     const config = toOfficialConfig(mcpServerInputSchema.parse({ serverName: "missing", transport: "stdio", command: join(root, "missing-executable") }));
     const server = new LazyServer(config);
     instances.push(server);
-    for (let i = 0; i < 2; i++) await assert.rejects(catalog(server), /Unable to connect/);
+    await assert.rejects(catalog(server), /Unable to connect/);
+    await assert.rejects(catalog(server), /Unable to connect/);
     await server.dispose();
   }
   await new Promise((resolve) => setImmediate(resolve));
