@@ -16,6 +16,7 @@ the SSE channel provided by the bundled companion UI.
 | `snapshot()` | In-memory partitions from the previous reconcile (project files and the user layer). Joins the reconcile queue, does not read disk, and does not start a reconcile. |
 | `serverView(projectRoot, rawName)` | One row's in-memory view. Same queue rules as `snapshot()`. |
 | `globalState(rawName)` | Live global-layer state for that raw name, or `undefined` for a project row. |
+| `contextCost(sessionId?)` | How much context that session's visible MCP tool definitions take. Synchronous, memory-only. Without `sessionId` it picks the session in the focused workspace. |
 | `reload()` | One full reconcile (`reconcileNow`). |
 | `writeTargets()` | Managed yml locations the add dialog can write: the current workspace, the user layer, and the active profile. |
 | `addServer(source, projectRoot, draft)` | Appends one managed yml row from the form (creating the file when it is missing) and schedules a reconcile. Rejects a name already in that file and leaves the file unchanged. |
@@ -41,7 +42,33 @@ necessarily finishes. Call `reload()` when the next read must see the settled
 result. Path lookup and file preparation/opening do not imply those mutation checks or
 trigger a reconcile. JSON files and `.mcp.json` are never written.
 
-`snapshot()` / `serverView()` / `globalState()` do not emit.
+`snapshot()` / `serverView()` / `globalState()` / `contextCost()` do not emit.
+
+### Context cost
+
+`contextCost()` reads the tool schemas the **session scope** already exposes — the
+ones its `tools.restrict({ deny })` and the row `tools.allow` / `tools.deny`
+filters leave visible — and prices every `mcp__<effective>__<tool>` entry:
+
+```text
+estTokens = ceil(JSON.stringify(tools).length / 4) + 4
+```
+
+That is the same heuristic `@deepseek-ai/dsh-token-meter` uses for tool schemas,
+so the number lines up with the host's own context breakdown for the MCP share.
+It is an **estimate**, not a provider count, and it excludes server
+`instructions` (those ride the system prompt, not the tool list). Tools marked
+`deferLoading` are skipped because they are not in the next request.
+
+`sessionId` is `null` when no session exists yet, which is how a caller tells
+"no session" from "a session with no MCP tools". Per-server totals are priced
+independently, so they can differ from the session total by a few tokens. The
+result carries `level` (`ok` below `warnTokens`, `warn` from 5,000, `alert` from
+10,000) so a consumer does not re-implement the thresholds.
+
+The registry re-emits `projectMcp/updated` when the occupancy signature changes
+after a `request/header` or `request/context` event, so a page that re-reads on
+that event sees a fresh number without polling.
 
 ## Loading mode
 

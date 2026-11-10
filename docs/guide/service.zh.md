@@ -15,6 +15,7 @@
 | `snapshot()` | 上一轮对账的内存分区（项目文件与用户层）。进对账队列，不读盘，不发起对账。 |
 | `serverView(projectRoot, rawName)` | 一行的内存 view。排队规则与 `snapshot()` 相同。 |
 | `globalState(rawName)` | 该原名的全局层运行态；项目行返回 `undefined`。 |
+| `contextCost(sessionId?)` | 该会话可见的 MCP 工具定义占多少上下文。同步、只读内存；不传会话时取焦点工作区里的会话。 |
 | `reload()` | 一次全量对账（`reconcileNow`）。 |
 | `writeTargets()` | 添加对话框当前能写的受管 yml：当前工作区、用户层、当前 profile。 |
 | `addServer(source, projectRoot, draft)` | 按表单追加一条受管 yml 行（没有文件就创建）并排一次对账。同名已在该文件里则拒绝，文件不动。 |
@@ -36,7 +37,30 @@
 尚未完成；要等对账结束再读结果，调用 `reload()`。路径查询、文件准备和打开接口不代表
 相同的修改权限检查，也不触发对账。JSON 文件与 `.mcp.json` 从不写。
 
-`snapshot()` / `serverView()` / `globalState()` 不发事件。
+`snapshot()` / `serverView()` / `globalState()` / `contextCost()` 不发事件。
+
+### 上下文占用
+
+`contextCost()` 读的是**会话作用域**已经暴露的那份工具 schema——也就是本插件
+`tools.restrict({ deny })` 与条目 `tools.allow` / `tools.deny` 过滤之后仍然可见的
+部分——把其中每个 `mcp__<生效名>__<工具>` 计价：
+
+```text
+estTokens = ceil(JSON.stringify(tools).length / 4) + 4
+```
+
+这与 `@deepseek-ai/dsh-token-meter` 给工具 schema 计价的口径一致，所以数字能和
+宿主的上下文分解对上。它是**估算**，不是 provider 计数，也不含服务器
+`instructions`（那部分走系统提示，不在工具列表里）。标了 `deferLoading` 的工具
+不进本次请求，不计入。
+
+还没有会话时 `sessionId` 为 `null`，调用方据此区分「没有会话」与「有会话但没有
+MCP 工具」。分项按各自那一组单独计价，与总数可能差几个 token。结果自带
+`level`（低于 `warnTokens` 为 `ok`、5000 起 `warn`、10000 起 `alert`），消费方
+不必自己再实现阈值。
+
+`request/header` 或 `request/context` 事件之后占用签名变化时，registry 会再发一次
+`projectMcp/updated`；页面在该事件上重读即可拿到新数字，不需要轮询。
 
 ## 加载模式
 

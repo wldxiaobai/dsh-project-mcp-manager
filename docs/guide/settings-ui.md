@@ -141,9 +141,30 @@ All three entries render the same panel, so all three open with the same
 - the **Current workspace** label;
 - the workspace name (the last path segment) and the full path on one line,
   with the path ellipsized when long and shown in full on hover;
+- the MCP context-cost tag (only with a session that has MCP tools; see below);
 - a status line — `N servers · M running · K on standby · J disabled`
   — with only the non-zero parts;
 - the note "Automatically loads the MCP servers of the workspace you are in."
+
+### MCP context cost
+
+The header also carries a short tag such as `MCP 3.4k`: roughly how many tokens
+of MCP tool definitions the **current session** sends with every request. It
+shows only the number; clicking it opens the detail:
+
+- the estimate is `ceil(characters / 4) + 4`, the same heuristic the host uses
+  for tool schemas — not a provider count, and it excludes server
+  `instructions` and conversation history;
+- the detail gives the share of the context window and the three largest
+  servers;
+- at 5,000 the tag turns to the reminder colour and the detail suggests lazy
+  loading; at 10,000 it turns to the warning colour and gains a warning icon.
+  The number always stays visible, so colour is never the only signal, and the
+  tag's `aria-label` reads the threshold out too.
+
+The tag is absent when there is no session, or when the session has no MCP
+tools. It refreshes itself: the host re-emits its update signal whenever the
+request header or route changes, and the page re-reads on that event.
 
 When the host cannot tell yet (several workspaces and no session focus), the
 name reads **Current workspace not determined**, the path is hidden, and the

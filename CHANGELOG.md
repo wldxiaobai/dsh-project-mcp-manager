@@ -18,6 +18,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Lazy lifecycle, two-project authorization, official naming parity and dependency
   compatibility regression tests. See the [Gate 1 review](docs/code-review/pr30-lazy-gate1.zh.md).
 
+- **Session-level MCP context cost.** `projectMcp.contextCost(sessionId?)` reads
+  the tool schemas a session actually exposes (after `tools.restrict` and the
+  row `tools.allow` / `tools.deny` filters) and prices every
+  `mcp__<effective>__<tool>` entry with the same
+  `ceil(characters / 4) + 4` heuristic `dsh-token-meter` uses. It is an estimate
+  — no provider count, and server `instructions` are not included — grouped per
+  server and tagged `ok` / `warn` (5,000) / `alert` (10,000). The registry
+  re-emits `projectMcp/updated` when the figure changes after a `request/header`
+  or `request/context` event, so the UI never polls.
+- **Context-cost tag in the workspace header.** The MCP page shows a compact
+  `MCP 3.4k` tag: neutral below 5,000, the reminder colour from 5,000, and the
+  warning colour plus a warning icon from 10,000. The detail (estimate basis,
+  share of the context window, largest servers, threshold hint) sits in a
+  click-to-open bubble, so the header stays quiet. Colour is never the only
+  signal: the number is always visible and the tag carries an `aria-label`.
+  The tag is hidden when there is no session or no MCP tool.
+
 ### Fixed
 
 - A new session whose first tool restriction cannot be applied now fails
