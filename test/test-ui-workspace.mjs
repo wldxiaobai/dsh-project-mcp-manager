@@ -102,6 +102,24 @@ test("counts only project rows of the active workspace, and failures stay in the
     { total: 1, running: 1, waiting: 0, disabled: 0 });
 });
 
+test("active Lazy rows count as waiting, not running", () => {
+  const servers = [
+    row({ serverName: "eager", active: true }),
+    row({ serverName: "lazy-connected", active: true, mode: "lazy" }),
+    row({ serverName: "lazy-idle", skipReason: "idle", mode: "lazy" }),
+    row({ serverName: "lazy-off", enabled: false, mode: "lazy" })
+  ];
+  assert.deepEqual(workspaceCounts(servers, String.raw`d:\work`),
+    { total: 4, running: 1, waiting: 2, disabled: 1 },
+    "a mounted Lazy row is available on demand, not proof of a running connection");
+  assert.deepEqual(workspaceHeader(String.raw`D:\Work`, String.raw`d:\work`, servers).segments, [
+    { key: "workspaceServerCount", count: 4 },
+    { key: "workspaceRunningCount", count: 1 },
+    { key: "workspaceWaitingCount", count: 2 },
+    { key: "workspaceDisabledCount", count: 1 }
+  ]);
+});
+
 test("global rows never count as the current workspace", () => {
   // R3：用户层 / profile 行的 projectRoot 是配置文件目录，恰好等于当前工作区
   // 路径时不能计入「本工作区」。
@@ -194,7 +212,7 @@ test("workspace copy exists in both languages", () => {
   assert.equal(zh.workspaceServerCountOne, "1 个服务器");
   assert.equal(zh.workspaceServerCount, "{count} 个服务器");
   assert.equal(zh.workspaceRunningCount, "{count} 运行中");
-  assert.equal(zh.workspaceWaitingCount, "{count} 待会话");
+  assert.equal(zh.workspaceWaitingCount, "{count} 待使用");
   assert.equal(zh.workspaceDisabledCount, "{count} 已禁用");
   assert.equal(en.workspaceServerCountOne, "1 server");
   assert.equal(en.workspaceServerCount, "{count} servers");

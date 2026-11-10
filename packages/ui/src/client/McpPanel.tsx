@@ -641,10 +641,10 @@ export function McpPanel({ t }: McpPanelProps) {
 }
 
 function LoadingMode({ value, disabled, t, onChange }: {
-  value: McpUiServer["mode"];
-  disabled: boolean;
-  t: McpPanelProps["t"];
-  onChange: (mode: "eager" | "lazy") => void;
+  readonly value: McpUiServer["mode"];
+  readonly disabled: boolean;
+  readonly t: McpPanelProps["t"];
+  readonly onChange: (mode: "eager" | "lazy") => void;
 }) {
   return <SegmentedControl label={t("loadingMode")} value={value ?? "eager"} disabled={disabled} onChange={onChange} options={[
     { value: "eager", label: t("loadingModeEager") },
@@ -653,16 +653,16 @@ function LoadingMode({ value, disabled, t, onChange }: {
 }
 
 function ServerGroups({ title, groups, busy, t, homeDir, writeTargets, onToggle, onRemove, onTools, onMode }: {
-  title: string;
-  groups: DisplayGroup[];
-  busy: boolean;
-  t: McpPanelProps["t"];
-  homeDir: string | undefined;
-  writeTargets: McpUiState["writeTargets"];
-  onToggle: (row: McpUiServer, enabled: boolean) => void;
-  onRemove: (row: McpUiServer) => void;
-  onTools: (row: McpUiServer) => void;
-  onMode: (row: McpUiServer, mode: "eager" | "lazy") => void;
+  readonly title: string;
+  readonly groups: DisplayGroup[];
+  readonly busy: boolean;
+  readonly t: McpPanelProps["t"];
+  readonly homeDir: string | undefined;
+  readonly writeTargets: McpUiState["writeTargets"];
+  readonly onToggle: (row: McpUiServer, enabled: boolean) => void;
+  readonly onRemove: (row: McpUiServer) => void;
+  readonly onTools: (row: McpUiServer) => void;
+  readonly onMode: (row: McpUiServer, mode: "eager" | "lazy") => void;
 }) {
   if (groups.length === 0) return null;
   return (
@@ -720,15 +720,15 @@ function WorkspaceHeader({ activeProject, activeProjectKey, servers, t }: {
 }
 
 function ServerCard({ server, busy, locked, t, homeDir, onToggle, onRemove, onTools, onMode }: {
-  server: LogicalServer<McpUiServer>;
-  busy: boolean;
-  locked: boolean;
-  t: McpPanelProps["t"];
-  homeDir: string | undefined;
-  onToggle: (enabled: boolean) => void;
-  onRemove: () => void;
-  onTools: () => void;
-  onMode: (mode: "eager" | "lazy") => void;
+  readonly server: LogicalServer<McpUiServer>;
+  readonly busy: boolean;
+  readonly locked: boolean;
+  readonly t: McpPanelProps["t"];
+  readonly homeDir: string | undefined;
+  readonly onToggle: (enabled: boolean) => void;
+  readonly onRemove: () => void;
+  readonly onTools: () => void;
+  readonly onMode: (mode: "eager" | "lazy") => void;
 }) {
   const row = server.winner;
   const status = runtimeStatus(row, t);
