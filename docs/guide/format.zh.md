@@ -2,7 +2,7 @@
 
 [English](format.md) | 中文
 
-[← 返回 README](../README.zh.md) ｜ 相关：[配置来源与分层](layers.zh.md) · [`${VAR}` 展开](env-expansion.zh.md) · [CLI `dsh-mcp`](cli.zh.md)
+[← 返回 README](../README.zh.md) ｜ 相关：[配置来源与分层](layers.zh.md) · [`${VAR}` 展开](env-expansion.zh.md) · [CLI `dsh-mcp`](cli.zh.md) · [Lazy 设计记录](../design/lazy-mcp.md)
 
 插件读取两种方言：**原生 YAML 受管块**（`<projectRoot>/.dsh/mcp.yml`、
 `~/.dsh/mcp.yml`、`~/.dsh/profiles/<name>/mcp.yml`）与
@@ -11,6 +11,59 @@
 `<projectRoot>/.mcp.json`）。哪个文件属于哪一层见
 [配置来源与分层](layers.zh.md)。[设置页](settings-ui.zh.md)只写受管 yml，
 经过与 CLI 相同的受管块和锁。
+
+## 加载模式
+
+`mode` 是每行的可选字段：`eager`（缺省）或 `lazy`；省略即 Eager。原生 YAML 把它写在行的
+`config` 里，JSON 方言写在条目顶层：
+
+```yaml
+    - id: panel-mcp-gitlab
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: gitlab
+        mode: lazy
+        transport: stdio
+        command: npx
+```
+
+```json
+{ "mcpServers": { "gitlab": { "mode": "lazy", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-gitlab"] } } }
+```
+
+`mode` 只在本插件里生效，不会传给 `@deepseek-ai/dsh-mcp-client`。`dsh-mcp` 没有
+`--mode` 参数；在文件里写这个键，或用[设置页](settings-ui.zh.md#加载模式)切换。目标行
+没有有效连接配置时（例如手写的、只有 id 的 disabled 占位），切换会被拒绝，文件不动。
+
+| 方面 | `eager` | `lazy` |
+|---|---|---|
+| 挂载时连接 | 是 | 否，首次代理调用时连接 |
+| 工具注册 | 每个工具注册为 `mcp__<生效名>__<工具名>` | 不注册远端工具；用全局代理 `mcp_search` / `mcp_describe` / `mcp_call` |
+| 服务器 instructions / DSH Resources | 支持 | 不支持，需要时用 Eager |
+| 按单个已注册工具名配置的宿主策略 | 支持 | 不支持；只受行级 `tools.allow` / `deny` 约束 |
+| `reconnect` / `failOnStartupError` | 官方重连与启动失败策略 | 不执行，下一次请求重试 |
+| `maxInstructionBytes` | 由官方客户端执行 | 忽略（不读取 instructions） |
+| `toolCallTimeoutMs` | 单次工具调用 | 单次工具调用；连接与工具列表使用独立的固定 30 秒发现超时 |
+| 空闲 | 连接常驻 | 最后一个请求结束五分钟后关闭；最后一个调用者取消时启动关闭，新连接等待其屏障 |
+
+Lazy 行挂载时不连接。第一次 `mcp_search`、`mcp_describe` 或 `mcp_call` 才为该服务器建立
+连接；不带 `server` 的 `mcp_search` 会连接当前会话所有可见的 Lazy 服务器，服务器多时
+第一次搜索可能较慢并同时拉起多个进程，传 `server` 可只查一台。并发请求共用一个连接；
+取消只影响发起取消的调用，其它进行中的调用保留连接。最后一个等待者取消时才关闭该
+世代，关闭与下一次打开经屏障串行，避免旧关闭撞上新连接。工具目录按连接缓存，
+`list_changed` 后失效。连接空闲五分钟、行被卸载、模式切换或插件销毁时关闭，下一次
+请求重新连接。连接失败后下一次请求会重试，对外只报泛化的
+`Unable to connect to the MCP server`，不泄露传输细节。`mcp_search` 的
+`server` 参数用**生效名**（搜索结果里的 `server` 字段）；项目行发生命名冲突时可能是
+`p<hash>_<原名>`，与文件里的 `serverName` 不同。
+
+只有存在启用的 Lazy 行时，这三个代理才注册；没有可见 Lazy 挂载的会话会 deny 它们，
+所以只用 Eager 的会话不会看到额外工具。
+
+Lazy 沿用行级 `tools.allow` / `deny`：规则在搜索、描述和调用之前过滤工具；完整名
+`mcp__<生效名>__<工具名>` 的规范化与 Eager 相同（64 字符上限、非法字符替换、损失性
+规范化时追加 12 位哈希），所以同一份过滤规则在两种模式下含义一致。需要按单个注册工具
+配置宿主策略、读取服务器 instructions 或使用 DSH Resources 时，请用 Eager。
 
 ## 原生 YAML：`<projectRoot>/.dsh/mcp.yml`
 
@@ -39,7 +92,8 @@ insert 列表），每行一个 MCP 服务器：
 ```
 
 `transport` 支持 `stdio`（command/args/env/cwd）与 `streamable-http`
-（url/headers）。行加 `disabled: true` 即停用。标记之外的内容逐字节保留。
+（url/headers）。行加 `disabled: true` 即停用；行还可写 `config.mode`，见
+[加载模式](#加载模式)。标记之外的内容逐字节保留。
 
 条目级工具可见性（装载前从官方配置里剥掉；`deny` 优先）：
 
@@ -56,7 +110,8 @@ insert 列表），每行一个 MCP 服务器：
 或从 `dsh-mcp get` / 快照看生效名。非法字符类（例如 `[z-a]`）按条目告警一次且
 永不匹配，不会静默失效。JSON 另接受 Gemini 的 `includeTools` → `allow`、
 `excludeTools` → `deny`；与 DSH 的 `tools` 同时出现时以 `tools.allow` /
-`tools.deny` 为准。
+`tools.deny` 为准。Lazy 行也用同一份规则过滤按需目录，完整名匹配同样按生效名和
+[加载模式](#加载模式)里的规范化处理。
 
 **与原生 cordis 方言的差异**：`!!js` 标签（profile 的 `cordis.patch.yml` 由
 Loader 求值的 js-yaml 表达式，如官方 README 示例 `env: { TOKEN: !!js
@@ -68,6 +123,8 @@ process.env.GITHUB_TOKEN }`）在项目文件里**不支持**——受管块内�
 「带归属头的服务器 instructions」的字节上限；省略该键时用官方默认 32768。
 超限由 `dsh-mcp-client` 拒绝这一次连接（`failOnStartupError` 为 false 时本插件
 仍把 fiber 标成 active，随后走官方重连）。`dsh-mcp` 没有对应参数，直接写进文件。
+这些 instructions 行为只适用于 Eager；Lazy 不读取 instructions，也不会执行这个上限
+（见[加载模式](#加载模式)）。
 反之项目文件是超集语法：`env`/`headers`
 允许 `KEY: null` 表示删除该键（装载时被剔除），这在官方 mcp-client 校验里会被
 拒绝——把这类行原样挪回 `cordis.patch.yml` 会装载失败。
@@ -95,12 +152,13 @@ process.env.GITHUB_TOKEN }`）在项目文件里**不支持**——受管块内�
   （`dsh-mcp-client`）只支持 `stdio` 与 streamable-http——服务端已支持
   Streamable HTTP 时把 `type` 改为 `"http"`；或删除 `type` 只留 `url`
   （本插件按 streamable-http 推断）。没有隐式回退。DSH 透传键
-  `toolCallTimeoutMs`/`failOnStartupError`/`maxInstructionBytes`/`reconnect`、`enabled: false`
-  （静默跳过、不占名）与 `disabled: true`（占名但不装载）。
+  `mode`/`toolCallTimeoutMs`/`failOnStartupError`/`maxInstructionBytes`/`reconnect`、`enabled: false`
+  （静默跳过、不占名）与 `disabled: true`（占名但不装载）。`mode` 取值 `eager`/`lazy`，
+  省略为 `eager`，见[加载模式](#加载模式)。
 - 未知键容忍忽略；名字须匹配 `[A-Za-z0-9_-]{1,32}`；坏条目逐条报错、不影响其余。
 - **JSON 文件由 `dsh-mcp` CLI 独占**：写入保留其他顶层键与键序，但 JSON 没有注释，
   排版与注释不被保留。宿主侧（装载器与设置页）对 JSON **只读**，从不写这些文件；
-  在设置页改 JSON 来源的行，会写到同一作用域的受管 yml。
+  在设置页改 JSON 来源的行（包括切换加载模式），会写到同一作用域的受管 yml。
 - `${VAR}` 与其他来源同语义（装载时展开，见 [`${VAR}` 展开](env-expansion.zh.md)）。
 
 ### `httpUrl`、`transport` 与 `url` 推断

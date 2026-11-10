@@ -22,6 +22,7 @@ Most records are written in Chinese.
 - [JSON config layer proposal](design/proposal-json-mcp-config.md)
 - [Runtime robustness & JSON interop proposal](design/proposal-runtime-robustness-and-json-interop.md)
 - [UI entries & current-workspace proposal](design/proposal-ui-entries-and-workspace.md)
+- [Lazy MCP architecture and dependency decisions](design/lazy-mcp.md)
 
 ## Release notes
 
@@ -50,6 +51,7 @@ Most records are written in Chinese.
 - [feat/adapt-dsh-0.2.0-rc.2 (v0.7.0)](code-review/review-feat-adapt-dsh-0.2.0-rc.2.zh.md)
 - [v0.9.0 to v0.12.0](code-review/review-v0.9.0-to-v0.12.0.zh.md)
 - [SonarCloud PR #29 issue analysis and fixes](code-review/sonar-pr29.zh.md)
+- [PR #30 Lazy MCP Gate 1 review and fixes](code-review/pr30-lazy-gate1.zh.md)
 
 ## Testing and maintenance
 
