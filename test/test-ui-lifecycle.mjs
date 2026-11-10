@@ -48,6 +48,15 @@ function mockProjectMcp(options = {}) {
       if (failMode !== undefined) throw new Error(failMode);
       return Promise.resolve(options.modePath ?? String.raw`D:\work\.dsh\mcp.yml`);
     },
+    contextCost: () => options.contextCost ?? {
+      sessionId: "mock-session",
+      tools: 2,
+      estTokens: 1200,
+      level: "ok",
+      servers: [{ name: "mock", tools: 2, estTokens: 1200 }],
+      warnTokens: 5000,
+      alertTokens: 10000
+    },
     toolStates: () => [{ name: "mock-tool", enabled: true }],
     subscribeUpdated(callback) {
       listeners.add(callback);

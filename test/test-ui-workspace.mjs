@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import {
+  contextCostView,
+  formatTokenCount,
   orderWorkspaceGroups,
   sameWorkspace,
   workspaceCountSegments,
@@ -9,6 +11,20 @@ import {
   workspaceNameOf
 } from "../packages/ui/src/client/workspace.ts";
 import { en, zh } from "../packages/ui/src/client/locales.ts";
+
+/** 一份完整的上下文占用载荷；只覆盖用例关心的字段。 */
+function cost(overrides) {
+  return {
+    sessionId: "session-a",
+    tools: 3,
+    estTokens: 0,
+    level: "ok",
+    servers: [],
+    warnTokens: 5000,
+    alertTokens: 10000,
+    ...overrides
+  };
+}
 
 // Keep deterministic UTF-16 code-unit order, independent of the host locale.
 function byCodeUnit(a, b) {
@@ -196,6 +212,54 @@ test("the active workspace group moves to the top and the rest keep their order"
   // POSIX：只把键完全相同的组置顶，大小写不同的保持原位。
   assert.deepEqual(orderWorkspaceGroups([["/workspace/app", 1], ["/workspace/App", 2]], "/workspace/App"),
     [["/workspace/App", 2], ["/workspace/app", 1]]);
+});
+
+test("token counts fold to a compact label", () => {
+  assert.equal(formatTokenCount(0), "0");
+  assert.equal(formatTokenCount(820), "820");
+  assert.equal(formatTokenCount(999), "999");
+  assert.equal(formatTokenCount(1000), "1k", "a whole thousand drops the decimal");
+  assert.equal(formatTokenCount(3400), "3.4k");
+  assert.equal(formatTokenCount(9999), "10k", "rounding may reach the next thousand");
+  assert.equal(formatTokenCount(12345), "12.3k", "below 100k keeps one decimal");
+  assert.equal(formatTokenCount(123456), "123k", "from 100k on the label drops the decimal");
+  assert.equal(formatTokenCount(-5), "0", "never shows a negative count");
+});
+
+test("contextCostView hides itself when there is no session or no MCP tool", () => {
+  assert.equal(contextCostView(undefined), null);
+  assert.equal(contextCostView(cost({ sessionId: null, tools: 0 })), null, "no session means no label");
+  assert.equal(contextCostView(cost({ tools: 0, servers: [] })), null, "a session without MCP tools shows nothing");
+});
+
+test("contextCostView keeps the value short and the breakdown capped", () => {
+  const view = contextCostView(cost({
+    estTokens: 3400,
+    contextWindow: 200000,
+    servers: [
+      { name: "alpha", tools: 12, estTokens: 2400 },
+      { name: "beta", tools: 4, estTokens: 800 },
+      { name: "gamma", tools: 2, estTokens: 200 },
+      { name: "delta", tools: 1, estTokens: 100 }
+    ]
+  }));
+  assert.equal(view.tokens, "3.4k");
+  assert.equal(view.percent, 2, "3400 / 200000 rounds to 2%");
+  assert.equal(view.level, "ok");
+  assert.deepEqual(view.top, [
+    { name: "alpha", tools: 12, tokens: "2.4k" },
+    { name: "beta", tools: 4, tokens: "800" },
+    { name: "gamma", tools: 2, tokens: "200" }
+  ], "the bubble lists the three largest servers");
+});
+
+test("contextCostView carries the level through and drops an unknown window", () => {
+  assert.equal(contextCostView(cost({ estTokens: 6000, level: "warn" })).percent, null, "no window means no percentage");
+  assert.equal(contextCostView(cost({ estTokens: 6000, level: "warn" })).level, "warn", "the level is the host's, not re-derived here");
+  const alert = contextCostView(cost({ estTokens: 12000, level: "alert", contextWindow: 64000 }));
+  assert.equal(alert.level, "alert");
+  assert.equal(alert.percent, 19, "12000 / 64000 rounds to 19%");
+  assert.equal(contextCostView(cost({ estTokens: 999999, contextWindow: 1000 })).percent, 100, "the share is capped at 100");
 });
 
 test("workspace copy exists in both languages", () => {

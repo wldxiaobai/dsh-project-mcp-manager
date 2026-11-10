@@ -119,6 +119,15 @@ export type McpUiLocaleKey =
   | "workspaceRunningCount"
   | "workspaceWaitingCount"
   | "workspaceDisabledCount"
+  | "contextCostTag"
+  | "contextCostWindowShare"
+  | "contextCostHelp"
+  | "contextCostHelpNoWindow"
+  | "contextCostServerLine"
+  | "contextCostWarn"
+  | "contextCostAlert"
+  | "contextCostAria"
+  | "contextCostAriaAlert"
   | "backToWorkspace"
   | "entriesTitle"
   | "entriesHint"
@@ -251,6 +260,15 @@ export const en: Record<McpUiLocaleKey, string> = {
   workspaceRunningCount: "{count} running",
   workspaceWaitingCount: "{count} on standby",
   workspaceDisabledCount: "{count} disabled",
+  contextCostTag: "MCP {tokens}",
+  contextCostWindowShare: "{percent}% of the window",
+  contextCostHelp: "Tool definitions this session sends on every request: about {tokens} tokens, {share}.\nEstimated at roughly 4 characters per token; server instructions and conversation history are not counted.",
+  contextCostHelpNoWindow: "Tool definitions this session sends on every request: about {tokens} tokens.\nEstimated at roughly 4 characters per token; server instructions and conversation history are not counted.",
+  contextCostServerLine: "{name} · {count} tools · {tokens}",
+  contextCostWarn: "Past {warn}. Consider lazy loading for the largest servers.",
+  contextCostAlert: "Past {alert}. This is a large share of every request.",
+  contextCostAria: "MCP tool definitions use about {tokens} tokens",
+  contextCostAriaAlert: "MCP tool definitions use about {tokens} tokens, past the {alert} threshold",
   backToWorkspace: "Back to current workspace",
   entriesTitle: "MCP management page entries",
   entriesHint: "Choose where the MCP management page appears.",
@@ -384,6 +402,15 @@ export const zh: Record<McpUiLocaleKey, string> = {
   workspaceRunningCount: "{count} 运行中",
   workspaceWaitingCount: "{count} 待使用",
   workspaceDisabledCount: "{count} 已禁用",
+  contextCostTag: "MCP {tokens}",
+  contextCostWindowShare: "占窗口 {percent}%",
+  contextCostHelp: "这个会话每次请求都要带的工具定义：约 {tokens} token，{share}。\n按约 4 字符/token 估算，不含服务器 instructions 与对话历史。",
+  contextCostHelpNoWindow: "这个会话每次请求都要带的工具定义：约 {tokens} token。\n按约 4 字符/token 估算，不含服务器 instructions 与对话历史。",
+  contextCostServerLine: "{name} · {count} 个工具 · {tokens}",
+  contextCostWarn: "已超过 {warn}，定义较大的服务器可以考虑改用懒加载。",
+  contextCostAlert: "已超过 {alert}，每次请求都要占很大一块。",
+  contextCostAria: "MCP 工具定义约占 {tokens} token",
+  contextCostAriaAlert: "MCP 工具定义约占 {tokens} token，已超过 {alert} 阈值",
   backToWorkspace: "回到当前工作区",
   entriesTitle: "MCP 管理页入口",
   entriesHint: "选择在哪些位置显示 MCP 管理页。",
