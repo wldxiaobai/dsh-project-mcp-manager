@@ -222,3 +222,11 @@ Feature documentation lives in `docs/`, English and Chinese side by side:
   the companion UI.
 
 Design, release, code review, and testing records: [records](docs/records.md).
+
+## Acknowledgments
+
+Thanks to everyone who has contributed code to this project:
+
+- [@yangjh0127](https://github.com/yangjh0127): per-server Lazy loading mode
+  and its MCP Manager switch
+  ([#30](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/30)).

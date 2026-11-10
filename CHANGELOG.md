@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Per-server Lazy mode. The MCP Manager and project config support opt-in
   discovery and invocation through three session-scoped proxies.
+  Contributed by [@yangjh0127](https://github.com/yangjh0127) in
+  [#30](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/30).
 - `projectMcp.setLoadingMode` and optional `mode` fields on drafts/views;
   additive minor API changes require a synchronized manager/UI minor release.
 - Lazy lifecycle, two-project authorization, official naming parity and dependency

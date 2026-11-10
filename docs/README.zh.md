@@ -189,3 +189,11 @@ GUI 的人，就能通过它添加并启动服务器。
   包入口导出的视图类型，以及对配套 UI 的语义化版本承诺。
 
 设计、发布、代码审查与测试记录：[记录索引](records.zh.md)。
+
+## 致谢
+
+感谢为本项目贡献代码的开发者：
+
+- [@yangjh0127](https://github.com/yangjh0127)：逐服务器的 Lazy 按需加载模式，
+  以及 MCP 管理页中的加载模式切换
+  （[#30](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/30)）。
