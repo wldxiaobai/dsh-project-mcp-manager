@@ -17,7 +17,7 @@ import { bindProjectMcpService, PROJECT_MCP_SERVICE } from "./service.js";
 
 export { bindProjectMcpService, PROJECT_MCP_SERVICE, PROJECT_MCP_UPDATED_EVENT, type ProjectMcpService } from "./service.js";
 export type { FiberPhaseView, McpAddDraft, McpServerRuntimeView, McpWriteTarget, ProjectFileState, ProjectServerPhase, ProjectServerState } from "./registry.js";
-export type { McpScopeInfo, McpServerView, McpTransport, ReconnectConfig, ToolFilter } from "./model.js";
+export type { McpLoadingMode, McpScopeInfo, McpServerView, McpTransport, ReconnectConfig, ToolFilter } from "./model.js";
 export { projectKeyOf, serviceIdentityKeyOf } from "./model.js";
 export type { PatchRow } from "./mcp-file.js";
 export type { McpRowSource } from "./json-file.js";

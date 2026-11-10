@@ -2683,6 +2683,106 @@ try {
   }
 }
 
+// Real stdio protocol with the same fake DSH registry used by the Eager tests.
+{
+  const root = await mkdtemp(join(tmpdir(), "dsh-mcp-lazy-"));
+  const project = join(root, "project");
+  const other = join(root, "other");
+  const script = join(root, "server.mjs");
+  const trace = join(root, "requests");
+  await mkdir(join(project, ".dsh"), { recursive: true });
+  await mkdir(other);
+  await writeFile(script, String.raw`
+import { appendFileSync } from "node:fs";
+import { createInterface } from "node:readline";
+const [trace, label] = process.argv.slice(2);
+appendFileSync(trace, "start:" + label + "\n");
+const inputSchema = { type: "object", properties: { value: { type: "string" } }, required: ["value"] };
+for await (const line of createInterface({ input: process.stdin })) {
+  const { method, id, params } = JSON.parse(line);
+  if (id === undefined) continue;
+  appendFileSync(trace, method + "\n");
+  let result;
+  if (method === "initialize") {
+    result = { protocolVersion: params.protocolVersion, serverInfo: { name: "fixture", version: "1" }, capabilities: { tools: {} } };
+  } else if (method === "tools/list") {
+    result = { tools: ["echo", "secret"].map((name) => ({ name, description: "Fixture " + name, inputSchema })) };
+  } else if (method === "tools/call") {
+    result = { content: [{ type: "text", text: label + ":" + params.arguments.value }] };
+  }
+  const response = result === undefined
+    ? { error: { code: -32601, message: "Method not found" } }
+    : { result };
+  console.log(JSON.stringify({ jsonrpc: "2.0", id, ...response }));
+}
+`);
+  const config = join(project, ".dsh", "mcp.json");
+  const writeConfig = (label, mode = "lazy") => writeFile(config, JSON.stringify({
+    mcpServers: {
+      demo: {
+        command: process.execPath, args: [script, trace, label], mode, toolCallTimeoutMs: 5000,
+        tools: { allow: ["*"], deny: ["secret"] }
+      }
+    }
+  }));
+  await writeConfig("first");
+  const ctx = fakeCtx();
+  const registered = new Map();
+  ctx.tools.schemas = () => [...registered.values()];
+  ctx.tools.register = (definition) => {
+    assert.ok(!registered.has(definition.name));
+    registered.set(definition.name, definition);
+    return () => registered.delete(definition.name);
+  };
+  const agent = fakeAgent("lazy-owner", project);
+  const outsider = fakeAgent("other-project", other);
+  ctx.agentsList.push(agent, outsider);
+  const previousDshHome = process.env.DSH_HOME;
+  process.env.DSH_HOME = join(root, "dsh-home");
+  const registry = new ProjectMcpRegistry(ctx, { globalNames: async () => [] });
+  const execute = (name, args, owner = agent) => registered.get(name).execute(args, {
+    agent: owner, signal: new AbortController().signal
+  });
+  try {
+    await registry.reconcileNow();
+    assert.deepEqual([...registered.keys()], ["mcp_search", "mcp_describe", "mcp_call"]);
+    assert.equal(ctx.mounts.length, 0);
+    assert.equal(await pathExists(trace), false, "Lazy discovery must not spawn a process at startup");
+    assert.ok(outsider.denies.some((deny) => deny.includes("mcp_call")));
+    await assert.rejects(() => execute("mcp_call", { server: "demo", tool: "echo" }, outsider), /unavailable in this session/);
+    assert.equal(await pathExists(trace), false, "cross-project rejection must happen before connecting");
+    const [search, described] = await Promise.all([
+      execute("mcp_search", { query: "fixture" }),
+      execute("mcp_describe", { server: "demo", tool: "echo" })
+    ]);
+    assert.deepEqual(JSON.parse(search.content[0].text).tools.map(({ tool }) => tool), ["echo"]);
+    assert.deepEqual(JSON.parse(described.content[0].text).inputSchema.required, ["value"]);
+    await assert.rejects(() => execute("mcp_call", { server: "demo", tool: "secret" }), /unavailable in this session/);
+    const invoke = () => execute("mcp_call", { server: "demo", tool: "echo", arguments: { value: "ok" } });
+    assert.equal((await invoke()).content[0].text, "first:ok");
+    const firstTrace = await readFile(trace, "utf8");
+    assert.equal(firstTrace.match(/^initialize$/gm).length, 1, "concurrent discovery shares one connection");
+    assert.equal(firstTrace.match(/^tools\/list$/gm).length, 1, "metadata is reused");
+    await writeConfig("second");
+    await registry.reconcileNow();
+    assert.equal((await invoke()).content[0].text, "second:ok", "hot reload replaces the connection");
+    await writeConfig("third", "eager");
+    await registry.reconcileNow();
+    assert.equal(registered.size, 0, "switching the last Lazy server back removes the proxies");
+    assert.equal(ctx.mounts.at(-1).args.at(-1), "third");
+    assert.ok(!Object.hasOwn(ctx.mounts.at(-1), "mode"), "mode must not reach the official client");
+    pass("Lazy stdio connects on demand, caches discovery, applies filters and session isolation, and hot-reloads");
+  } finally {
+    for (const disposer of ctx.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    if (previousDshHome === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = previousDshHome;
+    await rmRetry(root);
+  }
+}
+
 console.log("\n" + passed + " passed, 0 failed");
 console.log("ALL PROJECT REGISTRY TESTS PASSED");
 // chokidar close() is fire-and-forget in registry dispose; on Windows a

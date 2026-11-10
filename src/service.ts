@@ -11,6 +11,7 @@
  * `globalNames()`、`activeProfile()`）不变。
  */
 import type { McpAddDraft, McpServerRuntimeView, McpWriteTarget, ProjectFileState, ProjectMcpRegistry, ProjectServerState } from "./registry.js";
+import type { McpLoadingMode } from "./model.js";
 import type { McpRowSource } from "./json-file.js";
 
 /** cordis 服务名；经 `ctx.provide` / `ctx.get` / `ctx.projectMcp` 取用。 */
@@ -35,6 +36,7 @@ export interface ProjectMcpService {
   openConfigFile(source: McpRowSource, projectRoot: string): Promise<string>;
   /** 启用/停用一台服务器（只写受管 yml；其它来源落同身份行或 disabled 占位）。 */
   setServerEnabled(source: McpRowSource, projectRoot: string, rawName: string, enabled: boolean): Promise<string>;
+  setLoadingMode(source: McpRowSource, projectRoot: string, rawName: string, mode: McpLoadingMode): Promise<string>;
   /** 删除一台服务器（yml 行就地移除；其它来源落 disabled 占位行遮蔽）。 */
   removeServer(source: McpRowSource, projectRoot: string, rawName: string): Promise<string>;
   /** 单个工具的可见开关（写入受管 yml 的 tools.allow/deny）。 */
@@ -61,6 +63,7 @@ export function bindProjectMcpService(registry: ProjectMcpRegistry): ProjectMcpS
     reload: () => registry.reconcileNow(),
     openConfigFile: (source, projectRoot) => registry.openConfigFile(source, projectRoot),
     setServerEnabled: (source, projectRoot, rawName, enabled) => registry.setServerEnabled(source, projectRoot, rawName, enabled),
+    setLoadingMode: (source, projectRoot, rawName, mode) => registry.setLoadingMode(source, projectRoot, rawName, mode),
     removeServer: (source, projectRoot, rawName) => registry.removeServer(source, projectRoot, rawName),
     setToolEnabled: (source, projectRoot, rawName, tool, enabled) => registry.setToolEnabled(source, projectRoot, rawName, tool, enabled),
     toolStates: (projectRoot, rawName) => registry.toolStates(projectRoot, rawName),

@@ -91,10 +91,14 @@ import {
   toOfficialConfig,
   toPatchRow,
   toolFilterFromConfig,
+  mcpLoadingModeSchema,
+  type McpLoadingMode,
   type McpScopeInfo,
   type McpServerView
 } from "./model.js";
 import { mcpToolBudgetStats, mcpToolCount, parseToolBudgetWarn, schemaToolId } from "./status.js";
+import { LazyServer } from "./lazy/connection.js";
+import { LAZY_TOOL_NAMES, registerLazyTools, type LazyMount } from "./lazy/proxies.js";
 
 const delay = (ms: number) => new Promise<void>((resolvePromise) => setTimeout(resolvePromise, ms));
 
@@ -168,6 +172,7 @@ export interface ProjectServerState {
   /** 行来源（遮蔽优先序见模块注释）；旧调用方可缺省。 */
   source?: McpRowSource;
   fiber?: any;
+  lazy?: LazyServer;
   phase: ProjectServerPhase;
   error?: string;
 }
@@ -746,6 +751,7 @@ export interface McpWriteTarget {
 /** 添加对话框收集的字段。cwd 由写入位置决定：项目层 "."，用户层与 profile 层空串。 */
 export interface McpAddDraft {
   serverName: string;
+  mode?: McpLoadingMode;
   transport: "stdio" | "streamable-http";
   command?: string;
   args?: string[];
@@ -775,6 +781,7 @@ function inputFromAddDraft(source: McpRowSource, draft: McpAddDraft): unknown {
     return {
       serverName,
       transport: "stdio",
+      mode: draft.mode,
       command: typeof draft.command === "string" ? draft.command.trim() : "",
       args,
       ...(env === undefined ? {} : { env }),
@@ -786,6 +793,7 @@ function inputFromAddDraft(source: McpRowSource, draft: McpAddDraft): unknown {
     return {
       serverName,
       transport: "streamable-http",
+      mode: draft.mode,
       url: typeof draft.url === "string" ? draft.url.trim() : "",
       ...(headers === undefined ? {} : { headers })
     };
@@ -919,6 +927,7 @@ export class ProjectMcpRegistry {
   private readonly startupAgentIds = new Set<string>();
   /** 生效名 → 尚未结束的 fiber.dispose。同名重挂必须等它落地，避免预留被晚到的 dispose 清掉。 */
   private readonly nameRelease = new Map<string, Promise<void>>();
+  private disposeLazyTools?: () => void;
 
   constructor(ctx: any, providers: ProjectMcpRegistryOptions) {
     this.ctx = ctx;
@@ -1003,6 +1012,7 @@ export class ProjectMcpRegistry {
     if (this.watcher !== undefined) void this.watcher.close().catch(() => {});
     if (this.userWatcher !== undefined) void this.userWatcher.close().catch(() => {});
     this.disposeRestrictions();
+    this.disposeLazyTools?.();
     this.disposeMountedFibers();
     this.suppressedGlobals.clear();
   }
@@ -1020,6 +1030,7 @@ export class ProjectMcpRegistry {
 
   private disposeServerFibers(servers: Map<string, ProjectServerState>): void {
     for (const state of servers.values()) {
+      void state.lazy?.dispose();
       try {
         state.fiber?.dispose();
       } catch {
@@ -1194,7 +1205,9 @@ export class ProjectMcpRegistry {
           if (this.globalServers.has(rawName)) hidden.push(rawName);
         }
       }
-      this.applyRestriction(agent, expandToToolNames(hidden, this.lastToolIds));
+      const deny = expandToToolNames(hidden, this.lastToolIds);
+      this.appendLazyProxyDenies(project, this.lastToolIds, deny);
+      this.applyRestriction(agent, deny);
     }
   }
 
@@ -1220,6 +1233,7 @@ export class ProjectMcpRegistry {
     const previous = this.nameRelease.get(name) ?? Promise.resolve();
     const current = previous.then(async () => {
       try {
+        await state.lazy?.dispose();
         await state.fiber?.dispose();
       } catch {
         // fiber 已随上下文销毁
@@ -1760,6 +1774,7 @@ export class ProjectMcpRegistry {
     }
     await this.reconcileGlobals(globalMerged.rows, hostGlobalNames);
     this.prunePerProjectState(new Set(desiredByProject.keys()));
+    this.syncLazyProxies();
     await this.remountUnhealthy();
     await this.sweepRestrictions();
     this.inspectToolBudgets();
@@ -2267,7 +2282,7 @@ export class ProjectMcpRegistry {
     const effectiveName = container.effectiveNameOf(item.rawName);
     if (effectiveName === undefined) return undefined;
     await container.diag({ kind: "attempt", rawName: item.rawName, effectiveName });
-    let built: { config: Record<string, unknown> } | { skip: string };
+    let built: Awaited<ReturnType<ProjectMcpRegistry["buildServerConfig"]>>;
     try {
       built = await this.buildServerConfig(container, item, effectiveName);
     } catch (error) {
@@ -2279,6 +2294,19 @@ export class ProjectMcpRegistry {
     if ("skip" in built) return built.skip;
     await this.waitForNameRelease(effectiveName);
     if (this.disposed) return undefined;
+    if (built.mode === "lazy") {
+      container.servers.set(item.rawName, {
+        projectRoot: container.projectRoot,
+        scope: container.scope,
+        rawName: item.rawName,
+        effectiveName,
+        row: item.row,
+        source: item.source,
+        phase: "active",
+        lazy: new LazyServer(built.config)
+      });
+      return undefined;
+    }
     let fiber: any;
     try {
       fiber = this.ctx.plugin(mcpClient as any, built.config);
@@ -2296,7 +2324,7 @@ export class ProjectMcpRegistry {
    * 期望行 → dsh-mcp-client 配置。返回 `{ skip }` 表示已记诊断、不发起装载；
    * 行本身读不出或展开后仍不合法则抛出，由 mountServer 落 config-invalid。
    */
-  private async buildServerConfig(container: MountContainer, item: DesiredProjectRow, effectiveName: string): Promise<{ config: Record<string, unknown> } | { skip: string }> {
+  private async buildServerConfig(container: MountContainer, item: DesiredProjectRow, effectiveName: string) {
     let input = inputFromPatchRow(item.row);
     // ${VAR} 串内插值展开对所有来源统一（CLI 按生态习惯写进原生文件的
     // Bearer ${TOKEN} 也要生效）；值不含 ${NAME} 引用的行行为不变。
@@ -2304,7 +2332,7 @@ export class ProjectMcpRegistry {
     if (!expanded.ok) {
       await container.diag({ kind: "env-missing", rawName: item.rawName, effectiveName, missingVar: expanded.missingVar });
       this.ctx.logger.warn(`${container.label} "${item.rawName}" 未装载：环境变量 \${${expanded.missingVar}} 未设置`);
-      return { skip: "env-missing" };
+      return { skip: "env-missing" } as const;
     }
     input = expanded.input;
     // 展开后的值可能不再合法（占位 `${URL}` 骗过了装载前 schema），补跑一次校验，
@@ -2314,7 +2342,7 @@ export class ProjectMcpRegistry {
       const note = revalidated.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ");
       await container.diag({ kind: "env-invalid", rawName: item.rawName, effectiveName, error: note });
       this.ctx.logger.warn(`${container.label} "${item.rawName}" 配置无效：\${VAR} 展开后校验失败（${note}）`);
-      return { skip: "env-invalid" };
+      return { skip: "env-invalid" } as const;
     }
     input = revalidated.data;
     const configInput: any = { ...input, serverName: effectiveName };
@@ -2328,7 +2356,7 @@ export class ProjectMcpRegistry {
         configInput.cwd = container.projectRoot;
       }
     }
-    return { config: toOfficialConfig(configInput) };
+    return { config: toOfficialConfig(configInput), mode: input.mode } as const;
   }
 
   /** 登记装载中状态，并把 fiber 的 settle 结果回写到状态、诊断与会话过滤。 */
@@ -2523,6 +2551,45 @@ export class ProjectMcpRegistry {
     });
   }
 
+  private visibleLazyMounts(project: string | undefined): LazyMount[] {
+    if (this.disposed) return [];
+    const local = project === undefined ? undefined : this.projects.get(project);
+    const suppressed = project === undefined ? undefined : this.suppressedGlobals.get(project);
+    const states = [...(local?.servers.values() ?? []), ...this.globalServers.values()];
+    return states.filter((state): state is LazyMount => state.lazy !== undefined
+      && state.phase === "active" && (state.scope !== "global" || suppressed?.has(state.rawName) !== true));
+  }
+
+  private syncLazyProxies(): void {
+    if (this.disposed) return;
+    const lazyRow = ({ row }: DesiredProjectRow) => row.disabled !== true && row.config?.mode === "lazy";
+    const configured = this.lastGlobalDesired.some(lazyRow)
+      || [...this.lastScanDesired.values()].some((entry) => entry.rows.some(lazyRow));
+    if (!configured) {
+      this.disposeLazyTools?.();
+      this.disposeLazyTools = undefined;
+      return;
+    }
+    if (this.disposeLazyTools !== undefined) return;
+    try {
+      this.disposeLazyTools = registerLazyTools(this.ctx, async (agent: any) => {
+        const isLive = () => typeof agent?.id === "string" && this.liveAgents().some((live) => live.id === agent.id);
+        if (!isLive()) throw new Error("An active DSH session is required to use Lazy MCP tools");
+        const project = this.agentProjects.get(agent.id) ?? await this.resolveProject(agent);
+        return () => isLive() ? this.visibleLazyMounts(project) : [];
+      });
+      this.warnGates.delete("lazy-proxies");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.warnGated("lazy-proxies", message, () => this.ctx.logger.warn(`Lazy MCP 代理注册失败：${message}`));
+    }
+  }
+
+  private appendLazyProxyDenies(project: string | undefined, toolIds: string[], deny: string[]): void {
+    if (this.disposeLazyTools === undefined || this.visibleLazyMounts(project).length > 0) return;
+    deny.push(...LAZY_TOOL_NAMES.filter((name) => toolIds.includes(name)));
+  }
+
   private async sweepRestrictions() {
     if (this.disposed) return;
     const groups = this.activeMountGroups();
@@ -2543,6 +2610,7 @@ export class ProjectMcpRegistry {
       }
       const deny = expandToToolNames(hidden, toolIds);
       deny.push(...this.toolFilterDeniesForSession(project, toolIds));
+      this.appendLazyProxyDenies(project, toolIds, deny);
       this.applyRestriction(agent, deny);
     }
   }
@@ -3040,6 +3108,22 @@ export class ProjectMcpRegistry {
           return next;
         }
         return [...rows, this.disabledTakeover(rawName, row)];
+      });
+    });
+  }
+
+  async setLoadingMode(source: McpRowSource, projectRoot: string, rawName: string, mode: McpLoadingMode): Promise<string> {
+    mcpLoadingModeSchema.parse(mode);
+    return this.enqueue(async () => {
+      const row = this.requireSourceRow(source, projectRoot, rawName);
+      return this.editManagedYml(source, projectRoot, (rows) => {
+        const index = this.findManagedRowIndex(rows, rawName, { row });
+        const base = index < 0 ? row : rows[index]!;
+        const updated = { ...base, config: { ...base.config, mode } };
+        if (index < 0) return [...rows, updated];
+        const next = [...rows];
+        next[index] = updated;
+        return next;
       });
     });
   }

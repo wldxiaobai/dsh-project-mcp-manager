@@ -137,6 +137,7 @@ function assignJsonTools(entry: Record<string, unknown>, input: McpServerInput):
 export function toJsonEntry(input: McpServerInput): Record<string, unknown> {
   const entry: Record<string, unknown> = {};
   assignJsonTransportFields(entry, input);
+  if (input.mode !== undefined) entry.mode = input.mode;
   if (input.toolCallTimeoutMs !== DEFAULT_TOOL_CALL_TIMEOUT_MS) entry.toolCallTimeoutMs = input.toolCallTimeoutMs;
   if (input.failOnStartupError !== false) entry.failOnStartupError = input.failOnStartupError;
   if (input.maxInstructionBytes !== undefined) entry.maxInstructionBytes = input.maxInstructionBytes;
