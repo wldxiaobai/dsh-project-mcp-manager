@@ -78,3 +78,36 @@
 3. **资源与排障**：无 server 条件的 search 仍并发连接全部可见服务器，`limit` 不限连接数；连接失败只公开泛化错误/search unavailable，缺少更细的脱敏诊断。本轮文档化，不把未经设计的限流/错误明文输出混入修复。
 4. **策略边界**：Lazy 的通用 `mcp_call` 不继承按 `mcp__…` 单工具名设置的宿主策略；需要这类策略、Resources/instructions 的行保持 Eager。Lazy 工具 UI 尚无管理入口，配置级 tools.allow/deny 仍有效。
 5. **发布**：新增服务 API 属 minor additive；核心/UI 必须同步升版、同步发布。本轮不改版本号、不发布、不推送。
+
+## 2026-11-11：Sonar 重复率门禁跟进
+
+### 评估
+
+[PR #30 的 Quality Gate API](https://sonarcloud.io/api/qualitygates/project_status?projectKey=wldxiaobai_dsh-project-mcp-manager&pullRequest=30)
+返回 `ERROR`，唯一失败条件为新增代码重复率：实际 **9.6%**，上限 **3%**；可靠性、安全性、可维护性评级和安全热点复审条件均为 OK。
+截图中的 `test/test-registry.mjs` 新增重复行 **161**、文件新增重复率 **29.0%** 与此对应，不能误读为整个文件有 29% 重复。
+
+[重复块 API](https://sonarcloud.io/api/duplications/show?key=wldxiaobai_dsh-project-mcp-manager%3Atest%2Ftest-registry.mjs&pullRequest=30)
+列出同一文件的三对重复块（行号为服务器分析版本，并非当前重构后的行号）：
+
+| 第一处起始行 / 长度 | 第二处起始行 / 长度 | 内容 |
+| --- | --- | --- |
+| 2800 / 53 | 2950 / 52 | 隔离场景的目录、同一份 stdio fixture、Lazy 行工厂 |
+| 2853 / 13 | 3003 / 13 | cwd、工具注册表与假宿主搭建 |
+| 2869 / 15 | 3018 / 15 | registry 用户层路径、代理执行及视图查询 |
+
+这是新增测试设施的真实重复，不是产品运行逻辑缺陷，也不应通过排除测试、改门禁阈值或换变量名处理。
+
+### 修复
+
+- 在原测试文件内提取 `withLazyProjects(options, run)`，统一目录、协议服务器脚本、配置行生成、工具注册、registry 及清理。
+- 两个场景以数据显式传入项目 A/B、全局配置和额外 A2 会话，所有授权/生效名/焦点卸载/进程退出断言仍留在各自用例中。
+- 两个场景的 **27 + 21 条 assert 调用全部保留**，执行主体与重构前逐行去缩进后相同；恢复原会话注册顺序，临时目录、home、ctx 和 trace 仍逐例隔离。
+- `try/finally` 现在也覆盖搭建失败，仍执行 disposers、恢复 cwd 并清理临时目录。原有单项目 Lazy 用例保持独立，未丢失搜索词、协议请求计数、JSON 热重载和 `mode` 不透传的检查。
+- 不改生产代码、依赖或 Sonar 配置；没有新增排除项，也没有删测试。
+
+### 验证与边界
+
+- 完整 `pnpm test`（含 core/UI 构建）通过，registry 仍为 **67 passed**，其余套件通过；`node --check` 和 `git diff --check` 通过。
+- 本地只确认已报告的三组重复设施合并成单一实现，并以独立审查核对断言保留；没有可用的官方本地 Sonar CPD 结果。临时 tokenizer 辅助检查因当前 TypeScript 7 API 不兼容而放弃，没有将其当作通过证据。
+- **尚不能宣称远端门禁已变绿或给出重扫后的百分比**：本轮只创建本地提交，不推送。需要用户推送后等待 SonarCloud 对新提交重扫；若仍有重复，再按新的重复块证据处理。
