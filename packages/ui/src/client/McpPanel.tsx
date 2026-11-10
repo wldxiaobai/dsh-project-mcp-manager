@@ -1,6 +1,6 @@
 /** MCP settings tab: layers, activation, delete, and per-tool switches. */
 
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useId, useRef, useState, type CSSProperties } from "react";
 import { Button, IconChevronDownOutlineRegular, IconFolderCloseRegular, IconInfoOutlineRegular, IconPlusOutlineRegular, IconTrashOutlineRegular, IconWarningOutlineRegular, Input, Menu, Modal, SegmentedControl, StateDot, Switch, Tag, Tooltip } from "@deepseek-ai/dsh-client-ui-primitives";
 import {
   MCP_UI_ADD_PATH,
@@ -647,7 +647,8 @@ function LoadingMode({ value, disabled, t, onChange }: {
   readonly t: McpPanelProps["t"];
   readonly onChange: (mode: "eager" | "lazy") => void;
 }) {
-  return <SegmentedControl label={t("loadingMode")} value={value ?? "eager"} disabled={disabled} onChange={onChange} options={[
+  const id = useId();
+  return <SegmentedControl id={id} label={t("loadingMode")} value={value ?? "eager"} disabled={disabled} onChange={onChange} options={[
     { value: "eager", label: t("loadingModeEager") },
     { value: "lazy", label: t("loadingModeLazy") }
   ]} />;
