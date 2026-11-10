@@ -36,11 +36,18 @@ function pass(name) {
 function mockProjectMcp(options = {}) {
   const listeners = new Set();
   const counts = { subscribed: 0, unsubscribed: 0 };
+  const modeCalls = [];
   let writeTargets = options.writeTargets ?? [];
+  let failMode = options.failMode;
   const service = {
     snapshot: async () => options.snapshot ?? [],
-    managedPathFor: () => undefined,
+    managedPathFor: (source) => options.managedPathFor?.(source) ?? options.managedPath,
     writeTargets: () => writeTargets,
+    setLoadingMode(source, projectRoot, rawName, mode) {
+      modeCalls.push({ source, projectRoot, rawName, mode });
+      if (failMode !== undefined) throw new Error(failMode);
+      return Promise.resolve(options.modePath ?? String.raw`D:\work\.dsh\mcp.yml`);
+    },
     toolStates: () => [{ name: "mock-tool", enabled: true }],
     subscribeUpdated(callback) {
       listeners.add(callback);
@@ -55,8 +62,12 @@ function mockProjectMcp(options = {}) {
     service,
     listeners,
     counts,
+    modeCalls,
     setWriteTargets(next) {
       writeTargets = next;
+    },
+    setFailMode(next) {
+      failMode = next;
     },
     updated() {
       for (const listener of listeners) listener();
@@ -457,5 +468,93 @@ await withPingTimers(async (timers) => {
     await ctx.fiber.dispose();
   }
 });
+
+{
+  // Contract regression for the UI server route's new `action: "mode"` branch.
+  // The core is a spy here: the route must validate and gate before it mutates.
+  const ctx = new Context();
+  const projectRoot = String.raw`D:\work`;
+  const managedPath = String.raw`D:\work\.dsh\mcp.yml`;
+  const filePath = String.raw`D:\work\.dsh\mcp.json`;
+  const mcp = mockProjectMcp({ managedPath, modePath: managedPath });
+  const connection = mockConnection();
+  try {
+    const mcpProvider = provide(ctx, "projectMcp", mcp.service);
+    const connectionProvider = provide(ctx, "connection", connection.service);
+    await mcpProvider;
+    await connectionProvider;
+    const uiFiber = ctx.plugin(ui);
+    await uiFiber;
+    await connectionScope(ctx, uiFiber).await();
+    const { route } = connection.routes.get("/api/project-mcp/server");
+    const post = (payload) => route.fetch(new Request("http://localhost" + route.path, {
+      method: "POST",
+      body: JSON.stringify(payload),
+      headers: { "content-type": "application/json" }
+    }));
+    const request = (overrides = {}) => ({
+      source: "dsh-project",
+      projectRoot,
+      serverName: "alpha",
+      action: "mode",
+      ...overrides
+    });
+
+    for (const mode of ["eager", "lazy"]) {
+      mcp.modeCalls.length = 0;
+      const response = await post(request({ mode }));
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { ok: true, path: managedPath });
+      assert.deepEqual(mcp.modeCalls, [{ source: "dsh-project", projectRoot, rawName: "alpha", mode }]);
+    }
+    pass("server route passes legal eager/lazy modes through to setLoadingMode");
+
+    mcp.modeCalls.length = 0;
+    const invalid = await post(request({ mode: "turbo" }));
+    assert.equal(invalid.status, 400);
+    assert.deepEqual(await invalid.json(), { ok: false, message: "加载模式只支持 eager 或 lazy" });
+    assert.equal(mcp.modeCalls.length, 0, "invalid mode is rejected before the core call");
+    pass("server route rejects an unknown mode without touching the core");
+
+    mcp.modeCalls.length = 0;
+    const confirmation = await post(request({ source: "dsh-project-json", filePath, mode: "lazy" }));
+    assert.equal(confirmation.status, 200);
+    assert.deepEqual(await confirmation.json(), {
+      ok: false,
+      code: "confirm-yml",
+      managedPath,
+      filePath
+    });
+    assert.equal(mcp.modeCalls.length, 0, "JSON takeover without acknowledge never calls the core");
+    pass("server route asks for JSON takeover acknowledgement before calling setLoadingMode");
+
+    mcp.modeCalls.length = 0;
+    const acknowledged = await post(request({ source: "dsh-project-json", filePath, mode: "lazy", acknowledge: true }));
+    assert.equal(acknowledged.status, 200);
+    assert.deepEqual(await acknowledged.json(), { ok: true, path: managedPath });
+    assert.deepEqual(mcp.modeCalls, [{ source: "dsh-project-json", projectRoot, rawName: "alpha", mode: "lazy" }]);
+    pass("acknowledged JSON takeover calls setLoadingMode with the original source and mode");
+
+    mcp.modeCalls.length = 0;
+    const invalidAcknowledged = await post(request({ source: "dsh-project-json", filePath, mode: "sideways", acknowledge: true }));
+    assert.equal(invalidAcknowledged.status, 400);
+    assert.deepEqual(await invalidAcknowledged.json(), { ok: false, message: "加载模式只支持 eager 或 lazy" });
+    assert.equal(mcp.modeCalls.length, 0, "validation still runs after acknowledge and before the core call");
+
+    mcp.modeCalls.length = 0;
+    mcp.setFailMode("mock write failed");
+    const failed = await post(request({ mode: "eager" }));
+    assert.equal(failed.status, 400);
+    assert.deepEqual(await failed.json(), { ok: false, message: "mock write failed" });
+    assert.deepEqual(mcp.modeCalls, [{ source: "dsh-project", projectRoot, rawName: "alpha", mode: "eager" }],
+      "the failed attempt is the only core call");
+    assert.equal(connection.routes.size, 7, "a rejected mode write leaves the route table intact");
+    assert.equal(mcp.listeners.size, 1, "a rejected mode write leaves the update subscription intact");
+    mcp.setFailMode(undefined);
+    pass("core errors surface as a 400 response without success side effects");
+  } finally {
+    await ctx.fiber.dispose();
+  }
+}
 
 console.log(passed + " passed");

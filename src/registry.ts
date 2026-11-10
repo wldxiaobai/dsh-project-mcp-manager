@@ -3119,7 +3119,14 @@ export class ProjectMcpRegistry {
       return this.editManagedYml(source, projectRoot, (rows) => {
         const index = this.findManagedRowIndex(rows, rawName, { row });
         const base = index < 0 ? row : rows[index]!;
+        // A hand-written disabled placeholder can hold only an id. Do not turn it
+        // into a mode-only config or resurrect a lower-priority server implicitly.
         const updated = { ...base, config: { ...base.config, mode } };
+        try {
+          inputFromPatchRow(updated);
+        } catch {
+          throw new Error(`服务器 "${rawName}" 缺少有效连接配置，不能切换加载模式`);
+        }
         if (index < 0) return [...rows, updated];
         const next = [...rows];
         next[index] = updated;

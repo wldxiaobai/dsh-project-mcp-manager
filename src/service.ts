@@ -36,6 +36,7 @@ export interface ProjectMcpService {
   openConfigFile(source: McpRowSource, projectRoot: string): Promise<string>;
   /** 启用/停用一台服务器（只写受管 yml；其它来源落同身份行或 disabled 占位）。 */
   setServerEnabled(source: McpRowSource, projectRoot: string, rawName: string, enabled: boolean): Promise<string>;
+  /** 切换加载模式：仅写受管 yml、保留 disabled；返回路径，不等待写后对账（需等待可 reload）。 */
   setLoadingMode(source: McpRowSource, projectRoot: string, rawName: string, mode: McpLoadingMode): Promise<string>;
   /** 删除一台服务器（yml 行就地移除；其它来源落 disabled 占位行遮蔽）。 */
   removeServer(source: McpRowSource, projectRoot: string, rawName: string): Promise<string>;

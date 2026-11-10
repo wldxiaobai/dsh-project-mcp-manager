@@ -58,6 +58,24 @@ async function rmRetry(path) {
   await rm(path, { recursive: true, force: true });
 }
 
+/** 读某个 Lazy fixture 的 trace；每个标签一份，避免多个子进程并发写同一文件。 */
+async function readTraceLines(path) {
+  try {
+    return (await readFile(path, "utf8")).split(/\r?\n/).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+/** 轮询 trace 直到谓词成立：等子进程真正退出，不用固定 sleep。 */
+async function waitForTrace(path, predicate, timeoutMs = 5000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (predicate(await readTraceLines(path))) return true;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+  }
+  return false;
+}
+
 const stdioRow = (name, command = "node") => ({
   id: "panel-mcp-" + name,
   name: "@deepseek-ai/dsh-mcp-client",
@@ -2780,6 +2798,443 @@ for await (const line of createInterface({ input: process.stdin })) {
     if (previousDshHome === undefined) delete process.env.DSH_HOME;
     else process.env.DSH_HOME = previousDshHome;
     await rmRetry(root);
+  }
+}
+
+// Gate1：两个项目同时有 Lazy 时，隔离必须落在“哪个 server 可见”，而不是只靠
+// “没有 Lazy 就整体 deny 三个代理工具”。这里覆盖：异名、跨项目同原名（生效名
+// 改名）、search/describe/call 双向越权，以及会话销毁后的 active-session 检查。
+{
+  const root = await mkdtemp(join(tmpdir(), "dsh-mcp-lazy-two-project-"));
+  const home = join(root, "home");
+  const projA = join(root, "project-a");
+  const projB = join(root, "project-b");
+  const script = join(root, "lazy-fixture.mjs");
+  await mkdir(join(home, ".dsh"), { recursive: true });
+  await mkdir(join(projA, ".dsh"), { recursive: true });
+  await mkdir(join(projB, ".dsh"), { recursive: true });
+  await writeFile(script, String.raw`
+import { appendFileSync } from "node:fs";
+import { createInterface } from "node:readline";
+const [trace, label] = process.argv.slice(2);
+const log = (line) => appendFileSync(trace, line + "\n");
+log("start:" + label);
+process.on("exit", () => log("exit:" + label));
+const inputSchema = { type: "object", properties: { value: { type: "string" } }, required: ["value"] };
+for await (const line of createInterface({ input: process.stdin })) {
+  const { method, id, params } = JSON.parse(line);
+  if (id === undefined) continue;
+  log("method:" + label + ":" + method);
+  let result;
+  if (method === "initialize") {
+    result = { protocolVersion: params.protocolVersion, serverInfo: { name: "fixture-" + label, version: "1" }, capabilities: { tools: {} } };
+  } else if (method === "tools/list") {
+    result = { tools: ["echo", "secret"].map((name) => ({ name, description: label + " " + name, inputSchema })) };
+  } else if (method === "tools/call") {
+    result = { content: [{ type: "text", text: label + ":" + params.arguments.value }] };
+  }
+  console.log(JSON.stringify({ jsonrpc: "2.0", id, ...(result === undefined ? { error: { code: -32601, message: "Method not found" } } : { result }) }));
+}
+`);
+  const traceFor = (label) => join(root, "trace-" + label + ".log");
+  const lazyRow = (name, label) => ({
+    id: "panel-" + label,
+    name: "@deepseek-ai/dsh-mcp-client",
+    config: {
+      serverName: name,
+      transport: "stdio",
+      command: process.execPath,
+      args: [script, traceFor(label), label],
+      mode: "lazy",
+      toolCallTimeoutMs: 5000,
+      tools: { allow: ["*"], deny: ["secret"] }
+    }
+  });
+  await writeManagedRows(projectMcpFile(projA), [lazyRow("demo", "a-demo"), lazyRow("alpha", "a-alpha")], { createIfMissing: true });
+  await writeManagedRows(projectMcpFile(projB), [lazyRow("demo", "b-demo"), lazyRow("beta", "b-beta")], { createIfMissing: true });
+  const savedCwd = process.cwd();
+  process.chdir(root);
+  const ctx = fakeCtx();
+  const registered = new Map();
+  ctx.tools.schemas = () => [...registered.values()];
+  ctx.tools.register = (definition) => {
+    assert.ok(!registered.has(definition.name));
+    registered.set(definition.name, definition);
+    return () => registered.delete(definition.name);
+  };
+  const agentA = fakeAgent("lazy-two-a", projA);
+  const agentA2 = fakeAgent("lazy-two-a2", projA);
+  const agentB = fakeAgent("lazy-two-b", projB);
+  ctx.agentsList.push(agentA, agentA2, agentB);
+  const registry = new ProjectMcpRegistry(ctx, {
+    globalNames: async () => [],
+    userLayerPaths: {
+      mcpYml: join(home, ".dsh", "mcp.yml"),
+      mcpJson: join(home, ".dsh", "mcp.json"),
+      profilesDir: join(home, ".dsh", "profiles")
+    }
+  });
+  const execute = (name, args, agent) => registered.get(name).execute(args, {
+    agent, signal: new AbortController().signal
+  });
+  const viewsOf = async (projectRoot) => (await registry.snapshot()).find((entry) => entry.project === projectRoot)?.servers ?? [];
+  try {
+    await registry.reconcileNow();
+    assert.deepEqual([...registered.keys()], ["mcp_search", "mcp_describe", "mcp_call"]);
+    assert.equal(ctx.mounts.length, 0, "Lazy rows must not mount the official client");
+    assert.equal(await pathExists(traceFor("a-demo")), false, "startup must not spawn a Lazy server");
+
+    const aViews = await viewsOf(projA);
+    const bViews = await viewsOf(projB);
+    const effective = (views, name) => views.find((view) => view.serverName === name)?.effectiveServerName;
+    const aDemo = effective(aViews, "demo");
+    const aAlpha = effective(aViews, "alpha");
+    const bDemo = effective(bViews, "demo");
+    const bBeta = effective(bViews, "beta");
+    assert.ok(aDemo && bDemo && aAlpha && bBeta,
+      "both projects' Lazy views must be present: " + JSON.stringify({ aViews, bViews }));
+    assert.notEqual(aDemo, bDemo, "the same raw name in two projects must get distinct effective names");
+    assert.equal(aAlpha, "alpha");
+    assert.equal(bBeta, "beta");
+
+    for (const [agent, label] of [[agentA, "A"], [agentA2, "A2"], [agentB, "B"]]) {
+      const deny = agent.denies.at(-1) ?? [];
+      assert.ok(!["mcp_search", "mcp_describe", "mcp_call"].some((name) => deny.includes(name)),
+        label + " has its own Lazy server; the proxy tools must not be denied: " + JSON.stringify(deny));
+    }
+
+    // 只连本项目的 a-alpha；不要先做无 server 过滤的 search，否则会把 a-demo
+    // 也拉起来，后面的“跨项目不得新增连接”断言就失去意义。
+    const descA = await execute("mcp_describe", { server: aAlpha, tool: "echo" }, agentA);
+    assert.deepEqual(JSON.parse(descA.content[0].text).inputSchema.required, ["value"]);
+    assert.equal((await execute("mcp_call", { server: aAlpha, tool: "echo", arguments: { value: "own" } }, agentA)).content[0].text, "a-alpha:own");
+    assert.equal((await execute("mcp_call", { server: bBeta, tool: "echo", arguments: { value: "own" } }, agentB)).content[0].text, "b-beta:own");
+
+    const crossSearchA = await execute("mcp_search", { server: bDemo }, agentA);
+    assert.deepEqual(JSON.parse(crossSearchA.content[0].text).tools, [], "A must not search B's effective server");
+    await assert.rejects(() => execute("mcp_describe", { server: bDemo, tool: "echo" }, agentA), /unavailable in this session/);
+    await assert.rejects(() => execute("mcp_call", { server: bDemo, tool: "echo", arguments: { value: "x" } }, agentA), /unavailable in this session/);
+    assert.equal(await pathExists(traceFor("b-demo")), false, "A's cross-project attempt must fail before B connects");
+
+    const crossSearchB = await execute("mcp_search", { server: aDemo }, agentB);
+    assert.deepEqual(JSON.parse(crossSearchB.content[0].text).tools, [], "B must not search A's effective server");
+    await assert.rejects(() => execute("mcp_describe", { server: aDemo, tool: "echo" }, agentB), /unavailable in this session/);
+    await assert.rejects(() => execute("mcp_call", { server: aDemo, tool: "echo", arguments: { value: "x" } }, agentB), /unavailable in this session/);
+    assert.equal(await pathExists(traceFor("a-demo")), false, "B's cross-project attempt must fail before A connects");
+
+    const broadA = JSON.parse((await execute("mcp_search", { query: "echo" }, agentA)).content[0].text);
+    assert.ok(broadA.tools.length > 0);
+    assert.ok(broadA.tools.every(({ server }) => server === aDemo || server === aAlpha),
+      "A's broad search must only contain A's servers: " + JSON.stringify(broadA.tools));
+    const broadB = JSON.parse((await execute("mcp_search", { query: "echo" }, agentB)).content[0].text);
+    assert.ok(broadB.tools.length > 0);
+    assert.ok(broadB.tools.every(({ server }) => server === bDemo || server === bBeta),
+      "B's broad search must only contain B's servers: " + JSON.stringify(broadB.tools));
+    await assert.rejects(() => execute("mcp_call", { server: aAlpha, tool: "secret", arguments: { value: "x" } }, agentA), /unavailable in this session/);
+
+    const indexA2 = ctx.agentsList.findIndex((agent) => agent.id === agentA2.id);
+    assert.ok(indexA2 >= 0);
+    ctx.agentsList.splice(indexA2, 1);
+    ctx.emit("agent/disposed", { agent: agentA2 });
+    await registry.reconcileNow();
+    await assert.rejects(() => execute("mcp_call", { server: aAlpha, tool: "echo", arguments: { value: "dead" } }, agentA2), /active DSH session is required/);
+    assert.equal((await execute("mcp_call", { server: aAlpha, tool: "echo", arguments: { value: "alive" } }, agentA)).content[0].text, "a-alpha:alive",
+      "the surviving session keeps its own Lazy server");
+    pass("Gate1: two projects with Lazy servers isolate server scope, namespacing, proxy availability and disposed sessions");
+  } finally {
+    for (const disposer of ctx.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    process.chdir(savedCwd);
+    await rmRetry(root);
+  }
+}
+
+// Gate1：全局 Lazy 被项目行同名遮蔽时，A 只能看到项目生效名，B 看到全局名；
+// 焦点切走后项目层 Lazy 必须卸载，但全局 Lazy 仍按宿主级可见。
+{
+  const root = await mkdtemp(join(tmpdir(), "dsh-mcp-lazy-global-focus-"));
+  const home = join(root, "home");
+  const projA = join(root, "project-a");
+  const projB = join(root, "project-b");
+  const script = join(root, "lazy-fixture.mjs");
+  await mkdir(join(home, ".dsh"), { recursive: true });
+  await mkdir(join(projA, ".dsh"), { recursive: true });
+  await mkdir(join(projB, ".dsh"), { recursive: true });
+  await writeFile(script, String.raw`
+import { appendFileSync } from "node:fs";
+import { createInterface } from "node:readline";
+const [trace, label] = process.argv.slice(2);
+const log = (line) => appendFileSync(trace, line + "\n");
+log("start:" + label);
+process.on("exit", () => log("exit:" + label));
+const inputSchema = { type: "object", properties: { value: { type: "string" } }, required: ["value"] };
+for await (const line of createInterface({ input: process.stdin })) {
+  const { method, id, params } = JSON.parse(line);
+  if (id === undefined) continue;
+  log("method:" + label + ":" + method);
+  let result;
+  if (method === "initialize") {
+    result = { protocolVersion: params.protocolVersion, serverInfo: { name: "fixture-" + label, version: "1" }, capabilities: { tools: {} } };
+  } else if (method === "tools/list") {
+    result = { tools: ["echo", "secret"].map((name) => ({ name, description: label + " " + name, inputSchema })) };
+  } else if (method === "tools/call") {
+    result = { content: [{ type: "text", text: label + ":" + params.arguments.value }] };
+  }
+  console.log(JSON.stringify({ jsonrpc: "2.0", id, ...(result === undefined ? { error: { code: -32601, message: "Method not found" } } : { result }) }));
+}
+`);
+  const traceFor = (label) => join(root, "trace-" + label + ".log");
+  const lazyRow = (name, label) => ({
+    id: "panel-" + label,
+    name: "@deepseek-ai/dsh-mcp-client",
+    config: {
+      serverName: name,
+      transport: "stdio",
+      command: process.execPath,
+      args: [script, traceFor(label), label],
+      mode: "lazy",
+      toolCallTimeoutMs: 5000,
+      tools: { allow: ["*"], deny: ["secret"] }
+    }
+  });
+  await writeManagedRows(join(home, ".dsh", "mcp.yml"), [lazyRow("shared", "g-shared")], { createIfMissing: true });
+  await writeManagedRows(projectMcpFile(projA), [lazyRow("shared", "a-shared"), lazyRow("demo", "a-demo")], { createIfMissing: true });
+  await writeManagedRows(projectMcpFile(projB), [lazyRow("demo", "b-demo"), lazyRow("beta", "b-beta")], { createIfMissing: true });
+  const savedCwd = process.cwd();
+  process.chdir(root);
+  const ctx = fakeCtx();
+  const registered = new Map();
+  ctx.tools.schemas = () => [...registered.values()];
+  ctx.tools.register = (definition) => {
+    assert.ok(!registered.has(definition.name));
+    registered.set(definition.name, definition);
+    return () => registered.delete(definition.name);
+  };
+  const agentA = fakeAgent("lazy-global-a", projA);
+  const agentB = fakeAgent("lazy-global-b", projB);
+  ctx.agentsList.push(agentA, agentB);
+  const registry = new ProjectMcpRegistry(ctx, {
+    globalNames: async () => [],
+    userLayerPaths: {
+      mcpYml: join(home, ".dsh", "mcp.yml"),
+      mcpJson: join(home, ".dsh", "mcp.json"),
+      profilesDir: join(home, ".dsh", "profiles")
+    }
+  });
+  const execute = (name, args, agent) => registered.get(name).execute(args, {
+    agent, signal: new AbortController().signal
+  });
+  const viewsOf = async (projectRoot) => (await registry.snapshot()).find((entry) => entry.project === projectRoot)?.servers ?? [];
+  try {
+    await registry.reconcileNow();
+    assert.deepEqual([...registered.keys()], ["mcp_search", "mcp_describe", "mcp_call"]);
+    const snap = await registry.snapshot();
+    const globalViews = snap.find((entry) => entry.kind === "global")?.servers ?? [];
+    const aViews = await viewsOf(projA);
+    const bViews = await viewsOf(projB);
+    const effective = (views, name) => views.find((view) => view.serverName === name)?.effectiveServerName;
+    const aShared = effective(aViews, "shared");
+    const aDemo = effective(aViews, "demo");
+    const bDemo = effective(bViews, "demo");
+    const bBeta = effective(bViews, "beta");
+    assert.ok(aShared && aDemo && bDemo && bBeta,
+      "both projects' Lazy views must be present: " + JSON.stringify({ aViews, bViews }));
+    assert.notEqual(aShared, "shared", "A's local shared must be namespaced against the global shared");
+    assert.ok(globalViews.some((view) => view.serverName === "shared" && view.effectiveServerName === "shared"),
+      "the global shared row must keep its original effective name: " + JSON.stringify(globalViews));
+
+    const aSearchGlobal = await execute("mcp_search", { server: "shared" }, agentA);
+    assert.deepEqual(JSON.parse(aSearchGlobal.content[0].text).tools, [], "A must not see the global shared shadowed by its project row");
+    await assert.rejects(() => execute("mcp_call", { server: "shared", tool: "echo", arguments: { value: "x" } }, agentA), /unavailable in this session/);
+    assert.equal((await execute("mcp_call", { server: aShared, tool: "echo", arguments: { value: "local" } }, agentA)).content[0].text, "a-shared:local");
+
+    const bSearchGlobal = JSON.parse((await execute("mcp_search", { server: "shared" }, agentB)).content[0].text);
+    assert.deepEqual(bSearchGlobal.tools.map(({ server }) => server), ["shared"]);
+    assert.equal((await execute("mcp_call", { server: "shared", tool: "echo", arguments: { value: "global" } }, agentB)).content[0].text, "g-shared:global");
+    assert.equal((await execute("mcp_call", { server: bBeta, tool: "echo", arguments: { value: "b" } }, agentB)).content[0].text, "b-beta:b");
+
+    await assert.rejects(() => execute("mcp_call", { server: aShared, tool: "echo", arguments: { value: "x" } }, agentB), /unavailable in this session/);
+    await assert.rejects(() => execute("mcp_call", { server: bDemo, tool: "echo", arguments: { value: "x" } }, agentA), /unavailable in this session/);
+    assert.equal(await pathExists(traceFor("b-demo")), false, "A must not connect to B's demo");
+
+    ctx.emit("session/event", { id: agentA.id, header: { cwd: projA } }, { type: "user/message" });
+    await registry.reconcileNow();
+    await assert.rejects(() => execute("mcp_call", { server: bBeta, tool: "echo", arguments: { value: "x" } }, agentB), /unavailable in this session/);
+    assert.equal((await execute("mcp_call", { server: "shared", tool: "echo", arguments: { value: "still" } }, agentB)).content[0].text, "g-shared:still",
+      "the global Lazy stays host-scoped while B's project is unfocused");
+    assert.equal((await execute("mcp_call", { server: aShared, tool: "echo", arguments: { value: "a" } }, agentA)).content[0].text, "a-shared:a",
+      "the focused project keeps its Lazy server");
+    assert.ok(await waitForTrace(traceFor("b-beta"), (lines) => lines.includes("exit:b-beta")),
+      "B's project Lazy subprocess exits after focus leaves B");
+
+    ctx.emit("session/event", { id: agentB.id, header: { cwd: projB } }, { type: "user/message" });
+    await registry.reconcileNow();
+    await assert.rejects(() => execute("mcp_call", { server: aDemo, tool: "echo", arguments: { value: "x" } }, agentA), /unavailable in this session/);
+    const denyA = agentA.denies.at(-1) ?? [];
+    assert.ok(denyA.includes("mcp_call"), "an unfocused project with no visible Lazy mount must deny the proxy tools: " + JSON.stringify(denyA));
+    assert.equal((await execute("mcp_call", { server: bDemo, tool: "echo", arguments: { value: "b" } }, agentB)).content[0].text, "b-demo:b");
+    assert.ok(await waitForTrace(traceFor("a-shared"), (lines) => lines.includes("exit:a-shared")),
+      "A's project Lazy subprocess exits after focus leaves A");
+    pass("Gate1: global Lazy shadowing and focus unmount keep project scope isolated while global mounts stay host-scoped");
+  } finally {
+    for (const disposer of ctx.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    process.chdir(savedCwd);
+    await rmRetry(root);
+  }
+}
+
+// setLoadingMode 契约：managed 行就地更新；JSON/遗留层只读，takeover 写受管 yml
+// 且原文件不动、disabled 保持；用户/profile/当前项目可写，非当前项目与非法 mode 拒绝；
+// mode 只留在受管 yml，不传给官方 mcp-client（既有 lazy 断言继续保留）。
+{
+  const dirMode = await mkdtemp(join(tmpdir(), "dsh-mcp-loading-mode-"));
+  const homeMode = join(dirMode, "home");
+  const projMode = join(dirMode, "proj");
+  const projOtherMode = join(dirMode, "other");
+  const profilesMode = join(homeMode, ".dsh", "profiles");
+  await mkdir(join(homeMode, ".dsh"), { recursive: true });
+  await mkdir(join(projMode, ".dsh"), { recursive: true });
+  await mkdir(projOtherMode, { recursive: true });
+  await mkdir(join(profilesMode, "web"), { recursive: true });
+  const ymlMode = projectMcpFile(projMode);
+  const jsonMode = join(projMode, ".dsh", "mcp.json");
+  const legacyJsonMode = join(projMode, ".mcp.json");
+  const userYmlMode = join(homeMode, ".dsh", "mcp.yml");
+  const profileYmlMode = join(profilesMode, "web", "mcp.yml");
+  await writeManagedRows(ymlMode, [stdioRow("own")], { createIfMissing: true });
+  await writeFile(jsonMode, JSON.stringify({
+    mcpServers: {
+      fromjson: { command: "node", args: ["j.js"] },
+      rawdisabled: { command: "node", args: ["r.js"], disabled: true }
+    }
+  }), "utf8");
+  await writeFile(legacyJsonMode, JSON.stringify({
+    mcpServers: { legacy: { command: "node", args: ["l.js"] } }
+  }), "utf8");
+  await writeManagedRows(userYmlMode, [stdioRow("usershared")], { createIfMissing: true });
+  await writeManagedRows(profileYmlMode, [stdioRow("webtool")], { createIfMissing: true });
+  const savedCwdMode = process.cwd();
+  process.chdir(dirMode);
+  const ctxMode = fakeCtx();
+  ctxMode.tools.register = () => () => {};
+  ctxMode.tools.schemas = () => [];
+  ctxMode.agentsList.push(fakeAgent("session-mode", projMode));
+  const registryMode = new ProjectMcpRegistry(ctxMode, {
+    globalNames: async () => [],
+    activeProfile: async () => "web",
+    userLayerPaths: {
+      mcpYml: userYmlMode,
+      mcpJson: join(homeMode, ".dsh", "mcp.json"),
+      profilesDir: profilesMode
+    }
+  });
+  try {
+    await registryMode.reconcileNow();
+
+    // 1) 同一条受管行就地更新：不新增行，只改 config.mode，其它字段保留。
+    await registryMode.setLoadingMode("dsh-project", projMode, "own", "lazy");
+    let rows = extractManagedRows(await readFile(ymlMode, "utf8"));
+    assert.equal(rows.length, 1, "mode update edits the existing managed row in place");
+    assert.equal(rows[0].config.mode, "lazy");
+    assert.equal(rows[0].config.command, "node");
+    await registryMode.setLoadingMode("dsh-project", projMode, "own", "eager");
+    rows = extractManagedRows(await readFile(ymlMode, "utf8"));
+    assert.equal(rows.length, 1, "switching back does not duplicate the managed row");
+    assert.equal(rows[0].config.mode, "eager");
+
+    // 2) mode 只写入受管行；切到 eager 后官方 client 配置不带 mode。
+    await registryMode.reconcileNow();
+    const ownMount = ctxMode.mounts.filter((mount) => mount.serverName === "own").at(-1);
+    assert.ok(ownMount !== undefined, "the eager row mounts the official client");
+    assert.equal(Object.hasOwn(ownMount, "mode"), false, "mode must not be passed to the official mcp-client");
+
+    // 3) 用户层和 profile 层各自写自己的受管 yml。
+    await registryMode.setLoadingMode("dsh-user-yml", "", "usershared", "lazy");
+    let userRows = extractManagedRows(await readFile(userYmlMode, "utf8"));
+    assert.equal(userRows.length, 1);
+    assert.equal(userRows[0].config.mode, "lazy");
+    await registryMode.setLoadingMode("dsh-profile-user-yml", "", "webtool", "lazy");
+    let profileRows = extractManagedRows(await readFile(profileYmlMode, "utf8"));
+    assert.equal(profileRows.length, 1);
+    assert.equal(profileRows[0].config.mode, "lazy");
+
+    // 4) JSON takeover：先停用成受管占位，再切 mode；disabled 必须保留，原 JSON 逐字节不动。
+    const jsonBeforeMode = await readFile(jsonMode, "utf8");
+    await registryMode.setServerEnabled("dsh-project-json", projMode, "fromjson", false);
+    let takeover = extractManagedRows(await readFile(ymlMode, "utf8")).find((row) => row.id === "panel-mcp-fromjson");
+    assert.equal(takeover?.disabled, true, "the JSON row first lands as a disabled managed placeholder");
+    await registryMode.setLoadingMode("dsh-project-json", projMode, "fromjson", "lazy");
+    takeover = extractManagedRows(await readFile(ymlMode, "utf8")).find((row) => row.id === "panel-mcp-fromjson");
+    assert.equal(takeover?.disabled, true, "setting mode must not re-enable a disabled takeover");
+    assert.equal(takeover?.config?.mode, "lazy");
+    assert.equal(takeover?.config?.command, "node", "the takeover copies the JSON row config");
+    await registryMode.setLoadingMode("dsh-project-json", projMode, "fromjson", "eager");
+    takeover = extractManagedRows(await readFile(ymlMode, "utf8")).find((row) => row.id === "panel-mcp-fromjson");
+    assert.equal(takeover?.disabled, true);
+    assert.equal(takeover?.config?.mode, "eager");
+    assert.equal(await readFile(jsonMode, "utf8"), jsonBeforeMode, "the .dsh/mcp.json file must stay byte-identical");
+
+    // 4b) JSON 自身 disabled:true 的行同样可以 takeover；disabled 原样保留，JSON 不动。
+    await registryMode.setLoadingMode("dsh-project-json", projMode, "rawdisabled", "lazy");
+    const rawDisabledTakeover = extractManagedRows(await readFile(ymlMode, "utf8")).find((row) => row.id === "panel-mcp-rawdisabled");
+    assert.equal(rawDisabledTakeover?.disabled, true, "a JSON row disabled:true keeps disabled in the takeover");
+    assert.equal(rawDisabledTakeover?.config?.mode, "lazy");
+    assert.equal(rawDisabledTakeover?.config?.command, "node");
+    assert.equal(await readFile(jsonMode, "utf8"), jsonBeforeMode, "a disabled JSON row must not be rewritten either");
+
+    // 5) 遗留 .mcp.json 同样只写受管 yml，原文件不动。
+    const legacyBeforeMode = await readFile(legacyJsonMode, "utf8");
+    await registryMode.setLoadingMode("cc-project", projMode, "legacy", "lazy");
+    const legacyTakeover = extractManagedRows(await readFile(ymlMode, "utf8")).find((row) => row.id === "panel-mcp-legacy");
+    assert.equal(legacyTakeover?.config?.mode, "lazy");
+    assert.equal(legacyTakeover?.config?.command, "node");
+    assert.equal(await readFile(legacyJsonMode, "utf8"), legacyBeforeMode, "the legacy .mcp.json file must stay byte-identical");
+
+    // 6) config-less disabled placeholder: requireSourceRow must find it, but
+    // setLoadingMode must reject instead of writing a mode-only invalid config.
+    const placeholderRows = extractManagedRows(await readFile(ymlMode, "utf8"));
+    await writeManagedRows(ymlMode, [...placeholderRows, {
+      id: "panel-mcp-placeholder",
+      name: "@deepseek-ai/dsh-mcp-client",
+      disabled: true
+    }]);
+    await registryMode.reconcileNow();
+    const placeholderBefore = await readFile(ymlMode, "utf8");
+    await assert.rejects(
+      () => registryMode.setLoadingMode("dsh-project", projMode, "placeholder", "lazy"),
+      /缺少有效连接配置，不能切换加载模式/
+    );
+    assert.equal(await readFile(ymlMode, "utf8"), placeholderBefore, "a config-less placeholder must not be rewritten");
+
+    // 7) 非法 mode 在写盘前拒绝，受管 yml 不变。
+    const beforeInvalidMode = await readFile(ymlMode, "utf8");
+    await assert.rejects(() => registryMode.setLoadingMode("dsh-project", projMode, "own", "sometime"));
+    assert.equal(await readFile(ymlMode, "utf8"), beforeInvalidMode, "an invalid mode must not rewrite the managed yml");
+
+    // 8) 后台工作区不能写；文件保持不变。
+    const beforeOtherMode = await readFile(ymlMode, "utf8");
+    const agentOtherMode = fakeAgent("session-mode-other", projOtherMode);
+    ctxMode.agentsList.push(agentOtherMode);
+    ctxMode.emit("agent/created", { agent: agentOtherMode, source: "resume" });
+    await registryMode.reconcileNow();
+    await assert.rejects(
+      () => registryMode.setLoadingMode("dsh-project", projMode, "own", "lazy"),
+      /这个工作区当前不能改/
+    );
+    assert.equal(await readFile(ymlMode, "utf8"), beforeOtherMode, "a background workspace must not be rewritten");
+    pass("setLoadingMode updates managed rows, preserves disabled JSON takeovers, scopes writable layers and rejects invalid modes");
+  } finally {
+    for (const disposer of ctxMode.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    process.chdir(savedCwdMode);
+    await rmRetry(dirMode);
   }
 }
 
