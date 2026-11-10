@@ -26,7 +26,11 @@ function textResult(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
 }
 
-function allowedTools(state: LazyMount, tools: LazyTool[]): LazyTool[] {
+/**
+ * Internal test seam: apply one row's `tools.allow` / `deny` to a Lazy catalog.
+ * Not re-exported from the package entry.
+ */
+export function allowedTools(state: LazyMount, tools: LazyTool[]): LazyTool[] {
   const filter = toolFilterFromConfig(state.row.config);
   if (filter === undefined) return tools;
   const prefix = `mcp__${state.effectiveName}__`;
@@ -40,8 +44,13 @@ function allowedTools(state: LazyMount, tools: LazyTool[]): LazyTool[] {
   });
 }
 
-/** Match the official Eager bridge's name for existing full-name filters. */
-function eagerToolName(server: string, tool: string, raw: string): string {
+/**
+ * Mirror the official Eager bridge's public name for existing full-name filters.
+ * The official package does not export its naming helper; the parity test drives
+ * the public `apply` entry against a local MCP server instead of importing internals.
+ * Exported for lib-internal tests only; the package entry does not re-export it.
+ */
+export function eagerToolName(server: string, tool: string, raw: string): string {
   const normalized = raw.replace(/[^A-Za-z0-9_-]/g, "_");
   if (normalized === raw && normalized.length <= 64) return raw;
   const hash = createHash("sha256").update(`${server}\0${tool}`).digest("hex").slice(0, 12);
