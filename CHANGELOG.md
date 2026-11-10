@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Per-server Lazy mode. The MCP Manager and project config support opt-in
+  discovery and invocation through three session-scoped proxies.
+
 ## [0.12.0] - 2026-11-10
 
 Versioned together with `dsh-project-mcp-ui` 0.12.0. This source version and

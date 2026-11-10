@@ -10,7 +10,7 @@
 左侧栏与设置里的插件标签页三个入口，打开同一个页面）。
 UI 默认启用，可以单独停用；装载器继续工作。
 
-**能力边界**（dsh ≥ 0.2.2-rc.1）：协议、重连、工具名、resources 与服务器
+**Eager 模式的能力边界**（dsh ≥ 0.2.2-rc.1）：协议、重连、工具名、resources 与服务器
 instructions 归官方 client。发行版 profile 已经装了共享的 MCP 资源工具。官方
 配置是 profile 层 Cordis patch（该层自有 HMR）加上 `plugin_manager`。宿主还没做、
 仍由本插件负责的是：
@@ -37,6 +37,21 @@ client 决定。**
 [star](https://github.com/wldxiaobai/dsh-project-mcp-manager)。遇到问题、宿主
 不适配或有想法，请开
 [Issue](https://github.com/wldxiaobai/dsh-project-mcp-manager/issues)——哪怕几句话也很有用。
+
+## DSH 0.2.2-rc.1 按需加载
+
+在 MCP 管理页把指定服务器的「加载模式」设为「按需加载」，或在
+`.dsh/mcp.json` 的 `mcpServers` 条目中添加 `"mode": "lazy"`。
+在受管 `mcp.yml` 行中，对应字段是 `config.mode`。缺省为 `eager`。
+
+Lazy 支持 stdio 和 Streamable HTTP。使用 `mcp_search` 搜索工具，
+`mcp_describe` 查看完整 Schema，再用 `mcp_call` 调用。搜索会连接当前会话
+可见的 Lazy 服务器以发现工具。传入 `server` 可只查一台。工具目录按连接缓存，
+连接空闲五分钟或条目卸载后关闭。工具允许和拒绝规则适用于三个代理。
+
+需要 DSH Resources 集成、服务器 instructions 或按单个注册工具配置宿主策略时，
+使用 Eager。Lazy 处理 MCP 工具调用，文本和图片走 DSH 的 MCP 结果转换。
+连接失败后，可在下一次请求时重试。
 
 ## 安装（挂载到 profile）
 

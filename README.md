@@ -14,7 +14,7 @@ entries — main sidebar, settings sidebar, and a Built-in plugins settings tab 
 opening the same panel). The UI is
 enabled by default and can be disabled independently; the loader keeps working.
 
-**Capability boundary** (dsh ≥ 0.2.2-rc.1): the official client owns the
+**Eager capability boundary** (dsh ≥ 0.2.2-rc.1): the official client owns the
 protocol, reconnect, tool names, resources, and server instructions. Shipped
 profiles already mount shared MCP resource tools. Official configuration is
 a profile-layer Cordis patch (with that layer's own HMR) plus
@@ -43,6 +43,24 @@ If this plugin is useful, a GitHub
 Bugs, host mismatches, or ideas belong in
 [Issues](https://github.com/wldxiaobai/dsh-project-mcp-manager/issues) — even a
 short report helps.
+
+## Lazy loading on DSH 0.2.2-rc.1
+
+Choose **Lazy** for a server in MCP Manager, or add `"mode": "lazy"` to
+its entry under `mcpServers` in `.dsh/mcp.json`. In a managed `mcp.yml`
+row, use `config.mode: lazy`. The default is `eager`.
+
+Lazy supports stdio and Streamable HTTP. Use `mcp_search` to find a tool,
+`mcp_describe` for its schemas, and `mcp_call` to run it. Search connects
+to the visible Lazy servers to discover their tools. Pass `server` to
+limit discovery to one. Each connection caches its tool list and closes
+after five idle minutes or when the row is unloaded. Tool allow and deny
+rules apply to all three proxies.
+
+Use Eager for servers that need DSH resource integration, server
+instructions, or host policies targeting individual registered tools.
+Lazy handles MCP tool calls, with DSH's MCP result adapter for text and
+images. A failed connection can be retried on the next request.
 
 ## Installation (mount into a profile)
 

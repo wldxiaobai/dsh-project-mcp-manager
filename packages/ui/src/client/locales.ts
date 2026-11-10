@@ -19,6 +19,10 @@ export type McpUiLocaleKey =
   | "addTransport"
   | "addTransportStdio"
   | "addTransportHttp"
+  | "loadingMode"
+  | "loadingModeEager"
+  | "loadingModeLazy"
+  | "statusLazyReady"
   | "addName"
   | "addNamePlaceholder"
   | "addCommand"
@@ -149,6 +153,10 @@ export const en: Record<McpUiLocaleKey, string> = {
   addTransport: "Type",
   addTransportStdio: "Local command",
   addTransportHttp: "Remote URL",
+  loadingMode: "Loading mode",
+  loadingModeEager: "Eager",
+  loadingModeLazy: "Lazy",
+  statusLazyReady: "Available on demand",
   addName: "Name",
   addNamePlaceholder: "gitlab",
   addCommand: "Command",
@@ -280,6 +288,10 @@ export const zh: Record<McpUiLocaleKey, string> = {
   addTransport: "类型",
   addTransportStdio: "本地命令",
   addTransportHttp: "远程地址",
+  loadingMode: "加载模式",
+  loadingModeEager: "直接加载",
+  loadingModeLazy: "按需加载",
+  statusLazyReady: "可按需连接",
   addName: "名称",
   addNamePlaceholder: "gitlab",
   addCommand: "命令",
