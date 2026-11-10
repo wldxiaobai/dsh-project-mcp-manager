@@ -101,6 +101,7 @@ import {
 import { mcpToolBudgetStats, mcpToolCount, parseToolBudgetWarn, schemaToolId } from "./status.js";
 import { LazyConnections } from "./lazy/connection.js";
 import { LAZY_TOOL_NAMES, registerLazyTools, type LazyMount } from "./lazy/proxies.js";
+import { contextCostSignature, mcpContextCost, type McpContextCost } from "./context-cost.js";
 
 const EAGER_STARTUP_WAIT_MS = 20_000;
 const EAGER_STARTUP_POLL_MS = 100;
@@ -979,6 +980,8 @@ export class ProjectMcpRegistry {
   private readonly nameRelease = new Map<string, Promise<void>>();
   private disposeLazyTools?: () => void;
   private readonly closedLazySessions = new WeakSet<object>();
+  /** 上一次推送的 MCP 上下文占用签名；只在真正变化时补发 `projectMcp/updated`。 */
+  private lastContextCostSignature = "";
 
   constructor(ctx: any, providers: ProjectMcpRegistryOptions) {
     this.ctx = ctx;
@@ -1049,6 +1052,13 @@ export class ProjectMcpRegistry {
     ctx.on("session/event", (session: any, event: any) => {
       if (event?.type !== "user/message") return;
       this.onSessionActivity(session);
+    }, watchOpts);
+    // 工具目录 / 上下文窗口只在请求头变化时更新：这两个事件足以覆盖「本次请求带什么工具」，
+    // 变没变再按签名判一次，避免每一步都惊动页面。
+    ctx.on("session/event", (_session: any, event: any) => {
+      const type = event?.type;
+      if (type !== "request/header" && type !== "request/context") return;
+      this.emitContextCostIfChanged();
     }, watchOpts);
     ctx.on("tools/change", () => this.sweepRestrictions(), watchOpts);
     ctx.on("system-prompt/assemble", async (
@@ -2897,6 +2907,97 @@ export class ProjectMcpRegistry {
   /** 全局（用户层）某行的装载状态；未装载返回 undefined。 */
   globalState(rawName: string): ProjectServerState | undefined {
     return this.globalServers.get(rawName);
+  }
+
+  // ── 会话级 MCP 上下文占用 ───────────────────────────────────────────────
+
+  /**
+   * 某个会话可见的 MCP 工具定义占多少上下文（token 为 DSH token-meter 口径的估算）。
+   *
+   * 只读内存：取该会话可见的工具 schema 与最近一次请求的上下文窗口，
+   * 不读盘、不驱动对账。会话不存在（还没建、已销毁）时返回零值，
+   * 调用方用 `sessionId === null` 区分「没有会话」与「有会话但没有 MCP」。
+   */
+  contextCost(sessionId?: string): McpContextCost {
+    const agent = this.contextCostAgent(sessionId);
+    if (agent === undefined) return mcpContextCost({ sessionId: sessionId ?? null, schemas: [] });
+    const contextWindow = this.contextWindowOf(agent);
+    return mcpContextCost({
+      sessionId: typeof agent.id === "string" && agent.id !== "" ? agent.id : null,
+      schemas: this.schemasForAgent(agent),
+      knownServers: this.knownEffectiveNames(),
+      ...(contextWindow === undefined ? {} : { contextWindow })
+    });
+  }
+
+  /** 指定会话，或焦点所在工作区里最近的那个会话；都找不到返回 undefined。 */
+  private contextCostAgent(sessionId?: string): any | undefined {
+    const agents = this.liveAgents();
+    if (sessionId !== undefined && sessionId !== "") {
+      return agents.find((agent: any) => agent?.id === sessionId || agent?.session?.id === sessionId);
+    }
+    if (this.foregroundKey !== undefined) {
+      const focused = agents.filter((agent: any) => this.agentProjects.get(agent?.id) === this.foregroundKey);
+      if (focused.length > 0) return focused[focused.length - 1];
+    }
+    // 还没定焦点（仅一个工作区或刚启动）：在线会话里取最后一个。
+    return agents.length > 0 ? agents[agents.length - 1] : undefined;
+  }
+
+  /**
+   * 该会话可见的工具 schema。优先用 agent 作用域：那里已经扣掉本插件的 deny
+   * 与条目 allow/deny；作用域取不到时退回全局工具层（会偏大，但不至于没有数）。
+   */
+  private schemasForAgent(agent: any): unknown[] {
+    const scoped = agent?.ctx?.tools;
+    if (scoped !== undefined && typeof scoped.schemas === "function") {
+      try {
+        const list = scoped.schemas(agent);
+        if (Array.isArray(list)) return list;
+      } catch {
+        // 落到全局视图
+      }
+    }
+    try {
+      const list = this.ctx?.tools?.schemas?.();
+      return Array.isArray(list) ? list : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private contextWindowOf(agent: any): number | undefined {
+    try {
+      const context = agent?.session?.requestContext?.();
+      const window = context?.contextWindow;
+      return typeof window === "number" && Number.isFinite(window) && window > 0 ? window : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** 已装载服务器的生效名：工具名归属按最长前缀匹配，生效名本身可能含 `__`。 */
+  private knownEffectiveNames(): string[] {
+    const names = new Set<string>();
+    for (const entry of this.projects.values()) {
+      for (const state of entry.servers.values()) names.add(state.effectiveName);
+    }
+    for (const state of this.globalServers.values()) names.add(state.effectiveName);
+    return [...names];
+  }
+
+  /** 占用签名变了才补发一次 `projectMcp/updated`，让页面重读并更新抬头标签。 */
+  private emitContextCostIfChanged(): void {
+    if (this.disposed) return;
+    let signature: string;
+    try {
+      signature = contextCostSignature(this.contextCost());
+    } catch {
+      return;
+    }
+    if (signature === this.lastContextCostSignature) return;
+    this.lastContextCostSignature = signature;
+    this.emitUpdated();
   }
 
   /** 等待全局层某行的装载状态满足 predicate。 */

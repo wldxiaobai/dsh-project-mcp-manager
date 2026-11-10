@@ -3083,6 +3083,75 @@ await withLazyProjects({
   }
 }
 
+// ── contextCost：会话级 MCP 定义占用（只读、按会话可见性）────────────────────
+{
+  const dirCost = await mkdtemp(join(tmpdir(), "dsh-mcp-context-cost-"));
+  const homeCost = join(dirCost, "home");
+  const projCost = join(dirCost, "proj");
+  await mkdir(join(homeCost, ".dsh"), { recursive: true });
+  await mkdir(projCost, { recursive: true });
+  await writeManagedRows(projectMcpFile(projCost), [stdioRow("alpha")], { createIfMissing: true });
+  const savedCwdCost = process.cwd();
+  try {
+    process.chdir(dirCost);
+    const ctxCost = fakeCtx();
+    const registryCost = new ProjectMcpRegistry(ctxCost, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(homeCost, ".dsh", "mcp.yml"), mcpJson: join(homeCost, ".dsh", "mcp.json"), profilesDir: join(homeCost, ".dsh", "profiles") }
+    });
+    const costAgent = fakeAgent("session-cost", projCost);
+    // 会话作用域视图：本插件已经按 deny 过滤后的那一份；宿主工具不在统计里。
+    costAgent.ctx.tools.schemas = () => [
+      { name: "mcp__alpha__read_file", description: "Read a file", parameters: { type: "object", properties: { path: { type: "string" } } } },
+      { name: "mcp__alpha__write_file", description: "Write a file", parameters: { type: "object", properties: {} } },
+      { name: "bash", description: "Host shell", parameters: { type: "object", properties: {} } }
+    ];
+    costAgent.session.requestContext = () => ({ contextWindow: 200000 });
+    ctxCost.agentsList.push(costAgent);
+    await registryCost.reconcileNow();
+
+    const cost = registryCost.contextCost();
+    assert.equal(cost.sessionId, "session-cost", "the focused session is measured");
+    assert.equal(cost.tools, 2, "host tools are excluded from the MCP cost");
+    assert.equal(cost.contextWindow, 200000, "the window comes from the session route metadata");
+    assert.deepEqual(cost.servers.map((server) => [server.name, server.tools]), [["alpha", 2]]);
+    assert.ok(cost.estTokens > 0, "a real catalog prices above zero: " + JSON.stringify(cost));
+    assert.equal(cost.level, "ok", "a two-tool server stays below the reminder threshold");
+
+    // 指定别的会话：找不到就退回零值，不借用当前会话的数字。
+    const missing = registryCost.contextCost("no-such-session");
+    assert.deepEqual([missing.sessionId, missing.tools, missing.level], ["no-such-session", 0, "ok"]);
+
+    // deny 之后同一个会话的占用必须下降：统计口径跟随会话可见性。
+    costAgent.ctx.tools.schemas = () => [
+      { name: "mcp__alpha__read_file", description: "Read a file", parameters: { type: "object", properties: {} } }
+    ];
+    assert.equal(registryCost.contextCost().tools, 1, "the scoped view is read on every query");
+
+    // 超过阈值时 level 升级，页面据此换配色与图标。
+    costAgent.ctx.tools.schemas = () => [
+      { name: "mcp__alpha__big", description: "x".repeat(40000), parameters: { type: "object", properties: {} } }
+    ];
+    assert.equal(registryCost.contextCost().level, "alert", "40k characters is well past 10k estimated tokens");
+
+    // 上下文窗口未知时省略该字段，而不是写 0。
+    costAgent.session.requestContext = () => undefined;
+    assert.equal("contextWindow" in registryCost.contextCost(), false);
+
+    const serviceCost = bindProjectMcpService(registryCost);
+    assert.equal(serviceCost.contextCost().sessionId, "session-cost", "the service exposes the same read");
+
+    for (const disposer of ctxCost.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    pass("contextCost measures only the session's visible MCP schemas and reports the threshold level");
+  } finally {
+    process.chdir(savedCwdCost);
+    await rmRetry(dirCost);
+  }
+}
+
 console.log("\n" + passed + " passed, 0 failed");
 console.log("ALL PROJECT REGISTRY TESTS PASSED");
 // chokidar close() is fire-and-forget in registry dispose; on Windows a

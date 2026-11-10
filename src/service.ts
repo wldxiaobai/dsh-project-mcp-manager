@@ -13,6 +13,7 @@
 import type { McpAddDraft, McpServerRuntimeView, McpWriteTarget, ProjectFileState, ProjectMcpRegistry, ProjectServerState } from "./registry.js";
 import type { McpLoadingMode } from "./model.js";
 import type { McpRowSource } from "./json-file.js";
+import type { McpContextCost } from "./context-cost.js";
 
 /** cordis 服务名；经 `ctx.provide` / `ctx.get` / `ctx.projectMcp` 取用。 */
 export const PROJECT_MCP_SERVICE = "projectMcp";
@@ -30,6 +31,11 @@ export interface ProjectMcpService {
   /** 行级内存 view；进 enqueue 与对账互斥，不读盘。 */
   serverView(projectRoot: string, rawName: string): Promise<McpServerRuntimeView | undefined>;
   globalState(rawName: string): ProjectServerState | undefined;
+  /**
+   * 某个会话可见的 MCP 工具定义占多少上下文（同步、只读内存）。
+   * 不传 `sessionId` 时取焦点工作区里最近的会话；没有会话时 `sessionId` 为 null。
+   */
+  contextCost(sessionId?: string): McpContextCost;
   /** 触发一次全量对账（等同 `registry.reconcileNow()`）。 */
   reload(): Promise<void>;
   /** 打开该来源对应作用域的受管 yml（经宿主注入的 openPath）；返回文件路径。 */
@@ -61,6 +67,7 @@ export function bindProjectMcpService(registry: ProjectMcpRegistry): ProjectMcpS
     snapshot: () => registry.snapshot(),
     serverView: (projectRoot, rawName) => registry.serverView(projectRoot, rawName),
     globalState: (rawName) => registry.globalState(rawName),
+    contextCost: (sessionId) => registry.contextCost(sessionId),
     reload: () => registry.reconcileNow(),
     openConfigFile: (source, projectRoot) => registry.openConfigFile(source, projectRoot),
     setServerEnabled: (source, projectRoot, rawName, enabled) => registry.setServerEnabled(source, projectRoot, rawName, enabled),
