@@ -500,6 +500,8 @@ await withPingTimers(async (timers) => {
       ...overrides
     });
 
+    // Each case resets and inspects the same spy; parallel requests would mix
+    // modeCalls and invalidate the exact-call assertion.
     for (const mode of ["eager", "lazy"]) {
       mcp.modeCalls.length = 0;
       const response = await post(request({ mode }));

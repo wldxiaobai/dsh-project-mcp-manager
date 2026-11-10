@@ -21,9 +21,12 @@ const require = createRequire(import.meta.url);
 const manager = require("../package.json");
 const official = require("@deepseek-ai/dsh-mcp-client/package.json");
 const fromOfficial = createRequire(require.resolve("@deepseek-ai/dsh-mcp-client"));
-for (const name of ["@modelcontextprotocol/client", "@deepseek-ai/dsh-subprocess"]) {
-  const direct = await metadata(require, name);
-  const nested = await metadata(fromOfficial, name);
+const names = ["@modelcontextprotocol/client", "@deepseek-ai/dsh-subprocess"];
+const versions = await Promise.all(names.map(async (name) => {
+  const [direct, nested] = await Promise.all([metadata(require, name), metadata(fromOfficial, name)]);
+  return { name, direct, nested };
+}));
+for (const { name, direct, nested } of versions) {
   const expected = official.dependencies?.[name] ?? official.peerDependencies?.[name];
   assert.equal(manager.dependencies[name], direct.version, `${name} is an explicit exact runtime dependency`);
   assert.equal(expected, direct.version, `${name} must match the official client's declared contract; review upgrades together`);

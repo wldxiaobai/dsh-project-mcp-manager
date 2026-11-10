@@ -66,7 +66,9 @@ async function readTraceLines(path) {
     return [];
   }
 }
-/** 轮询 trace 直到谓词成立：等子进程真正退出，不用固定 sleep。 */
+/** 轮询 trace 直到谓词成立：等子进程真正退出，不用固定 sleep。
+ * 每次检查与退避有先后依赖，不能预先并发启动各轮检查。
+ */
 async function waitForTrace(path, predicate, timeoutMs = 5000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
@@ -2801,6 +2803,13 @@ for await (const line of createInterface({ input: process.stdin })) {
   }
 }
 
+/** 所有并发文件操作落定后才允许 finally 清理临时目录。 */
+async function finishFixtureWrites(operations) {
+  const outcomes = await Promise.allSettled(operations);
+  const failure = outcomes.find((outcome) => outcome.status === "rejected");
+  if (failure !== undefined) throw failure.reason;
+}
+
 /** 两个隔离场景共用设施；配置差异和授权断言留在各自用例里。 */
 async function withLazyProjects({ prefix, rowsA, rowsB, globalRows = [], extraSessionA = false }, run) {
   const root = await mkdtemp(join(tmpdir(), prefix));
@@ -2811,9 +2820,8 @@ async function withLazyProjects({ prefix, rowsA, rowsB, globalRows = [], extraSe
   const savedCwd = process.cwd();
   const ctx = fakeCtx();
   try {
-    for (const directory of [home, projA, projB]) {
-      await mkdir(join(directory, ".dsh"), { recursive: true });
-    }
+    await finishFixtureWrites([home, projA, projB].map((directory) =>
+      mkdir(join(directory, ".dsh"), { recursive: true })));
     await writeFile(script, String.raw`
 import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -2851,13 +2859,13 @@ for await (const line of createInterface({ input: process.stdin })) {
         tools: { allow: ["*"], deny: ["secret"] }
       }
     });
-    for (const [path, rows] of [
+    const targets = [
       [projectMcpFile(projA), rowsA],
       [projectMcpFile(projB), rowsB],
       [join(home, ".dsh", "mcp.yml"), globalRows]
-    ]) {
-      if (rows.length > 0) await writeManagedRows(path, rows.map(lazyRow), { createIfMissing: true });
-    }
+    ];
+    await finishFixtureWrites(targets.filter(([, rows]) => rows.length > 0).map(([path, rows]) =>
+      writeManagedRows(path, rows.map(lazyRow), { createIfMissing: true })));
     process.chdir(root);
     const registered = new Map();
     ctx.tools.schemas = () => [...registered.values()];
@@ -3089,7 +3097,7 @@ await withLazyProjects({
 
     // 2) mode 只写入受管行；切到 eager 后官方 client 配置不带 mode。
     await registryMode.reconcileNow();
-    const ownMount = ctxMode.mounts.filter((mount) => mount.serverName === "own").at(-1);
+    const ownMount = ctxMode.mounts.findLast((mount) => mount.serverName === "own");
     assert.ok(ownMount !== undefined, "the eager row mounts the official client");
     assert.equal(Object.hasOwn(ownMount, "mode"), false, "mode must not be passed to the official mcp-client");
 
