@@ -1318,26 +1318,20 @@ export class ProjectMcpRegistry {
 
   private async knownProjects(): Promise<string[]> {
     const map = new Map<string, string>();
-    const add = async (raw: string) => {
-      if (typeof raw !== "string" || raw === "") return;
-      try {
-        const project = await findProjectRoot(raw);
-        map.set(projectKeyOf(project), project);
-      } catch {
-        // 目录不可解析：忽略
-      }
-    };
-    // 项目发现：在线会话 cwd + 进程 cwd（dsh 启动目录）+ 已装载项目。
-    for (const agent of this.liveAgents()) {
-      const cwd = agent?.session?.header?.cwd;
-      if (typeof cwd === "string" && cwd !== "") await add(cwd);
-    }
-    for (const cwd of this.liveSessionCwds()) await add(cwd);
-    for (const root of this.sessionRoots.values()) await add(root);
+    const directories = new Set([
+      ...this.liveAgents().map((agent) => agent?.session?.header?.cwd),
+      ...this.liveSessionCwds(),
+      ...this.sessionRoots.values()
+    ]);
     try {
-      await add(process.cwd());
+      directories.add(process.cwd());
     } catch {
       // 启动目录不可解析：忽略
+    }
+    const roots = await Promise.all([...directories].filter((cwd): cwd is string =>
+      typeof cwd === "string" && cwd !== "").map((cwd) => findProjectRoot(cwd).catch(() => undefined)));
+    for (const root of roots) {
+      if (root !== undefined) map.set(projectKeyOf(root), root);
     }
     for (const [key, entry] of this.projects) map.set(key, entry.projectRoot);
     return [...map.values()];
@@ -1704,9 +1698,11 @@ export class ProjectMcpRegistry {
 
     await this.refreshAgentProjects();
     await this.clearClosedWorkspaceFocus();
-    for (const [key, entry] of desiredByProject) {
-      await this.reconcileProject(key, entry);
-    }
+    // Mount and release operations share the host's effective server names.
+    await [...desiredByProject].reduce(
+      (pending, [key, entry]) => pending.then(() => this.reconcileProject(key, entry)),
+      Promise.resolve()
+    );
     await this.reconcileGlobals(globalMerged.rows, hostGlobalNames);
     this.prunePerProjectState(new Set(desiredByProject.keys()));
     this.syncLazyProxies();
@@ -2515,10 +2511,12 @@ export class ProjectMcpRegistry {
   }
 
   private async refreshAgentProjects(): Promise<void> {
-    for (const agent of this.liveAgents()) {
-      await this.rememberAgent(agent);
-      if (this.agentProjects.has(agent.id)) continue;
-      const project = await this.resolveProject(agent);
+    const agents = this.liveAgents();
+    await Promise.all(agents.map((agent) => this.rememberAgent(agent)));
+    const unresolved = agents.filter((agent) => !this.agentProjects.has(agent.id));
+    const projects = await Promise.all(unresolved.map((agent) => this.resolveProject(agent)));
+    for (const [index, agent] of unresolved.entries()) {
+      const project = projects[index];
       if (project !== undefined) this.agentProjects.set(agent.id, project);
     }
   }

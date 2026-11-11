@@ -1915,7 +1915,7 @@ try {
       userLayerPaths: { mcpYml: globalPath, mcpJson: join(homeFocus, ".dsh", "mcp.json"), profilesDir: join(homeFocus, ".dsh", "profiles") }
     });
     await registryFocus.reconcileNow();
-    assert.deepEqual(ctxFocus.mounts.map(({ serverName }) => serverName).sort(), ["alpha", "beta", "common"]);
+    assert.deepEqual(ctxFocus.mounts.map(({ serverName }) => serverName).sort(byCodeUnit), ["alpha", "beta", "common"]);
     for (const agent of [agentA, agentB, agentA, agentB]) {
       ctxFocus.emit("session/event", { id: agent.id, header: agent.session.header }, { type: "user/message" });
       assert.equal(registryFocus.focusedProjectRoot(), agent.session.header.cwd);
@@ -1930,18 +1930,22 @@ try {
       { name: "mcp:common", text: "Shared instructions" },
       { name: "mcp-resource-servers", text: 'Available servers: ["alpha","beta","common"].' }
     ];
-    for (const [agent, own, other] of [[agentA, "alpha", "beta"], [agentB, "beta", "alpha"]]) {
+    const resourceTools = ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"];
+    const verifyVisibility = async (agent, own, other) => {
       const prompt = await assemble({ sections }, { scope: agent }, async () => ({ sections }));
       assert.deepEqual(prompt.sections.map(({ name }) => name), [`mcp:${own}`, "mcp:common", "mcp-resource-servers"]);
       assert.equal(prompt.sections.at(-1).text, `Available servers: ["${own}","common"].`);
-      for (const name of ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]) {
+      await Promise.all(resourceTools.map(async (name) => {
         const next = async () => ({ kind: "allow" });
         const decide = (server) => preExecute({ name, agent, arguments: { server } }, next);
-        assert.equal((await decide(other)).kind, "deny");
-        assert.equal((await decide(own)).kind, "allow");
-        assert.equal((await decide("common")).kind, "allow");
-      }
-    }
+        const decisions = await Promise.all([decide(other), decide(own), decide("common")]);
+        assert.deepEqual(decisions.map(({ kind }) => kind), ["deny", "allow", "allow"]);
+      }));
+    };
+    await Promise.all([
+      verifyVisibility(agentA, "alpha", "beta"),
+      verifyVisibility(agentB, "beta", "alpha")
+    ]);
     ctxFocus.schemas.push({ name: "mcp__alpha__write" });
     ctxFocus.emit("tools/change");
     assert.deepEqual(agentB.denies.at(-1), ["mcp__alpha__read", "mcp__alpha__write"]);
@@ -2854,19 +2858,22 @@ await withLazyProjects({
   await assert.rejects(() => execute("mcp_call", { server: bDemo, tool: "echo", arguments: { value: "x" } }, agentA), /unavailable in this session/);
   assert.equal(await pathExists(traceFor("b-demo")), false, "A must not connect to B's demo");
 
-  for (const [agent, cwd] of [[agentA, projA], [agentB, projB], [agentA, projA]]) {
+  const switchAndVerify = async (agent, cwd) => {
     ctx.emit("session/event", { id: agent.id, header: { cwd } }, { type: "user/message" });
     await registry.reconcileNow();
     assert.equal((await execute("mcp_call", { server: aShared, tool: "echo", arguments: { value: "a" } }, agentA)).content[0].text, "a-shared:a");
     assert.equal((await execute("mcp_call", { server: bBeta, tool: "echo", arguments: { value: "b" } }, agentB)).content[0].text, "b-beta:b");
     await assert.rejects(() => execute("mcp_call", { server: bBeta, tool: "echo", arguments: { value: "x" } }, agentA), /unavailable in this session/);
     await assert.rejects(() => execute("mcp_call", { server: aShared, tool: "echo", arguments: { value: "x" } }, agentB), /unavailable in this session/);
-  }
-  for (const label of ["a-shared", "b-beta"]) {
+  };
+  await switchAndVerify(agentA, projA);
+  await switchAndVerify(agentB, projB);
+  await switchAndVerify(agentA, projA);
+  await Promise.all(["a-shared", "b-beta"].map(async (label) => {
     const lines = await readTraceLines(traceFor(label));
     assert.equal(lines.filter((line) => line === `method:${label}:initialize`).length, 1, "switches reuse the same Lazy connection");
     assert.ok(!lines.includes(`exit:${label}`), "switches keep the Lazy subprocess alive");
-  }
+  }));
   pass("workspace switches preserve Lazy connections and isolate project tools");
 });
 

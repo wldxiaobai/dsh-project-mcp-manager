@@ -205,6 +205,7 @@ export class LazyConnections {
   dispose(): Promise<void> {
     if (this.disposal !== undefined) return this.disposal;
     for (const id of this.sessions.keys()) this.release(id);
-    return this.disposal = Promise.all(this.closing).then(() => {});
+    this.disposal = Promise.all(this.closing).then(() => {});
+    return this.disposal;
   }
 }
