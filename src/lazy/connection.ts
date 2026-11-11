@@ -199,7 +199,10 @@ export class LazyConnections {
     this.sessions.delete(id);
     const closing = server.dispose();
     this.closing.add(closing);
-    void closing.then(() => this.closing.delete(closing));
+    // 清理链自身不得产生未处理拒绝：dispose 的关闭屏障理论上不 reject，
+    // 这里仍对两态都摘除集合元素，避免清理回调抛出时泄漏。
+    const drop = () => this.closing.delete(closing);
+    void closing.then(drop, drop);
   }
 
   dispose(): Promise<void> {
