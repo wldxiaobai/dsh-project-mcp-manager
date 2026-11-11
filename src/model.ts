@@ -409,9 +409,11 @@ export function effectiveServerNames(
 /** Handle collisions between a generated name and a literal or truncated name. */
 function availableServerName(preferred: string, key: string, used: ReadonlySet<string>): string {
   let candidate = preferred;
-  for (let attempt = 0; used.has(candidate); attempt++) {
+  let attempt = 0;
+  while (used.has(candidate)) {
     const hash = createHash("sha256").update(`${key}\0${attempt}`).digest("hex").slice(0, 8);
     candidate = `${preferred.slice(0, 23)}_${hash}`;
+    attempt++;
   }
   return candidate;
 }
