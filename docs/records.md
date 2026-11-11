@@ -53,6 +53,7 @@ Most records are written in Chinese.
 - [SonarCloud PR #29 issue analysis and fixes](code-review/sonar-pr29.zh.md)
 - [PR #30 Lazy MCP Gate 1 review and fixes](code-review/pr30-lazy-gate1.zh.md)
 - [SonarCloud PR #30: 33 issues reviewed and necessary fixes](code-review/sonar-pr30.zh.md)
+- [PR #32 keep-workspace-mounted: two-round review](code-review/pr32-keep-workspace-mounted.zh.md)
 
 ## Testing and maintenance
 
