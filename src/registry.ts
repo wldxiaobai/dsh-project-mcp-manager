@@ -10,8 +10,13 @@
  *     实例（ctx.plugin），注册进全局工具层——同一项目内多会话共享同一连接；
  *     已知项目的 MCP 在插件运行期间保持装载，切换焦点只影响界面。
  *   - 生效名：原始 serverName 在整个目录（全局行 + 全部项目行）中唯一时保持
- *     原名；否则按 model.effectiveServerNames 规则改名（确定性、与装载顺序
- *     无关），避免 dsh-mcp-client 按进程根的 serverName 预留冲突；
+ *     原名；否则按 model.effectiveServerNames 规则改名，避免 dsh-mcp-client
+ *     按进程根的 serverName 预留冲突。已挂载 Eager 的生效名经 retained 优先
+ *     保留（宿主全局名占用除外），新冲突行才改名，因此生效名依赖挂载历史、
+ *     不重挂在线实例；
+ *   - 会话就绪：新建会话在 agent/created 串行返回前等待其可见 Eager 就绪
+ *     （≤20s），首条模型请求即可见工具；启动恢复 replay 不等待。等待不能放
+ *     agent/pre-step——宿主在那之前已冻结本步工具/提示词快照；
  *   - 会话可见性：agent 创建时按其会话原始项目（`session.header.cwd`）解析
  *     项目，对该 agent 层应用 tools.restrict({ deny })，deny 掉「除本会话项目外
  *     的全部项目服务器」；目录变化（项目文件增删改、新 agent、装载 settle）都会
@@ -166,6 +171,10 @@ interface McpPromptPresentation {
   sections: { name: string; text: string; interpolate?: boolean }[];
 }
 
+// 镜像宿主提示词形态（升级宿主时须对拍）：instructions 小节名 `mcp:<生效名>` 来自
+// @deepseek-ai/dsh-mcp-client；`mcp-resource-servers` 小节文案来自
+// @deepseek-ai/dsh-mcp-resources，形如 “…server argument: [\"a\",\"b\"].”。
+// 正则失配时整段丢弃（fail-closed）：宁可少展示，不泄漏别的工作区的服务器。
 function filterMcpPrompt<T extends McpPromptPresentation>(prompt: T, hidden: Set<string>): T {
   if (hidden.size === 0) return prompt;
   const sections = prompt.sections.flatMap((section) => {
@@ -974,14 +983,11 @@ export class ProjectMcpRegistry {
         await ready;
         await this.reconcileAll();
       });
-      return ready;
-    }, watchOpts);
-    ctx.on("agent/pre-step", async (
-      { agent, messages, step, signal }: { agent: { id?: string }; messages: unknown[]; step: number; signal: AbortSignal },
-      next: () => Promise<unknown>
-    ) => {
-      if (step === 1 && messages.length > 0) await this.waitForVisibleEager(agent, signal);
-      return next();
+      // 宿主在 agent/pre-step 之前就已冻结本步的工具与提示词快照，在那里等待
+      // 无法让首条请求看到等待期间挂载的工具。等待放在这里：新建会话的首条模型
+      // 请求即可见其 Eager 工具；启动恢复（replay）不等待，避免拖慢冷启动。
+      if (replay) return ready;
+      return ready.then(() => this.waitForVisibleEager(agent, payload?.signal));
     }, watchOpts);
     ctx.on("agent/disposed", (payload: any) => {
       const agent = payload?.agent ?? payload;
@@ -1187,14 +1193,15 @@ export class ProjectMcpRegistry {
     }
   }
 
-  private async waitForVisibleEager(agent: { id?: string }, signal: AbortSignal): Promise<void> {
+  private async waitForVisibleEager(agent: { id?: string }, signal?: AbortSignal): Promise<void> {
     const deadline = performance.now() + EAGER_STARTUP_WAIT_MS;
-    while (!this.disposed && this.hasPendingVisibleEager(this.projectOf(agent))) {
+    while (!this.disposed && this.liveAgents().includes(agent) && this.hasPendingVisibleEager(this.projectOf(agent))) {
       const remaining = deadline - performance.now();
       if (remaining <= 0) break;
+      // 有意的串行轮询（Sonar typescript:S9382）：等待必须逐步推进，不能并行化。
       await wait(Math.min(remaining, EAGER_STARTUP_POLL_MS), undefined, { signal });
     }
-    signal.throwIfAborted();
+    signal?.throwIfAborted();
   }
 
   private hasPendingVisibleEager(project: string | undefined): boolean {
@@ -2558,6 +2565,9 @@ export class ProjectMcpRegistry {
     if (this.disposeLazyTools !== undefined) return;
     try {
       this.disposeLazyTools = registerLazyTools(this.ctx, async (agent: any) => {
+        // 同一性比较依赖宿主 agents.list() 返回稳定对象：dsh 的 agents.announce()
+        // 要求 agent 先入注册表才派发 agent/created，注册表持有同一实例。若宿主
+        // 将来改为返回投影/包装对象，这里会 fail-closed（Lazy 工具报「需要活跃会话」）。
         const isLive = () => typeof agent?.id === "string" && this.liveAgents().includes(agent)
           && !this.closedLazySessions.has(agent.session);
         if (!isLive()) throw new Error("An active DSH session is required to use Lazy MCP tools");
@@ -2595,6 +2605,9 @@ export class ProjectMcpRegistry {
     if (focus === undefined) return;
     if (this.liveAgents().some((agent) => this.agentProjects.get(agent.id) === focus)) return;
     if ([...this.sessionRoots.values()].some((root) => projectKeyOf(root) === focus)) return;
+    // 已恢复但尚未创建 agent 的会话也算在线：焦点只影响管理页，别误清。
+    const restored = await Promise.all(this.liveSessionCwds().map((cwd) => findProjectRoot(cwd).catch(() => undefined)));
+    if (restored.some((root) => root !== undefined && projectKeyOf(root) === focus)) return;
     try {
       if (projectKeyOf(await findProjectRoot(process.cwd())) === focus) return;
     } catch {

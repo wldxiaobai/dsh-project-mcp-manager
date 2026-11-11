@@ -20,9 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Open sessions while Eager MCP mounts in the background. Before the first
-  model request, wait up to 20 seconds for visible Eager servers still loading.
-  Newly discovered workspace collisions preserve existing Eager connections.
+- Creating a session applies tool isolation immediately and waits up to 20
+  seconds for its visible Eager servers to finish mounting, so the first model
+  request sees them; sessions restored at startup skip the wait. Newly
+  discovered workspace collisions preserve existing Eager connections.
 
 - Lazy connections activate independently on each session's first search and
   stay open across idle periods and workspace switches.
