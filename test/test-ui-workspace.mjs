@@ -87,7 +87,7 @@ test("workspace identity is the host project key, not a browser-side path guess"
 test("counts only project rows of the active workspace, and failures stay in the total", () => {
   const servers = [
     row({ serverName: "run", active: true }),
-    row({ serverName: "wait", skipReason: "idle" }),
+    row({ serverName: "wait", active: true, mode: "lazy" }),
     row({ serverName: "off", enabled: false, active: false }),
     row({ serverName: "broken", fiberPhase: "failed", skipReason: "env-missing" }),
     row({ serverName: "elsewhere", projectRoot: String.raw`D:\other`, projectKey: String.raw`d:\other`, active: true })
@@ -106,16 +106,16 @@ test("active Lazy rows count as waiting, not running", () => {
   const servers = [
     row({ serverName: "eager", active: true }),
     row({ serverName: "lazy-connected", active: true, mode: "lazy" }),
-    row({ serverName: "lazy-idle", skipReason: "idle", mode: "lazy" }),
+    row({ serverName: "lazy-not-mounted", enabled: true, mode: "lazy" }),
     row({ serverName: "lazy-off", enabled: false, mode: "lazy" })
   ];
   assert.deepEqual(workspaceCounts(servers, String.raw`d:\work`),
-    { total: 4, running: 1, waiting: 2, disabled: 1 },
-    "a mounted Lazy row is available on demand, not proof of a running connection");
+    { total: 4, running: 1, waiting: 1, disabled: 1 },
+    "only an active Lazy row is available on demand; an unmounted one is not waiting");
   assert.deepEqual(workspaceHeader(String.raw`D:\Work`, String.raw`d:\work`, servers).segments, [
     { key: "workspaceServerCount", count: 4 },
     { key: "workspaceRunningCount", count: 1 },
-    { key: "workspaceWaitingCount", count: 2 },
+    { key: "workspaceWaitingCount", count: 1 },
     { key: "workspaceDisabledCount", count: 1 }
   ]);
 });
@@ -140,7 +140,7 @@ test("case-sensitive hosts keep two workspaces apart in the counts", () => {
   // POSIX 宿主：两个大小写不同的工作区各自统计。
   const rows = [
     row({ serverName: "upper", projectRoot: "/workspace/App", projectKey: "/workspace/App", active: true }),
-    row({ serverName: "lower", projectRoot: "/workspace/app", projectKey: "/workspace/app", skipReason: "idle" })
+    row({ serverName: "lower", projectRoot: "/workspace/app", projectKey: "/workspace/app", active: true, mode: "lazy" })
   ];
   assert.deepEqual(workspaceCounts(rows, "/workspace/App"), { total: 1, running: 1, waiting: 0, disabled: 0 });
   assert.deepEqual(workspaceCounts(rows, "/workspace/app"), { total: 1, running: 0, waiting: 1, disabled: 0 });
@@ -166,7 +166,7 @@ test("header model distinguishes a known workspace from an undetermined one", ()
   assert.deepEqual(unknown.segments, []);
   assert.equal(unknown.total, 0);
 
-  const known = workspaceHeader(String.raw`D:\Work`, String.raw`d:\work`, [row({ active: true }), row({ skipReason: "idle" })]);
+  const known = workspaceHeader(String.raw`D:\Work`, String.raw`d:\work`, [row({ active: true }), row({ active: true, mode: "lazy" })]);
   assert.equal(known.known, true);
   assert.equal(known.name, "Work", "the displayed path keeps the host's original casing");
   assert.equal(known.path, String.raw`D:\Work`);
@@ -177,17 +177,15 @@ test("header model distinguishes a known workspace from an undetermined one", ()
   ]);
 });
 
-test("current group wins over idle, and a specific skip reason is not overridden", () => {
-  const idle = [row({ skipReason: "idle" })];
-  const broken = [row({ skipReason: "env-missing" })];
-  assert.equal(workspaceGroupMarker(String.raw`d:\work`, idle, String.raw`d:\work`), "current");
-  assert.equal(workspaceGroupMarker(String.raw`d:\other`, idle, String.raw`d:\work`), "idle");
-  assert.equal(workspaceGroupMarker(String.raw`d:\other`, broken, String.raw`d:\work`), null);
-  assert.equal(workspaceGroupMarker(String.raw`d:\other`, idle, null), "idle");
-  assert.equal(workspaceGroupMarker(String.raw`d:\work`, broken, null), null);
+test("only the current workspace group carries a marker", () => {
+  assert.equal(workspaceGroupMarker(String.raw`d:\work`, String.raw`d:\work`), "current");
+  assert.equal(workspaceGroupMarker(String.raw`d:\other`, String.raw`d:\work`), null,
+    "a background workspace has no idle marker after permanent mounting");
+  assert.equal(workspaceGroupMarker(String.raw`d:\other`, null), null);
+  assert.equal(workspaceGroupMarker(String.raw`d:\work`, null), null);
   // POSIX：大小写不同的键不是当前工作区。
-  assert.equal(workspaceGroupMarker("/workspace/app", idle, "/workspace/App"), "idle");
-  assert.equal(workspaceGroupMarker("/workspace/App", idle, "/workspace/App"), "current");
+  assert.equal(workspaceGroupMarker("/workspace/app", "/workspace/App"), null);
+  assert.equal(workspaceGroupMarker("/workspace/App", "/workspace/App"), "current");
 });
 
 test("the active workspace group moves to the top and the rest keep their order", () => {
@@ -207,8 +205,6 @@ test("workspace copy exists in both languages", () => {
   assert.equal(zh.workspaceUnknownHint, "打开一个会话或发送一条消息后确定。");
   assert.equal(zh.workspaceScopeNote, "将自动装载当前所在工作区的 MCP 服务器。");
   assert.equal(zh.workspaceCurrent, "当前");
-  assert.equal(zh.workspaceIdle, "空闲");
-  assert.equal(zh.workspaceIdleHint, "切到该工作区时装载。");
   assert.equal(zh.workspaceServerCountOne, "1 个服务器");
   assert.equal(zh.workspaceServerCount, "{count} 个服务器");
   assert.equal(zh.workspaceRunningCount, "{count} 运行中");

@@ -156,10 +156,7 @@ and header do not project connection state, so the standby count is not proof
 that no connection exists.
 
 Workspace groups follow the same focus. The current group moves to the top and
-gets a **Current** tag; other groups that still have a row waiting for a
-session get an **Idle** tag and the sentence "Loads when you switch to this
-workspace." A row skipped for a more specific reason (a missing environment
-variable, a taken name, and so on) does not add the Idle tag.
+gets a **Current** tag; no other group carries a tag.
 
 ## What the list shows
 
@@ -194,7 +191,7 @@ through a confirmation (see below).
 |---|---|
 | Running · N tools | Connected, tools registered. Green switch. |
 | Available on demand | Enabled Lazy row. Its on-demand connection is not projected and may already be open from a recent call; the next `mcp_search` / `mcp_describe` / `mcp_call` uses it, reconnecting if it was closed. |
-| Enabled · waiting for a session | Switched on but not mounted, e.g. the host has yet to load its configuration. White switch. |
+| Enabled · waiting to load | Switched on but not mounted yet, e.g. the host has yet to load its configuration. White switch. |
 | Starting | Mount in progress. The page keeps refreshing until it settles. |
 | Failed to start | The connection failed. |
 | Not started · name in use / missing environment variable / invalid after variable expansion / invalid config / retries stopped | The loader skipped the row. The full reason is on the next line. |

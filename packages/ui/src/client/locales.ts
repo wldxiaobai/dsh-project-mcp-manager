@@ -114,8 +114,6 @@ export type McpUiLocaleKey =
   | "workspaceUnknownHint"
   | "workspaceScopeNote"
   | "workspaceCurrent"
-  | "workspaceIdle"
-  | "workspaceIdleHint"
   | "workspaceServerCountOne"
   | "workspaceServerCount"
   | "workspaceRunningCount"
@@ -201,7 +199,7 @@ export const en: Record<McpUiLocaleKey, string> = {
   statusRunning: "Running",
   statusRunningOne: "Running · 1 tool",
   statusRunningCount: "Running · {count} tools",
-  statusIdle: "Enabled · waiting for a session",
+  statusIdle: "Enabled · waiting to load",
   statusOff: "Disabled",
   statusStarting: "Starting",
   statusFailed: "Failed to start",
@@ -248,8 +246,6 @@ export const en: Record<McpUiLocaleKey, string> = {
   workspaceUnknownHint: "Open a session or send a message to determine it.",
   workspaceScopeNote: "Automatically loads the MCP servers of the workspace you are in.",
   workspaceCurrent: "Current",
-  workspaceIdle: "Idle",
-  workspaceIdleHint: "Loads when you switch to this workspace.",
   workspaceServerCountOne: "1 server",
   workspaceServerCount: "{count} servers",
   workspaceRunningCount: "{count} running",
@@ -336,7 +332,7 @@ export const zh: Record<McpUiLocaleKey, string> = {
   statusRunning: "运行中",
   statusRunningOne: "运行中 · 1 个工具",
   statusRunningCount: "运行中 · {count} 个工具",
-  statusIdle: "已启用 · 等待会话启动",
+  statusIdle: "已启用 · 等待装载",
   statusOff: "已禁用",
   statusStarting: "正在启动",
   statusFailed: "启动失败",
@@ -383,8 +379,6 @@ export const zh: Record<McpUiLocaleKey, string> = {
   workspaceUnknownHint: "打开一个会话或发送一条消息后确定。",
   workspaceScopeNote: "将自动装载当前所在工作区的 MCP 服务器。",
   workspaceCurrent: "当前",
-  workspaceIdle: "空闲",
-  workspaceIdleHint: "切到该工作区时装载。",
   workspaceServerCountOne: "1 个服务器",
   workspaceServerCount: "{count} 个服务器",
   workspaceRunningCount: "{count} 运行中",

@@ -119,12 +119,6 @@ export const PANEL_CSS = `
 .dsh-mcp-ui .dsh-mcp-group-tag {
   flex: none;
 }
-.dsh-mcp-ui .group-note {
-  margin: 0;
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--dsw-alias-label-tertiary);
-}
 .dsh-mcp-ui .groups {
   display: flex;
   flex-direction: column;

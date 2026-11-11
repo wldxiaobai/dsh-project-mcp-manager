@@ -35,11 +35,12 @@ user/profile 为 `""`（宿主目录）；`-c` 显式覆盖。
 
 **`status`** 读取七层来源文件与诊断文件（项目诊断在 `$DSH_HOME/mcp-diag/<hash>.json`，
 全局诊断在 `$DSH_HOME/.mcp-diag.json`，都不写进工作区）：打印每层行数与名称，再打印最近一次对账的
-`summary`（已装载 / 跳过原因 / 不健康行 / 未装载无会话 / 工具预算）。不连接宿主内存；宿主从未对账
+`summary`（已装载 / 跳过原因 / 不健康行 / 工具预算）。旧版按需挂载写下的诊断文件还可能带
+「未装载（无会话）」，当前版本常驻挂载已不再产生。不连接宿主内存；宿主从未对账
 时文件不存在，命令会说明空态。`--scope project|user|profile` 同时过滤层列表与诊断文件
 （项目诊断对 `project`，`$DSH_HOME/.mcp-diag.json` 对 `user`/`profile`）。
 `--scope profile` 只列 profile 层（可再配 `--profile <name>`）；`--scope user` 仍列全部用户层
-（含所有 profile 文件）。宽限卸载的 idle 行打印为「未装载（无会话）」，不算不健康。
+（含所有 profile 文件）。旧版宽限卸载的 idle 行打印为「未装载（无会话）」，不算不健康。
 
 **`import`** 把 `{"mcpServers":{...}}` 写入原生 yml 或 JSON（`--scope` /
 `--format` / `--profile` 与 `add` 相同，缺省作用域为 **project**）。同名默认

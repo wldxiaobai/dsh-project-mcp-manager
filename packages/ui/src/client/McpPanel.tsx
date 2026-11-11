@@ -103,7 +103,6 @@ function problemStatus(reason: string | null, t: McpPanelProps["t"]): { label: s
       return { label: t("statusConfigInvalid"), detail: t("skipConfigInvalid") };
     case null:
     case "":
-    case "idle":
       return { label: t("statusFailed"), detail: null };
     default:
       return { label: t("statusUnmounted"), detail: t("skipOther", { reason: reason ?? "" }) };
@@ -123,7 +122,7 @@ function runtimeStatus(row: McpUiServer, t: McpPanelProps["t"]): RuntimeStatus {
   if (row.active && row.mode === "lazy") return { label: t("statusLazyReady"), detail: null, tone: "waiting" };
   if (row.active) return { label: runningLabel(row.toolCount, t), detail: null, tone: "running" };
   if (row.fiberPhase === "loading") return { label: t("statusStarting"), detail: null, tone: "starting" };
-  if (row.skipReason === "idle" || row.skipReason == null || row.skipReason === "" || row.fiberPhase === "pending" || row.fiberPhase === null) {
+  if (row.skipReason == null || row.skipReason === "" || row.fiberPhase === "pending" || row.fiberPhase === null) {
     return { label: t("statusIdle"), detail: null, tone: "waiting" };
   }
   return { ...problemStatus(row.skipReason, t), tone: "error" };
@@ -411,7 +410,7 @@ export function McpPanel({ t }: McpPanelProps) {
   const activeProjectKey = state?.activeProjectKey ?? null;
   const { projectRows, userRows, profileBuckets } = partitionRows(servers);
   const projectGroups: DisplayGroup[] = orderWorkspaceGroups(groupProjectRows(projectRows), activeProjectKey).map(([key, group]) => {
-    const marker = workspaceGroupMarker(key, group.servers.map((server) => server.winner), activeProjectKey);
+    const marker = workspaceGroupMarker(key, activeProjectKey);
     return marker === null ? { label: group.label, servers: group.servers } : { label: group.label, servers: group.servers, marker };
   });
   const userGroups = displayGroups(groupedLogical(userRows, (server) => showUserPath(server.winner.filePath)));
@@ -675,13 +674,10 @@ function ServerGroups({ title, groups, busy, t, homeDir, writeTargets, onToggle,
               <IconFolderCloseRegular size={16} />
               <span className="group-path" title={group.label}>{group.label}</span>
               <span className="group-count">{t("serverCount", { count: group.servers.length })}</span>
-              {group.marker !== undefined && (
-                <Tag className="dsh-mcp-group-tag" tone={group.marker === "current" ? "neutral" : "quiet"}>
-                  {group.marker === "current" ? t("workspaceCurrent") : t("workspaceIdle")}
-                </Tag>
+              {group.marker === "current" && (
+                <Tag className="dsh-mcp-group-tag" tone="neutral">{t("workspaceCurrent")}</Tag>
               )}
             </div>
-            {group.marker === "idle" && <p className="group-note">{t("workspaceIdleHint")}</p>}
             {group.servers.map((server) => (
               <ServerCard key={server.winner.source + server.winner.filePath + server.winner.serverName} server={server} busy={busy} locked={!serverActionsOpen(server.winner, writeTargets)} t={t} homeDir={homeDir} onToggle={(enabled) => onToggle(server.winner, enabled)} onRemove={() => onRemove(server.winner)} onTools={() => onTools(server.winner)} onMode={(mode) => onMode(server.winner, mode)} />
             ))}

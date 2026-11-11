@@ -693,7 +693,10 @@ export interface DiagSummary {
   mounted: number;
   skippedByReason: Record<string, number>;
   unhealthy: DiagUnhealthy[];
-  /** 宽限卸载的行（不是故障；`status` 打成「未装载（无会话）」）。 */
+  /**
+   * 只读兼容：仅旧版诊断文件（按需挂载时代的宽限卸载）可能带这一项，当前实现
+   * 不再产生；`dsh-mcp status` 仍会为旧文件打印。不要新增写入方。
+   */
   idle?: string[];
   toolBudget?: { name: string; tools: number; bytes: number }[];
 }
@@ -729,6 +732,7 @@ function parseUnhealthyList(raw: unknown): DiagUnhealthy[] {
   return unhealthy;
 }
 
+/** 只服务旧版诊断文件：当前摘要不再写 `idle`，读到就原样带出给 `status`。 */
 function parseIdleNames(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   const idle: string[] = [];
@@ -2181,30 +2185,20 @@ export class ProjectMcpRegistry {
     }
   }
 
+  /** 跳过标记全部按故障/跳过原因计入摘要；`idle` 已不再产生（见 `DiagSummary.idle`）。 */
   private collectSkipMarks(
     key: string,
-    skippedByReason: Record<string, number>,
-    idle: string[],
     addUnhealthy: (name: string, reason: string) => void
   ): void {
     const prefix = key + "\u0000";
     for (const [mark, reason] of this.skipReasons) {
-      if (!mark.startsWith(prefix)) continue;
-      const name = mark.slice(prefix.length);
-      if (reason !== "idle") {
-        addUnhealthy(name, reason);
-        continue;
-      }
-      if (idle.includes(name)) continue;
-      idle.push(name);
-      skippedByReason.idle = (skippedByReason.idle ?? 0) + 1;
+      if (mark.startsWith(prefix)) addUnhealthy(mark.slice(prefix.length), reason);
     }
   }
 
   private summarizeScope(key: string, servers: Map<string, ProjectServerState>, catalog: DesiredProjectRow[], at: string, projects?: number): DiagSummary {
     const skippedByReason: Record<string, number> = {};
     const unhealthy: DiagUnhealthy[] = [];
-    const idle: string[] = [];
     const seenUnhealthy = new Set<string>();
     const addUnhealthy = (name: string, reason: string) => {
       if (seenUnhealthy.has(name)) return;
@@ -2222,7 +2216,7 @@ export class ProjectMcpRegistry {
       if (state.phase === "active" || state.phase === "mounting") mounted += 1;
       if (state.phase === "failed") addUnhealthy(state.rawName, state.error ?? "failed");
     }
-    this.collectSkipMarks(key, skippedByReason, idle, addUnhealthy);
+    this.collectSkipMarks(key, addUnhealthy);
     return {
       at,
       ...(projects === undefined ? {} : { projects }),
@@ -2230,7 +2224,6 @@ export class ProjectMcpRegistry {
       mounted,
       skippedByReason,
       unhealthy,
-      ...(idle.length > 0 ? { idle } : {}),
       ...(this.toolBudgetHits.get(key)?.length ? { toolBudget: this.toolBudgetHits.get(key) } : {})
     };
   }
@@ -2242,7 +2235,7 @@ export class ProjectMcpRegistry {
       const summary = this.summarizeScope(key, entry.servers, catalog, at);
       const path = projectDiagFile(this.diagHome(), entry.projectRoot);
       await this.removeLegacyProjectDiag(entry.projectRoot);
-      if (summary.rows === 0 && summary.unhealthy.length === 0 && (summary.idle?.length ?? 0) === 0) {
+      if (summary.rows === 0 && summary.unhealthy.length === 0) {
         try {
           await readFile(path);
         } catch {
@@ -2258,7 +2251,7 @@ export class ProjectMcpRegistry {
       || this.userLayer.profileYmlError !== null
       || this.userLayer.profileError !== null;
     const globalPath = join(dirname(this.resolveUserLayerPaths().mcpYml), DIAG_FILE);
-    if (globalSummary.rows === 0 && globalSummary.unhealthy.length === 0 && (globalSummary.idle?.length ?? 0) === 0 && !userHasContent) {
+    if (globalSummary.rows === 0 && globalSummary.unhealthy.length === 0 && !userHasContent) {
       try {
         await readFile(globalPath);
       } catch {
@@ -3356,7 +3349,7 @@ export class ProjectMcpRegistry {
         source,
         ...(effectiveName === undefined ? {} : { effectiveServerName: effectiveName }),
         fiberPhase: fiberPhaseFor(state, row, owned),
-        skipReason: skipReasonFor(this.skipReasons, key, rawName, state, row) ?? null, // env-missing / env-invalid / config-invalid / plugin-throw / idle / give-up
+        skipReason: skipReasonFor(this.skipReasons, key, rawName, state, row) ?? null, // env-missing / env-invalid / config-invalid / plugin-throw / name-taken / give-up
         toolCount: owned && state?.phase === "active" ? mcpToolCount(this.ctx, state.effectiveName) : 0
       });
     }

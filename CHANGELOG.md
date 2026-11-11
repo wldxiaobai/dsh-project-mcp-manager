@@ -39,6 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   package version instead of a stale literal.
 - Invalid disabled placeholders cannot be turned into incomplete mode-only rows;
   Lazy standby rows are not counted as running in the workspace header.
+- The leftover idle workspace tag and its hint are removed from the management
+  page, and the enabled-but-not-started status now reads "waiting to load".
 
 ### Architecture
 
