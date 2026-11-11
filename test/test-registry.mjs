@@ -2120,7 +2120,15 @@ try {
   await writeManagedRows(projectMcpFile(projLate), [stdioRow("late")], { createIfMissing: true });
   const ctxLate = fakeCtx();
   ctxLate.holdFibers = true;
-  ctxLate.agentsList.push(fakeAgent("session-late", projLate));
+  const agentLate = fakeAgent("session-late", projLate);
+  const projLazyOnly = join(dirLate, "lazy-only");
+  const projDuplicate = join(dirLate, "duplicate");
+  const lazy = stdioRow("lazy");
+  lazy.config.mode = "lazy";
+  await writeManagedRows(projectMcpFile(projLazyOnly), [lazy], { createIfMissing: true });
+  ctxLate.tools.register = () => () => {};
+  const agentLazyOnly = fakeAgent("session-lazy-only", projLazyOnly);
+  ctxLate.agentsList.push(agentLate, agentLazyOnly);
   const updatesLate = [];
   ctxLate.on(PROJECT_MCP_UPDATED_EVENT, () => updatesLate.push(1));
   const registryLate = new ProjectMcpRegistry(ctxLate, {
@@ -2139,6 +2147,17 @@ try {
     assert.ok(updatesWhileHeld >= 1, "reconcile still emits while the fiber is held");
     const effective = during?.effectiveServerName ?? "late";
     ctxLate.schemas.push({ name: `mcp__${effective}__ping` });
+    const [preStep] = ctxLate.handlers.get("agent/pre-step");
+    const run = (agent, signal) => preStep({ agent, messages: [{}], step: 1, signal }, async () => "started");
+    let eagerStarted = false;
+    const waiting = run(agentLate, AbortSignal.timeout(5000)).then(() => { eagerStarted = true; });
+    const cancellation = new AbortController();
+    const cancelled = assert.rejects(run(agentLate, cancellation.signal), { name: "AbortError" });
+    cancellation.abort();
+    await cancelled;
+    assert.equal(await run(agentLazyOnly, AbortSignal.timeout(1000)), "started",
+      "a Lazy-only workspace does not wait for another workspace");
+    assert.equal(eagerStarted, false, "the model has not started while its Eager server mounts");
     const release = ctxLate.held[0];
     assert.equal(typeof release, "function", "mount registered a held fiber");
     release();
@@ -2146,7 +2165,17 @@ try {
     const after = await registryLate.serverView(projLate, "late");
     assert.equal(after?.fiberPhase, "active");
     assert.equal(after?.toolCount, 1, "tool count is visible once the fiber settles");
-    pass("mount settle after reconcile emits projectMcp/updated");
+    await waiting;
+    assert.equal(eagerStarted, true);
+    await writeManagedRows(projectMcpFile(projDuplicate), [stdioRow("late")], { createIfMissing: true });
+    ctxLate.agentsList.push(fakeAgent("session-duplicate", projDuplicate));
+    await registryLate.reconcileNow();
+    const duplicate = await registryLate.serverView(projDuplicate, "late");
+    assert.match(duplicate?.effectiveServerName, /^p[0-9a-f]{6}_late$/);
+    assert.equal((await registryLate.serverView(projLate, "late"))?.effectiveServerName, effective);
+    assert.deepEqual(ctxLate.mounts.map(({ serverName }) => serverName), [effective, duplicate.effectiveServerName]);
+    assert.deepEqual(ctxLate.disposals, [], "a new colliding workspace does not remount the online server");
+    pass("model admission waits only for its Eager servers and new collisions preserve existing mounts");
   } finally {
     for (const disposer of ctxLate.disposers) {
       const cleanup = disposer();

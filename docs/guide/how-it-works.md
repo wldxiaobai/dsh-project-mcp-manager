@@ -14,7 +14,9 @@ English | [中文](how-it-works.zh.md)
   project share a single connection. At startup, restored sessions and the
   process start directory supply the initial workspaces. Workspaces with MCP
   configuration stay mounted once discovered. Session focus updates the settings
-  target, and Lazy servers still connect on demand.
+  target. Before the first model request, DSH waits up to 20 seconds for
+  visible Eager servers still loading. Newly discovered workspace collisions
+  preserve existing Eager names and connections. Lazy still connects on demand.
   **Every user-layer row mounts exactly one instance** (global, independent of
   the number of projects) — see
   [configuration sources and layers](layers.md).

@@ -370,11 +370,13 @@ export interface ProjectServerCatalogEntry {
  * 计算全部 (projectRoot, 原始名) → 生效名的映射：
  * 原始名在整个目录（全局行 + 所有项目行）中唯一时保持原名；否则该名的
  * 每个项目拥有者都改用 namespacedServerName（全局行参与占用判定但不改名）。
+ * 已挂载的 Eager 名称优先保留，除非被宿主全局名称占用。
  * 键 = projectKeyOf(projectRoot) + "\0" + 原始名。
  */
 export function effectiveServerNames(
   projects: ProjectServerCatalogEntry[],
-  globalNames: string[] = []
+  globalNames: string[] = [],
+  retained: ReadonlyMap<string, string> = new Map()
 ): Map<string, string> {
   const counts = new Map<string, number>();
   const add = (name: string) => counts.set(name, (counts.get(name) ?? 0) + 1);
@@ -383,12 +385,35 @@ export function effectiveServerNames(
     for (const name of project.names) add(name);
   }
   const result = new Map<string, string>();
-  for (const project of projects) {
-    for (const name of project.names) {
-      result.set(projectKeyOf(project.projectRoot) + "\0" + name, (counts.get(name) ?? 0) > 1 ? namespacedServerName(project.projectRoot, name) : name);
-    }
+  const used = new Set(globalNames);
+  const rows = projects.flatMap(({ projectRoot, names }) => names.map((name) => ({
+    projectRoot, name, key: projectKeyOf(projectRoot) + "\0" + name
+  })));
+  for (const { key } of rows) {
+    const existing = retained.get(key);
+    if (existing === undefined || used.has(existing)) continue;
+    result.set(key, existing);
+    used.add(existing);
+  }
+  for (const { projectRoot, name, key } of rows) {
+    if (result.has(key)) continue;
+    const prefixed = namespacedServerName(projectRoot, name);
+    const preferred = (counts.get(name) ?? 0) > 1 || used.has(name) ? prefixed : name;
+    const effective = availableServerName(preferred, key, used);
+    result.set(key, effective);
+    used.add(effective);
   }
   return result;
+}
+
+/** Handle collisions between a generated name and a literal or truncated name. */
+function availableServerName(preferred: string, key: string, used: ReadonlySet<string>): string {
+  let candidate = preferred;
+  for (let attempt = 0; used.has(candidate); attempt++) {
+    const hash = createHash("sha256").update(`${key}\0${attempt}`).digest("hex").slice(0, 8);
+    candidate = `${preferred.slice(0, 23)}_${hash}`;
+  }
+  return candidate;
 }
 
 /**

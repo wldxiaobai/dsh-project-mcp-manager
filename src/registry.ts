@@ -37,6 +37,7 @@
  * 缺失即跳过该条目。
  */
 import chokidar from "chokidar";
+import { setTimeout as wait } from "node:timers/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { access, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -95,6 +96,9 @@ import {
 import { mcpToolBudgetStats, mcpToolCount, parseToolBudgetWarn, schemaToolId } from "./status.js";
 import { LazyConnections } from "./lazy/connection.js";
 import { LAZY_TOOL_NAMES, registerLazyTools, type LazyMount } from "./lazy/proxies.js";
+
+const EAGER_STARTUP_WAIT_MS = 20_000;
+const EAGER_STARTUP_POLL_MS = 100;
 
 const delay = (ms: number) => new Promise<void>((resolvePromise) => setTimeout(resolvePromise, ms));
 
@@ -914,6 +918,7 @@ export class ProjectMcpRegistry {
   private readonly lastScanFiles = new Map<string, ProjectScanFiles>();
   /** 上一轮用户层合并后的全局期望行（摘要按目录计，不按当前装载 Map）。 */
   private lastGlobalDesired: DesiredProjectRow[] = [];
+  private globalCatalogScanned = false;
   /** 装载行的健康巡检内存（unmount 会删掉 ProjectServerState，不能只挂在 state 上）。 */
   private readonly healthByMount = new Map<string, MountHealth>();
   /** 作用域键 → 超预算的生效名（写入 diag summary；每轮重算）。 */
@@ -970,6 +975,13 @@ export class ProjectMcpRegistry {
         await this.reconcileAll();
       });
       return ready;
+    }, watchOpts);
+    ctx.on("agent/pre-step", async (
+      { agent, messages, step, signal }: { agent: { id?: string }; messages: unknown[]; step: number; signal: AbortSignal },
+      next: () => Promise<unknown>
+    ) => {
+      if (step === 1 && messages.length > 0) await this.waitForVisibleEager(agent, signal);
+      return next();
     }, watchOpts);
     ctx.on("agent/disposed", (payload: any) => {
       const agent = payload?.agent ?? payload;
@@ -1173,6 +1185,39 @@ export class ProjectMcpRegistry {
     } catch {
       // 目录不可解析：不占挂载集
     }
+  }
+
+  private async waitForVisibleEager(agent: { id?: string }, signal: AbortSignal): Promise<void> {
+    const deadline = performance.now() + EAGER_STARTUP_WAIT_MS;
+    while (!this.disposed && this.hasPendingVisibleEager(this.projectOf(agent))) {
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) break;
+      await wait(Math.min(remaining, EAGER_STARTUP_POLL_MS), undefined, { signal });
+    }
+    signal.throwIfAborted();
+  }
+
+  private hasPendingVisibleEager(project: string | undefined): boolean {
+    if (!this.globalCatalogScanned) return true;
+    const suppressed = project === undefined ? undefined : this.suppressedGlobals.get(project);
+    const shared = this.lastGlobalDesired.filter(({ rawName }) => !suppressed?.has(rawName));
+    if (this.hasPendingEager(GLOBAL_SCOPE_KEY, shared, this.globalServers)) return true;
+    if (project === undefined) return false;
+    const local = this.lastScanDesired.get(project);
+    return local === undefined || this.hasPendingEager(project, local.rows, this.projects.get(project)?.servers);
+  }
+
+  private hasPendingEager(
+    key: string,
+    rows: readonly DesiredProjectRow[],
+    mounted?: ReadonlyMap<string, ProjectServerState>
+  ): boolean {
+    return rows.some(({ rawName, row }) => {
+      if (row.disabled === true || row.config?.mode === "lazy") return false;
+      const state = mounted?.get(rawName);
+      if (state === undefined) return !this.skipReasons.has(key + "\0" + rawName);
+      return state.phase === "mounting" || state.phase === "unloading" || state.lazy !== undefined;
+    });
   }
 
   private async prepareAgent(agent: any, focus: boolean): Promise<void> {
@@ -1693,6 +1738,7 @@ export class ProjectMcpRegistry {
 
     const globalMerged = mergeSourcedRows([this.userLayer.profileYmlRows, this.userLayer.profileRows, this.userLayer.ymlRows, this.userLayer.jsonRows]);
     this.lastGlobalDesired = globalMerged.rows;
+    this.globalCatalogScanned = true;
     const hostTaken = new Set(hostGlobalNames);
     const globalMountable = new Set(globalMerged.rows.map((row) => row.rawName).filter((rawName) => !hostTaken.has(rawName)));
 
@@ -1704,7 +1750,7 @@ export class ProjectMcpRegistry {
       names: entry.rows.map((row) => row.rawName)
     }));
     const globalNames = [...hostGlobalNames, ...globalMerged.rows.map((row) => row.rawName)];
-    this.effective = effectiveServerNames(catalogProjects, globalNames);
+    this.effective = effectiveServerNames(catalogProjects, globalNames, this.mountedEagerNames(desiredByProject));
 
     await this.refreshAgentProjects();
     await this.clearClosedWorkspaceFocus();
@@ -1722,6 +1768,19 @@ export class ProjectMcpRegistry {
     await this.writeSummaries();
     await this.refreshWatchersAfterReconcile();
     this.emitUpdated();
+  }
+
+  private mountedEagerNames(desired: ReadonlyMap<string, { rows: DesiredProjectRow[] }>): Map<string, string> {
+    const retained = new Map<string, string>();
+    for (const [key, entry] of desired) {
+      const mounted = this.projects.get(key)?.servers;
+      for (const { rawName, row } of entry.rows) {
+        const state = mounted?.get(rawName);
+        if (state?.fiber === undefined || row.disabled === true || row.config?.mode === "lazy") continue;
+        retained.set(key + "\0" + rawName, state.effectiveName);
+      }
+    }
+    return retained;
   }
 
   /** 项目扫描和缓存提交保持原有顺序；跳过重读时不提交新的指纹。 */
