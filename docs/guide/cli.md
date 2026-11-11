@@ -52,8 +52,8 @@ that. `--scope project|user|profile` filters which layers are listed and which
 diagnostic file is printed (the project file vs
 `$DSH_HOME/.mcp-diag.json`). `--scope profile` lists only profile layers
 (add `--profile <name>` to keep one); `--scope user` still lists every
-user-layer file, including all profiles. Idle catalog rows print as
-not-mounted (no session), not as unhealthy.
+user-layer file, including all profiles. Legacy idle rows from an older
+diagnostic file still print as not-mounted (no session), not as unhealthy.
 
 **`import`** copies `{"mcpServers":{...}}` into a native yml or JSON file
 (`--scope` / `--format` / `--profile` match `add`; default scope is
