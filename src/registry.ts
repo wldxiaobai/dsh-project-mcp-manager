@@ -959,19 +959,17 @@ export class ProjectMcpRegistry {
       if (agent?.session === undefined && agent?.id === undefined) return;
       const id = typeof agent?.id === "string" ? agent.id : undefined;
       const replay = id !== undefined && this.startupAgentIds.delete(id);
-      // serial 的 agent/created 会等这个 Promise：对账和 deny 落定后再开始这一回合，
-      // 避免模型先看到上一个工作区的工具。
-      return this.enqueue(async () => {
-        if (replay) {
-          await this.rememberAgent(agent, false);
-        } else {
-          await this.rememberAgent(agent, true);
-          this.hostFocusSealed = true;
-        }
-        await this.reconcileAll();
-      }).catch((error) => {
-        this.ctx.logger.warn(`项目 MCP 后台任务失败：${error instanceof Error ? error.message : String(error)}`);
+      // DSH waits for agent/created. Apply isolation before returning, while
+      // mount replacement and diagnostics continue on the reconciliation queue.
+      if (!replay) this.hostFocusSealed = true;
+      const ready = this.prepareAgent(agent, !replay).catch((error) => {
+        this.ctx.logger.warn(`会话 MCP 隔离准备失败：${error instanceof Error ? error.message : String(error)}`);
       });
+      this.schedule(async () => {
+        await ready;
+        await this.reconcileAll();
+      });
+      return ready;
     }, watchOpts);
     ctx.on("agent/disposed", (payload: any) => {
       const agent = payload?.agent ?? payload;
@@ -1175,6 +1173,18 @@ export class ProjectMcpRegistry {
     } catch {
       // 目录不可解析：不占挂载集
     }
+  }
+
+  private async prepareAgent(agent: any, focus: boolean): Promise<void> {
+    await this.rememberAgent(agent, focus);
+    if (typeof agent.id !== "string" || !this.liveAgents().includes(agent)) return;
+    if (!this.agentProjects.has(agent.id)) {
+      const project = await this.resolveProject(agent);
+      if (!this.liveAgents().includes(agent)) return;
+      if (project !== undefined) this.agentProjects.set(agent.id, project);
+    }
+    this.sweepRestrictions([agent]);
+    if (focus) this.emitUpdated();
   }
 
   private async rememberAgent(agent: any, focus = false): Promise<void> {
@@ -2534,14 +2544,14 @@ export class ProjectMcpRegistry {
     if (this.foregroundKey === focus) this.foregroundKey = undefined;
   }
 
-  private sweepRestrictions(): void {
+  private sweepRestrictions(agents = this.liveAgents()): void {
     // 宿主注册工具和应用限制都会同步发 tools/change。
     if (this.disposed || this.applyingRestrictions) return;
     this.applyingRestrictions = true;
     try {
       const groups = this.projectMountGroups();
       const toolIds = this.registeredToolIds();
-      for (const agent of this.liveAgents()) {
+      for (const agent of agents) {
         const project = this.agentProjects.get(agent.id);
         const deny = expandToToolNames(this.hiddenServersFor(project, groups), toolIds);
         deny.push(...this.toolFilterDeniesForSession(project, toolIds));

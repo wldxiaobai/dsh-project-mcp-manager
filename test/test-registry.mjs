@@ -2363,8 +2363,22 @@ try {
     assert.equal(ctxChain.disposals.length, 1, "health remount disposes the dead fiber");
     const mountsAtHold = ctxChain.mounts.length;
     ctxChain.agentsList.push(agentAway);
-    ctxChain.emit("session/event", { id: "session-away", header: { cwd: projAway } }, { type: "user/message" });
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+    ctxChain.schemas.push({ name: "mcp__" + effective + "__ping" });
+    const [onAgentCreated] = ctxChain.handlers.get("agent/created");
+    const creation = onAgentCreated({ agent: agentAway, source: "startup" });
+    let timer;
+    try {
+      await Promise.race([
+        creation,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("session creation waited for MCP disposal")), 1000);
+        })
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+    assert.deepEqual(agentAway.denies.at(-1), ["mcp__" + effective + "__ping"],
+      "a new agent is isolated before the pending MCP disposal completes");
     assert.equal(ctxChain.mounts.length, mountsAtHold, "the server is not mounted again while dispose is still running");
     const release = ctxChain.releaseDispose.shift();
     assert.equal(typeof release, "function");
@@ -2376,7 +2390,7 @@ try {
     );
     await registryChain.reconcileNow();
     assert.equal(registryChain.focusedProjectRoot(), projAway);
-    pass("health remount shares the dispose chain with a workspace switch");
+    pass("session creation applies isolation without waiting for MCP disposal");
   } finally {
     process.chdir(savedCwdChain);
     for (const release of ctxChain?.releaseDispose ?? []) release();
