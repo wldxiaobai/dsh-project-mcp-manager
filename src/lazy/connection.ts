@@ -7,7 +7,6 @@ import { createRequire } from "node:module";
 const { version } = createRequire(import.meta.url)("../../package.json") as { version: string };
 export type LazyTool = Awaited<ReturnType<Client["listTools"]>>["tools"][number];
 
-const IDLE_MS = 5 * 60_000;
 const DISCOVERY_TIMEOUT_MS = 30_000;
 
 interface Connection {
@@ -16,6 +15,7 @@ interface Connection {
   abort: AbortController;
   ready: Promise<void>;
   catalog?: Promise<LazyTool[]>;
+  discovered?: boolean;
   requests: number;
   shutdown?: Promise<void>;
 }
@@ -35,15 +35,17 @@ async function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   }
 }
 
-/** One on-demand connection per mounted row. Never registers remote tools with DSH. */
+/** One on-demand connection per server and session. Never registers remote tools with DSH. */
 export class LazyServer {
   private connection?: Connection;
-  private idleTimer?: ReturnType<typeof setTimeout>;
+  private activated = false;
   private closing: Promise<void> = Promise.resolve();
   private disposed = false;
   private disposal?: Promise<void>;
 
   constructor(private readonly config: Config) {}
+
+  get isActivated(): boolean { return this.activated; }
 
   private open(): Connection {
     const config = this.config;
@@ -104,7 +106,6 @@ export class LazyServer {
     } while (closing !== this.closing);
     signal.throwIfAborted();
     if (this.disposed) throw new Error("The MCP server configuration changed");
-    clearTimeout(this.idleTimer);
     const connection = this.connection ??= this.open();
     connection.requests++;
     try {
@@ -114,12 +115,8 @@ export class LazyServer {
       return await abortable(use(connection), signal);
     } finally {
       connection.requests--;
-      if (connection.requests === 0 && this.connection === connection) {
-        if (signal.aborted) void this.close(connection);
-        else {
-          this.idleTimer = setTimeout(() => { void this.close(connection); }, IDLE_MS);
-          this.idleTimer.unref();
-        }
+      if (connection.requests === 0 && !connection.discovered && this.connection === connection) {
+        void this.close(connection);
       }
     }
   }
@@ -130,7 +127,11 @@ export class LazyServer {
       cacheMode: "refresh",
       signal: connection.abort.signal,
       timeout: DISCOVERY_TIMEOUT_MS
-    }).then(({ tools }) => tools).catch((error: unknown) => {
+    }).then(({ tools }) => {
+      connection.discovered = true;
+      if (!this.disposed && this.connection === connection) this.activated = true;
+      return tools;
+    }).catch((error: unknown) => {
       if (connection.catalog === catalog) connection.catalog = undefined;
       throw error;
     });
@@ -151,10 +152,7 @@ export class LazyServer {
   private close(connection = this.connection): Promise<void> {
     if (connection === undefined) return this.closing;
     if (connection.shutdown !== undefined) return connection.shutdown;
-    if (this.connection === connection) {
-      this.connection = undefined;
-      clearTimeout(this.idleTimer);
-    }
+    if (this.connection === connection) this.connection = undefined;
     // During SDK auto negotiation client.transport is still undefined. Closing the
     // original transport is what cancels the disposable stdio sibling probe.
     const closeTransport = () => (connection.client.transport === undefined
@@ -172,8 +170,41 @@ export class LazyServer {
 
   dispose(): Promise<void> {
     this.disposed = true;
-    clearTimeout(this.idleTimer);
     this.disposal ??= this.close();
     return this.disposal;
+  }
+}
+
+/** Own the independent connections opened by sessions for one mounted row. */
+export class LazyConnections {
+  private readonly sessions = new Map<string, LazyServer>();
+  private readonly closing = new Set<Promise<void>>();
+  private disposal?: Promise<void>;
+
+  constructor(private readonly config: Config) {}
+
+  forSession(id: string, activate: boolean): LazyServer | undefined {
+    if (this.disposal !== undefined) return undefined;
+    let server = this.sessions.get(id);
+    if (server === undefined && activate) {
+      server = new LazyServer(this.config);
+      this.sessions.set(id, server);
+    }
+    return activate || server?.isActivated ? server : undefined;
+  }
+
+  release(id: string): void {
+    const server = this.sessions.get(id);
+    if (server === undefined) return;
+    this.sessions.delete(id);
+    const closing = server.dispose();
+    this.closing.add(closing);
+    void closing.then(() => this.closing.delete(closing));
+  }
+
+  dispose(): Promise<void> {
+    if (this.disposal !== undefined) return this.disposal;
+    for (const id of this.sessions.keys()) this.release(id);
+    return this.disposal = Promise.all(this.closing).then(() => {});
   }
 }

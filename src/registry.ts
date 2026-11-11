@@ -93,7 +93,7 @@ import {
   type McpServerView
 } from "./model.js";
 import { mcpToolBudgetStats, mcpToolCount, parseToolBudgetWarn, schemaToolId } from "./status.js";
-import { LazyServer } from "./lazy/connection.js";
+import { LazyConnections } from "./lazy/connection.js";
 import { LAZY_TOOL_NAMES, registerLazyTools, type LazyMount } from "./lazy/proxies.js";
 
 const delay = (ms: number) => new Promise<void>((resolvePromise) => setTimeout(resolvePromise, ms));
@@ -197,7 +197,7 @@ export interface ProjectServerState {
   /** 行来源（遮蔽优先序见模块注释）；旧调用方可缺省。 */
   source?: McpRowSource;
   fiber?: any;
-  lazy?: LazyServer;
+  lazy?: LazyConnections;
   phase: ProjectServerPhase;
   error?: string;
 }
@@ -940,6 +940,7 @@ export class ProjectMcpRegistry {
   /** 生效名 → 尚未结束的 fiber.dispose。同名重挂必须等它落地，避免预留被晚到的 dispose 清掉。 */
   private readonly nameRelease = new Map<string, Promise<void>>();
   private disposeLazyTools?: () => void;
+  private readonly closedLazySessions = new WeakSet<object>();
 
   constructor(ctx: any, providers: ProjectMcpRegistryOptions) {
     this.ctx = ctx;
@@ -976,6 +977,10 @@ export class ProjectMcpRegistry {
       const agent = payload?.agent ?? payload;
       if (agent === undefined) return;
       this.releaseAgent(agent);
+      // Session-backed agents may be replaced while their session stays open.
+      if (this.sessionIdOf(agent.session) === undefined && typeof agent.id === "string") {
+        this.releaseLazySession(agent.id);
+      }
       this.schedule(async () => {
         await this.reconcileAll();
       });
@@ -989,7 +994,11 @@ export class ProjectMcpRegistry {
     }, watchOpts);
     ctx.on("session/disposed", (session: any) => {
       const id = this.sessionIdOf(session);
-      if (id !== undefined) this.sessionRoots.delete(id);
+      if (id !== undefined) {
+        this.sessionRoots.delete(id);
+        this.closedLazySessions.add(session);
+        this.releaseLazySession(id);
+      }
       this.schedule(async () => {
         await this.reconcileAll();
       });
@@ -1145,6 +1154,13 @@ export class ProjectMcpRegistry {
   private sessionIdOf(session: any): string | undefined {
     const id = session?.id ?? session?.header?.id;
     return typeof id === "string" && id !== "" ? id : undefined;
+  }
+
+  private releaseLazySession(id: string): void {
+    for (const state of this.globalServers.values()) state.lazy?.release(id);
+    for (const project of this.projects.values()) {
+      for (const state of project.servers.values()) state.lazy?.release(id);
+    }
   }
 
   private async rememberSession(session: any, focus = true): Promise<void> {
@@ -2207,7 +2223,7 @@ export class ProjectMcpRegistry {
         row: item.row,
         source: item.source,
         phase: "active",
-        lazy: new LazyServer(built.config)
+        lazy: new LazyConnections(built.config)
       });
       return undefined;
     }
@@ -2477,10 +2493,14 @@ export class ProjectMcpRegistry {
     if (this.disposeLazyTools !== undefined) return;
     try {
       this.disposeLazyTools = registerLazyTools(this.ctx, async (agent: any) => {
-        const isLive = () => typeof agent?.id === "string" && this.liveAgents().some((live) => live.id === agent.id);
+        const isLive = () => typeof agent?.id === "string" && this.liveAgents().includes(agent)
+          && !this.closedLazySessions.has(agent.session);
         if (!isLive()) throw new Error("An active DSH session is required to use Lazy MCP tools");
         const project = this.agentProjects.get(agent.id) ?? await this.resolveProject(agent);
-        return () => isLive() ? this.visibleLazyMounts(project) : [];
+        return {
+          id: this.sessionIdOf(agent.session) ?? agent.id,
+          visible: () => isLive() ? this.visibleLazyMounts(project) : []
+        };
       });
       this.warnGates.delete("lazy-proxies");
     } catch (error) {

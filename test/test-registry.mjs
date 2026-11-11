@@ -2583,10 +2583,11 @@ for await (const line of createInterface({ input: process.stdin })) {
     assert.ok(outsider.denies.some((deny) => deny.includes("mcp_call")));
     await assert.rejects(() => execute("mcp_call", { server: "demo", tool: "echo" }, outsider), /unavailable in this session/);
     assert.equal(await pathExists(trace), false, "cross-project rejection must happen before connecting");
-    const [search, described] = await Promise.all([
+    const [search] = await Promise.all([
       execute("mcp_search", { query: "fixture" }),
-      execute("mcp_describe", { server: "demo", tool: "echo" })
+      execute("mcp_search", { server: "demo" })
     ]);
+    const described = await execute("mcp_describe", { server: "demo", tool: "echo" });
     assert.deepEqual(JSON.parse(search.content[0].text).tools.map(({ tool }) => tool), ["echo"]);
     assert.deepEqual(JSON.parse(described.content[0].text).inputSchema.required, ["value"]);
     await assert.rejects(() => execute("mcp_call", { server: "demo", tool: "secret" }), /unavailable in this session/);
@@ -2597,6 +2598,8 @@ for await (const line of createInterface({ input: process.stdin })) {
     assert.equal(firstTrace.match(/^tools\/list$/gm).length, 1, "metadata is reused");
     await writeConfig("second");
     await registry.reconcileNow();
+    await assert.rejects(invoke, /Run mcp_search/);
+    await execute("mcp_search", { server: "demo" });
     assert.equal((await invoke()).content[0].text, "second:ok", "hot reload replaces the connection");
     await writeConfig("third", "eager");
     await registry.reconcileNow();
@@ -2690,7 +2693,10 @@ for await (const line of createInterface({ input: process.stdin })) {
     const agentB = fakeAgent("lazy-b", projB);
     const agentA2 = extraSessionA ? fakeAgent("lazy-a2", projA) : undefined;
     ctx.agentsList.push(agentA);
-    if (agentA2 !== undefined) ctx.agentsList.push(agentA2);
+    if (agentA2 !== undefined) {
+      agentA2.session.id = agentA2.id;
+      ctx.agentsList.push(agentA2);
+    }
     ctx.agentsList.push(agentB);
     const registry = new ProjectMcpRegistry(ctx, {
       globalNames: async () => [],
@@ -2750,6 +2756,8 @@ await withLazyProjects({
 
   // 只连本项目的 a-alpha；不要先做无 server 过滤的 search，否则会把 a-demo
   // 也拉起来，后面的“跨项目不得新增连接”断言就失去意义。
+  await execute("mcp_search", { server: aAlpha }, agentA);
+  await execute("mcp_search", { server: bBeta }, agentB);
   const descA = await execute("mcp_describe", { server: aAlpha, tool: "echo" }, agentA);
   assert.deepEqual(JSON.parse(descA.content[0].text).inputSchema.required, ["value"]);
   assert.equal((await execute("mcp_call", { server: aAlpha, tool: "echo", arguments: { value: "own" } }, agentA)).content[0].text, "a-alpha:own");
@@ -2777,10 +2785,27 @@ await withLazyProjects({
     "B's broad search must only contain B's servers: " + JSON.stringify(broadB.tools));
   await assert.rejects(() => execute("mcp_call", { server: aAlpha, tool: "secret", arguments: { value: "x" } }, agentA), /unavailable in this session/);
 
+  const invokeA2 = () => execute("mcp_call", { server: aAlpha, tool: "echo", arguments: { value: "own" } }, agentA2);
+  await assert.rejects(invokeA2, /Run mcp_search/);
+  const traceA = traceFor("a-alpha");
+  const initializations = async () => (await readTraceLines(traceA)).filter((line) => line === "method:a-alpha:initialize").length;
+  assert.equal(await initializations(), 1);
+  await execute("mcp_search", { server: aAlpha }, agentA2);
+  assert.equal((await invokeA2()).content[0].text, "a-alpha:own");
+  assert.equal(await initializations(), 2, "a new session opens an independent connection");
   const indexA2 = ctx.agentsList.findIndex((agent) => agent.id === agentA2.id);
   assert.ok(indexA2 >= 0);
   ctx.agentsList.splice(indexA2, 1);
   ctx.emit("agent/disposed", { agent: agentA2 });
+  const replacement = { ...agentA2 };
+  ctx.agentsList.push(replacement);
+  await registry.reconcileNow();
+  assert.equal((await execute("mcp_call", { server: aAlpha, tool: "echo", arguments: { value: "replacement" } }, replacement)).content[0].text, "a-alpha:replacement");
+  assert.equal(await initializations(), 2, "agent replacement keeps the same session connection");
+  ctx.emit("session/disposed", replacement.session);
+  await assert.rejects(() => execute("mcp_search", { server: aAlpha }, replacement), /active DSH session is required/);
+  ctx.agentsList.pop();
+  assert.ok(await waitForTrace(traceA, (lines) => lines.includes("exit:a-alpha")));
   await registry.reconcileNow();
   await assert.rejects(() => execute("mcp_call", { server: aAlpha, tool: "echo", arguments: { value: "dead" } }, agentA2), /active DSH session is required/);
   assert.equal((await execute("mcp_call", { server: aAlpha, tool: "echo", arguments: { value: "alive" } }, agentA)).content[0].text, "a-alpha:alive",
@@ -2816,11 +2841,13 @@ await withLazyProjects({
   const aSearchGlobal = await execute("mcp_search", { server: "shared" }, agentA);
   assert.deepEqual(JSON.parse(aSearchGlobal.content[0].text).tools, [], "A must not see the global shared shadowed by its project row");
   await assert.rejects(() => execute("mcp_call", { server: "shared", tool: "echo", arguments: { value: "x" } }, agentA), /unavailable in this session/);
+  await execute("mcp_search", { server: aShared }, agentA);
   assert.equal((await execute("mcp_call", { server: aShared, tool: "echo", arguments: { value: "local" } }, agentA)).content[0].text, "a-shared:local");
 
   const bSearchGlobal = JSON.parse((await execute("mcp_search", { server: "shared" }, agentB)).content[0].text);
   assert.deepEqual(bSearchGlobal.tools.map(({ server }) => server), ["shared"]);
   assert.equal((await execute("mcp_call", { server: "shared", tool: "echo", arguments: { value: "global" } }, agentB)).content[0].text, "g-shared:global");
+  await execute("mcp_search", { server: bBeta }, agentB);
   assert.equal((await execute("mcp_call", { server: bBeta, tool: "echo", arguments: { value: "b" } }, agentB)).content[0].text, "b-beta:b");
 
   await assert.rejects(() => execute("mcp_call", { server: aShared, tool: "echo", arguments: { value: "x" } }, agentB), /unavailable in this session/);

@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Lazy connections activate independently on each session's first search and
+  stay open across idle periods and workspace switches.
+
 - Keep MCP servers mounted for every discovered workspace when users switch
   sessions. Each session sees its own workspace and shared MCP tools, server
   instructions, and resources.

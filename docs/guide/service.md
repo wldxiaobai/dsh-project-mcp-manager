@@ -63,7 +63,7 @@ write.
 
 The write schedules one `reconcileAll`, but the method itself does not wait for
 it. Call `reload()` when the next read must see the settled result. Runtime
-differences, the five-minute idle close, search fan-out, and limitations are in
+differences, session connection lifetime, search fan-out, and limitations are in
 [configuration format](format.md#loading-mode) and the
 [Lazy mode design record (Chinese)](../design/lazy-mcp.md).
 

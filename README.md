@@ -54,7 +54,7 @@ Lazy supports stdio and Streamable HTTP. Use `mcp_search` to find a tool,
 `mcp_describe` for its schemas, and `mcp_call` to run it. Search connects
 to the visible Lazy servers to discover their tools. Pass `server` to
 limit discovery to one. Each connection caches its tool list and closes
-after five idle minutes or when the row is unloaded. Tool allow and deny
+when the session ends or the row is unloaded. Tool allow and deny
 rules apply to all three proxies.
 
 Use Eager for servers that need DSH resource integration, server

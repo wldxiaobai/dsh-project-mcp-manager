@@ -141,7 +141,7 @@ try {
     await server.dispose();
     await reaped(trace);
   }
-  // The final cancelled caller reaps pending probe, handshake, list or call.
+  // The final cancelled caller cancels pending probe, handshake, list or call.
   for (const [scenario, event] of [["probe-hang", "server/discover"], ["connect-hang", "initialize"], ["list-hang", "tools/list"], ["call-hang", "tools/call"]]) {
     const { server, trace } = make(scenario);
     const abort = new AbortController();
@@ -172,43 +172,16 @@ try {
     await assert.rejects(catalog(server), /configuration changed/);
     assert.deepEqual(await lines(trace), before);
   }
-  // Fast-forward just the idle window, not the real process shutdown. An active
-  // caller keeps the connection alive; after it finishes, a new caller arriving
-  // during shutdown waits for reaping, then creates one session.
+  // An activated session retains its connection beyond the former idle window.
   {
     const { server, trace } = make();
-    let finish;
-    const entered = new Promise((resolve) => { finish = resolve; });
-    const hold = server.withClient(signal(), async (connection) => {
-      await server.listTools(connection);
-      await entered;
-    });
-    await seen(trace, "tools/list");
-    const sessionPid = (await lines(trace)).find(({ event }) => event === "initialize")?.pid;
-    const initialPids = (await starts(trace)).map(({ pid }) => pid);
+    await catalog(server);
     mock.timers.enable({ apis: ["setTimeout"] });
     try {
-      mock.timers.tick(5 * 60_000);
-      const active = await lines(trace);
-      assert.equal(active.filter(({ event }) => event === "initialize").length, 1,
-        "an active caller keeps the connection alive through the idle window");
-      assert.ok(!active.some(({ event, pid }) => event === "exit" && pid === sessionPid),
-        "an active caller must not be idle-closed");
-      finish();
-      await hold;
-      mock.timers.tick(5 * 60_000);
+      mock.timers.tick(30 * 60_000);
     } finally { mock.timers.reset(); }
-    // The idle close is now pending. Abort while waiting on the shutdown barrier:
-    // the waiter must reject without opening a new session.
-    const abort = new AbortController();
-    const aborted = catalog(server, abort.signal);
-    abort.abort();
-    await assert.rejects(aborted, { name: "AbortError" });
-    assert.equal((await lines(trace)).filter(({ event }) => event === "initialize").length, 1,
-      "an aborted waiter during shutdown must not spawn");
-    await until(async () => initialPids.every(pidDead), "old pids must be reaped before a new session");
     assert.equal((await catalog(server))[0].name, "echo");
-    assert.equal((await lines(trace)).filter(({ event }) => event === "initialize").length, 2);
+    assert.equal((await lines(trace)).filter(({ event }) => event === "initialize").length, 1);
     await server.dispose();
     await reapedStable(trace);
   }
@@ -260,7 +233,7 @@ try {
   }
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(unhandled, [], "no unhandled rejections");
-  console.log("ALL LAZY LIFECYCLE TESTS PASSED (abort, concurrency, idle, failure, disposal, process reaping)");
+  console.log("ALL LAZY LIFECYCLE TESTS PASSED (abort, concurrency, keep-alive, failure, disposal, process reaping)");
 } finally {
   process.off("unhandledRejection", onUnhandled);
   mock.timers.reset();

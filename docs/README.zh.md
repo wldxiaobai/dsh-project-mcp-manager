@@ -47,7 +47,7 @@ client 决定。**
 Lazy 支持 stdio 和 Streamable HTTP。使用 `mcp_search` 搜索工具，
 `mcp_describe` 查看完整 Schema，再用 `mcp_call` 调用。搜索会连接当前会话
 可见的 Lazy 服务器以发现工具。传入 `server` 可只查一台。工具目录按连接缓存，
-连接空闲五分钟或条目卸载后关闭。工具允许和拒绝规则适用于三个代理。
+每个会话首次搜索时独立连接，连接保持至会话结束或条目卸载。工具允许和拒绝规则适用于三个代理。
 
 需要 DSH Resources 集成、服务器 instructions 或按单个注册工具配置宿主策略时，
 使用 Eager。Lazy 处理 MCP 工具调用，文本和图片走 DSH 的 MCP 结果转换。

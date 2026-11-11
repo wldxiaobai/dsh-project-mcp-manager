@@ -246,13 +246,10 @@ Every server card has a **Loading mode** control: **Eager** (default) or
   each tool is registered in DSH. Use it for server instructions, DSH
   Resources, host policies that target individual registered tool names, or the
   **Manage tools** switches.
-- **Lazy** does not connect at mount. The first `mcp_search`, `mcp_describe`,
-  or `mcp_call` connects it; a `mcp_search` without `server` connects every
-  visible Lazy server in the session, which can be slow and can start several
-  processes at once. The connection caches the tool list and closes after five
-  idle minutes, when the row is unloaded, or when the mode changes. Cancelling
-  one proxy call does not cancel other callers sharing the connection; the last
-  cancelled waiter starts closing it. Lazy rows
+- **Lazy** connects separately for each session on its first `mcp_search`.
+  Without `server`, the search can start several processes at once. An
+  activated connection stays open until the session ends or the configuration
+  is unloaded or replaced. Lazy rows
   show **Available on demand**; the **Manage tools** button is hidden because
   no per-tool tools are registered. The page does not probe a Lazy server; a
   failure surfaces only on the first search or call. Edit `tools.allow` /
