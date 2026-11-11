@@ -32,7 +32,7 @@
 | R32-01 | P0 | `agent/pre-step` 等待发生在宿主逐步工具/提示词快照**之后**，被延迟的当前步骤仍看不到等待期间挂载的工具，最多白等 20 秒 | 把等待挪到快照之前，或移除等待并改文档；用慢挂载服务器复验 step 1 请求的 tools 列表 | **已修复**（等待移回 `agent/created`，见实施记录） |
 | R32-02 | P1 | 文档同步缺口：AGENTS.md 三处旧口径、registry 模块头「确定性」声明、`docs/design/lazy-mcp.md` 空闲关闭、CHANGELOG/how-it-works 等待措辞 | 按下方清单逐项同步，中英双版 | **已修复**（文档已同步） |
 | R32-03 | P1 | SonarCloud 新增 2 项：S1994（CRITICAL 级异味）与 S9382（MINOR） | S1994 改写循环；S9382 属有意轮询，标记 accepted 并注明理由 | 部分（S1994 已改 while；S9382 已注理由，Sonar 侧 accepted 待维护者操作） |
-| R32-04 | P2 | UI/CLI 的 `idle` 死分支：`skipReason==="idle"` 与「空闲」分组标记不再触发；CLI `summary.idle` 输出恒空 | 后续清理或改语义；CLI 保留可读旧诊断文件亦合理 | 留作 follow-up（本轮不动 UI/CLI） |
+| R32-04 | P2 | UI/CLI 的 `idle` 死分支：`skipReason==="idle"` 与「空闲」分组标记不再触发；CLI `summary.idle` 输出恒空 | 后续清理或改语义；CLI 保留可读旧诊断文件亦合理 | **已修复**（删 UI/registry 死分支；旧诊断文件只读兼容保留） |
 | R32-05 | P2 | `clearClosedWorkspaceFocus` 未查 `liveSessionCwds()`，「已恢复但尚无 agent」的工作区可能被误清焦点 | 补检查，或注释说明仅影响管理页展示 | **已修复**（补恢复会话检查） |
 | R32-06 | P2 | `isLive()` 从 id 比较改为对象同一性，依赖宿主返回稳定 agent 对象，假设未注释 | 加注释固化假设（宿主注册表已核实稳定） | **已修复**（已注释） |
 | R32-07 | P2 | `filterMcpPrompt` 正则与宿主文案强耦合，失配时整段丢弃 | 注释来源包 `dsh-mcp-resources`；保留 fail-closed 方向 | **已修复**（已注释来源与 fail-closed） |
@@ -67,7 +67,7 @@
 | 文件 | 位置 | 现状 | 应改为 |
 | --- | --- | --- | --- |
 | `AGENTS.md` | L15 目录结构 registry 段 | `skipReason` 含 `idle`、「idle 卸载进 summary.idle」、「会话边只听 agent/created 与 agent/disposed」 | idle 不再产生；事件清单补 session/created、session/disposed、session/event、tools/change、system-prompt/assemble、tools/pre-execute、agent/pre-step |
-| `AGENTS.md` | L26 UI 段 | 「其它有 idle 行的组标『空闲』」 | 与 R32-04 一并处理 |
+| `AGENTS.md` | L26 UI 段 | 「其它有 idle 行的组标『空闲』」 | 已随 R32-04 改为「其它分组不标记」 |
 | `AGENTS.md` | L48「全局 vs 项目」 | 「项目层按需挂载（有会话或进程 cwd）」 | 与已更新的「工作区挂载」条目一致 |
 | `AGENTS.md` | 目录结构 model.ts 段、「生效名 vs 原名」 | 只描述「冲突改 `p<hash>_`」 | 补 retained 优先保留、宿主全局名例外、23+8 哈希兜底 |
 | `src/registry.ts` | 模块头 | 生效名「确定性、与装载顺序无关」 | retained 使生效名依赖挂载历史，声明失效 |
@@ -85,7 +85,7 @@
 
 ## P2 细节
 
-- **R32-04**：`packages/ui/src/client/McpPanel.tsx` L106/L126、`workspace.ts` L78/L126 的 `idle` 分支与分组标记从此不再触发；`src/cli.ts` L999 `summary.idle` 输出恒空。registry 侧 `collectSkipMarks` 的 idle 处理与 `parseDiagDocument` 兼容保留合理（读旧诊断文件）。
+- **R32-04（已清理）**：`packages/ui/src/client/McpPanel.tsx`、`workspace.ts` 的 `idle` 分支与「空闲」分组标记、`workspaceIdle`/`workspaceIdleHint` 文案、`.group-note` 样式均已删除；`src/cli.ts` 的 `summary.idle` 打印保留为旧诊断文件只读兼容；registry 侧删除 `collectSkipMarks` 的 idle 分支与 `summary.idle` 写入，只保留 `DiagSummary.idle`/`parseIdleNames` 的读取兼容。
 - **R32-05**：焦点只影响管理页展示与写入目标，无安全后果；但冷启动恢复态下可能误清，建议补 `liveSessionCwds()` 检查。
 - **R32-06**：已核实宿主 `agents.announce()` 要求 agent 先入注册表才派发 serial `agent/created`，且注册表持有稳定对象——当前实现安全；注释固化假设，防止宿主将来返回投影时 Lazy 工具静默 fail-closed。
 - **R32-07**：正则 `/^(.*: )(\[.*\])\.$/s` 与 `dsh-mcp-resources` 现行文案逐字匹配（已核实）；失配丢整段是 fail-closed，方向安全。按仓库「镜像值」惯例注释来源，便于宿主升级追踪。
@@ -128,7 +128,7 @@
 
 - **初审**：方向正确、实现质量较高，宿主契约全部核实；建议补文档同步并实机复核后合入。
 - **复审**：发现 R32-01（P0）——等待钩子位于宿主快照之后，宣称的「首个模型请求等到工具就绪」在慢挂载场景不成立。
-- **修复实施（2026-11-12）**：经维护者选定「等待移回会话创建路径」方案，R32-01 已修复；R32-02/R32-03（S1994）及 P2 各项（R32-05～R32-10）已一并落实，全量 `pnpm test` 通过。**合入前仍余**：R32-04（UI/CLI idle 死分支，follow-up）、R32-03 的 S9382 Sonar 侧 accepted、R32-11 合入时事项、R32-12 实机 GUI 复核。详见实施记录。
+- **修复实施（2026-11-12）**：经维护者选定「等待移回会话创建路径」方案，R32-01 已修复；R32-02/R32-03（S1994）及 P2 各项（R32-04～R32-10）已一并落实，全量 `pnpm test` 通过。**合入前仍余**：R32-03 的 S9382 Sonar 侧 accepted、R32-11 合入时事项、R32-12 实机 GUI 复核。详见实施记录。
 
 ## 实施记录（2026-11-12，pr-32 分支）
 
@@ -147,7 +147,7 @@
 | R32-08 | 完成 | `test/test-model.mjs` 补 retained 保留、宿主全局名优先、生成名撞字面名哈希后缀兜底三组断言 |
 | R32-09 | 完成 | `LazyConnections.release` 的 `closing.then(drop, drop)` 两态均摘除集合元素 |
 | R32-10 | 完成 | AGENTS.md 与 how-it-works 中英明示「冲突消失后已挂实例保持前缀名直到卸载」 |
-| R32-04 | 留 follow-up | 本轮不改 UI/CLI；AGENTS.md 已标「空闲」为遗留分支 |
+| R32-04 | 完成 | 删除 UI 的 `skipReason==="idle"` 判定、`workspaceGroupMarker` 的 idle 分支与「空闲」标签/说明、`workspaceIdle`/`workspaceIdleHint` 与 `.group-note` 样式；registry 删除 `collectSkipMarks` 的 idle 分支、`summarizeScope` 的 idle 数组与 `summary.idle` 写入；`statusIdle` 文案改为「已启用 · 等待装载」。**保留**旧诊断文件的只读兼容（`DiagSummary.idle`/`parseIdleNames`/`status` 打印，均已注释）。测试、AGENTS.md、cli/env-expansion/settings-ui 双语指南同步 |
 
 **本地提交**（接在作者 `b5e75a9` 之后）：
 
@@ -156,9 +156,11 @@
 - `662ba8d` — fix(lazy): 连接释放清理链补防御性拒绝处理（R32-09）。
 - `0f165b6` — fix(mcp): Eager 等待移回会话创建并加固隔离（R32-01/R32-05/R32-06/R32-07）。
 - `a2e756f` — docs(mcp): 同步常驻挂载与 Lazy 会话生命周期口径（R32-02/R32-10）。
+- `4de505d` — docs(review): 回填 PR #32 审查修复实施记录。
+- `d180c75` — refactor(mcp): 移除 idle 死分支并更正等待装载文案（R32-04）。
 - 本实施记录提交 — 报告状态与实施记录回填（提交本身不嵌入自身 hash）。
 
-**验证**：核心 `npx tsc --noEmit` exit 0；全量 `pnpm test`（pretest 完整 core/UI 构建）**exit 0**——model 36、mcp-file 7、json-file 13、json-write 6、registry 64、project-watch 5、cli 21、ui-collapse 14、ui-paste 14、ui-display 7、ui-workspace 11、ui-entries 9、bundle 7、ui-client-wiring 17，lazy lifecycle/dependency/naming 与 panel-helpers、ui-lifecycle 全通过。新增生效名单测与改写的会话等待用例均通过，未删除/跳过/放宽既有断言。
+**验证**：核心与 UI `tsc --noEmit` 均 exit 0；全量 `pnpm test`（pretest 完整 core/UI 构建）**exit 0**——model 36、mcp-file 7、json-file 13、json-write 6、registry 64、project-watch 5、cli 21、ui-collapse 14、ui-paste 14、ui-display 7、ui-workspace 11、ui-entries 9、bundle 7、ui-client-wiring 17，lazy lifecycle/dependency/naming 与 panel-helpers、ui-lifecycle 全通过。新增生效名单测、改写的会话等待用例与 idle 清理后的分组/计数用例均通过，未删除/跳过/放宽既有断言（旧诊断文件的 idle 只读兼容用例保留）。
 
 **保留边界**：未实机 GUI 点测、未做 npm 发布 smoke；R32-01 建议维护者用延迟 initialize 的 stdio 服务器做慢挂载实机复验。本轮不改版本号、不发布、不推送；合入远端 `dev` 由维护者决定。
 
