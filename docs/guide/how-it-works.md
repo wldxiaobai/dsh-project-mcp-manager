@@ -14,8 +14,9 @@ English | [中文](how-it-works.zh.md)
   project share a single connection. At startup, restored sessions and the
   process start directory supply the initial workspaces. Workspaces with MCP
   configuration stay mounted once discovered. Session focus updates the settings
-  target. Before the first model request, DSH waits up to 20 seconds for
-  visible Eager servers still loading. Newly discovered workspace collisions
+  target. Creating a session waits up to 20 seconds for its visible Eager
+  servers to finish mounting, so the first model request sees them; sessions
+  restored at startup skip the wait. Newly discovered workspace collisions
   preserve existing Eager names and connections. Lazy still connects on demand.
   **Every user-layer row mounts exactly one instance** (global, independent of
   the number of projects) — see
@@ -43,11 +44,17 @@ English | [中文](how-it-works.zh.md)
 - **Effective names**: when the original `serverName` is unique across the
   whole catalog (host global rows + all project rows) it keeps its name; on a
   conflict **project rows** are renamed to `p<first 6 hex chars of
-  sha256(project root)>_<original name>` (truncated to 32 characters,
-  deterministic and independent of mount order) to avoid the serverName
-  reservation conflicts that `dsh-mcp-client` makes per process root. Global
-  rows (profile patch lines and user-layer rows) participate in occupancy
-  determination but are never renamed. Model-visible tool names are built from
+  sha256(project root)>_<original name>` (truncated to 32 characters) to avoid
+  the serverName reservation conflicts that `dsh-mcp-client` makes per process
+  root. Already-mounted Eager names are retained first (unless a host global
+  name takes them), so a newly discovered workspace collision renames only the
+  newcomer and never remounts the online instance; effective names therefore
+  depend on mount history, and a retained prefixed name persists until unmount
+  even after the collision disappears. If a generated name collides with a
+  literal or truncated name, a deterministic hash suffix
+  (`<first 23 chars>_<8 hex>`) is appended. Global rows (profile patch lines and
+  user-layer rows) participate in occupancy determination but are never
+  renamed. Model-visible tool names are built from
   the **effective** server name and the MCP tool's own name
   (`mcp__<effectiveServerName>__<toolName>`), which may differ from the
   `serverName` written in the file.

@@ -5,6 +5,8 @@
 **状态**：已实现，待合入（分支 `pr30-lazy`） ｜ **记录日期**：2026-11-10 ｜ **目标版本**：未定；本分支源码仍为 0.12.0，发版时按 minor 同步升版两个包
 **关联**：`AGENTS.md`（装载、会话隔离、写入边界）、`src/lazy/connection.ts`、`src/lazy/proxies.ts`、`src/registry.ts`（`setLoadingMode`、`syncLazyProxies`）、`packages/ui/src/client/McpPanel.tsx`
 
+> **2026-11-12 更新（PR #32）**：连接生命周期已改为**按会话**，本文「空闲五分钟关闭」的原始设计已被取代，仅作历史记录保留。现行口径：每台 Lazy 行由 `LazyConnections` 为每个会话维护独立 `LazyServer`，会话首次成功 `mcp_search` 时激活自己的连接；连接在空闲与切换工作区时保持，直到**会话结束、行卸载/替换或插件销毁**才释放；不再有五分钟空闲计时器。首次发现尚未完成时最后一个等待者取消仍会回收该未完成连接。当前权威说明见 [配置格式 · 加载模式](../guide/format.zh.md#加载模式) 与 [工作原理](../guide/how-it-works.zh.md)。
+
 ## 0. 裁决摘要
 
 | 待决问题 | 裁决 |
