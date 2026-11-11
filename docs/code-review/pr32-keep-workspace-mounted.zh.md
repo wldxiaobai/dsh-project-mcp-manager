@@ -29,18 +29,18 @@
 
 | 编号 | 优先级 | 发现 / 风险 | 处置与验收 | 状态 |
 | --- | --- | --- | --- | --- |
-| R32-01 | P0 | `agent/pre-step` 等待发生在宿主逐步工具/提示词快照**之后**，被延迟的当前步骤仍看不到等待期间挂载的工具，最多白等 20 秒 | 把等待挪到快照之前，或移除等待并改文档；用慢挂载服务器复验 step 1 请求的 tools 列表 | 未处理 |
-| R32-02 | P1 | 文档同步缺口：AGENTS.md 三处旧口径、registry 模块头「确定性」声明、`docs/design/lazy-mcp.md` 空闲关闭、CHANGELOG/how-it-works 等待措辞 | 按下方清单逐项同步，中英双版 | 未处理 |
-| R32-03 | P1 | SonarCloud 新增 2 项：S1994（CRITICAL 级异味）与 S9382（MINOR） | S1994 改写循环；S9382 属有意轮询，标记 accepted 并注明理由 | 未处理 |
-| R32-04 | P2 | UI/CLI 的 `idle` 死分支：`skipReason==="idle"` 与「空闲」分组标记不再触发；CLI `summary.idle` 输出恒空 | 后续清理或改语义；CLI 保留可读旧诊断文件亦合理 | 未处理 |
-| R32-05 | P2 | `clearClosedWorkspaceFocus` 未查 `liveSessionCwds()`，「已恢复但尚无 agent」的工作区可能被误清焦点 | 补检查，或注释说明仅影响管理页展示 | 未处理 |
-| R32-06 | P2 | `isLive()` 从 id 比较改为对象同一性，依赖宿主返回稳定 agent 对象，假设未注释 | 加注释固化假设（宿主注册表已核实稳定） | 未处理 |
-| R32-07 | P2 | `filterMcpPrompt` 正则与宿主文案强耦合，失配时整段丢弃 | 注释来源包 `dsh-mcp-resources`；保留 fail-closed 方向 | 未处理 |
-| R32-08 | P2 | `availableServerName` 哈希后缀兜底分支（生成名撞字面名/截断名）无单测 | 补纯函数测试 | 未处理 |
-| R32-09 | P2 | `LazyConnections.release` 的 `closing.then(…)` 无 catch | 防御性 catch，或注释论证当前实现不会 reject | 未处理 |
-| R32-10 | P2 | 保留的生效名在冲突消失后仍保持前缀名直到卸载（有意稳定化权衡） | 在文档中明示该权衡 | 未处理 |
+| R32-01 | P0 | `agent/pre-step` 等待发生在宿主逐步工具/提示词快照**之后**，被延迟的当前步骤仍看不到等待期间挂载的工具，最多白等 20 秒 | 把等待挪到快照之前，或移除等待并改文档；用慢挂载服务器复验 step 1 请求的 tools 列表 | **已修复**（等待移回 `agent/created`，见实施记录） |
+| R32-02 | P1 | 文档同步缺口：AGENTS.md 三处旧口径、registry 模块头「确定性」声明、`docs/design/lazy-mcp.md` 空闲关闭、CHANGELOG/how-it-works 等待措辞 | 按下方清单逐项同步，中英双版 | **已修复**（文档已同步） |
+| R32-03 | P1 | SonarCloud 新增 2 项：S1994（CRITICAL 级异味）与 S9382（MINOR） | S1994 改写循环；S9382 属有意轮询，标记 accepted 并注明理由 | 部分（S1994 已改 while；S9382 已注理由，Sonar 侧 accepted 待维护者操作） |
+| R32-04 | P2 | UI/CLI 的 `idle` 死分支：`skipReason==="idle"` 与「空闲」分组标记不再触发；CLI `summary.idle` 输出恒空 | 后续清理或改语义；CLI 保留可读旧诊断文件亦合理 | 留作 follow-up（本轮不动 UI/CLI） |
+| R32-05 | P2 | `clearClosedWorkspaceFocus` 未查 `liveSessionCwds()`，「已恢复但尚无 agent」的工作区可能被误清焦点 | 补检查，或注释说明仅影响管理页展示 | **已修复**（补恢复会话检查） |
+| R32-06 | P2 | `isLive()` 从 id 比较改为对象同一性，依赖宿主返回稳定 agent 对象，假设未注释 | 加注释固化假设（宿主注册表已核实稳定） | **已修复**（已注释） |
+| R32-07 | P2 | `filterMcpPrompt` 正则与宿主文案强耦合，失配时整段丢弃 | 注释来源包 `dsh-mcp-resources`；保留 fail-closed 方向 | **已修复**（已注释来源与 fail-closed） |
+| R32-08 | P2 | `availableServerName` 哈希后缀兜底分支（生成名撞字面名/截断名）无单测 | 补纯函数测试 | **已修复**（补碰撞/保留单测） |
+| R32-09 | P2 | `LazyConnections.release` 的 `closing.then(…)` 无 catch | 防御性 catch，或注释论证当前实现不会 reject | **已修复**（两态均摘除集合元素） |
+| R32-10 | P2 | 保留的生效名在冲突消失后仍保持前缀名直到卸载（有意稳定化权衡） | 在文档中明示该权衡 | **已修复**（AGENTS.md/how-it-works 已明示） |
 | R32-11 | P3 | 合入时事项：CHANGELOG 条目补 `@yangjh0127` 与 `#32`，两版 README 末尾补致谢 | 按 AGENTS.md 外部 PR 合入规则执行 | 待合入 |
-| R32-12 | P3 | 实机复核（维护者合入条件）：全量 `pnpm test` + R32-01 场景 + 多工作区切换 | 作者声称已通过；维护者侧复核后再合入 | 待复核 |
+| R32-12 | P3 | 实机复核（维护者合入条件）：全量 `pnpm test` + R32-01 场景 + 多工作区切换 | 作者声称已通过；维护者侧复核后再合入 | 本地全量测试已通过；实机 GUI 待维护者复核 |
 
 ## R32-01（P0）等待时序与宿主快照冲突
 
@@ -118,18 +118,51 @@
 
 ## 验证记录与边界
 
-- 已做：两轮完整 diff 静态审查；宿主 asar 源码逐段核实（事件签名、提示词格式、资源工具参数、sessions/agents 注册表语义、preStep/step/resolve 时序）；GitHub API 与 SonarCloud issues API 核对。
-- 未做：本地未运行 `pnpm install`/`build`/`test`；未实机 GUI 点测；未做 npm 发布 smoke。
+- 已做：两轮完整 diff 静态审查；宿主 asar 源码逐段核实（事件签名、提示词格式、资源工具参数、sessions/agents 注册表语义、preStep/step/resolve 时序）；GitHub API 与 SonarCloud issues API 核对。修复阶段在本地运行核心 `tsc --noEmit` 与全量 `pnpm test`（含 core/UI 构建），见实施记录。
+- 未做：未实机 GUI 点测；未做 npm 发布 smoke；R32-01 的慢挂载实机复验（延迟 initialize 的 stdio 服务器）仍建议维护者侧补做。
 - 作者声称：Windows、Node.js 22 全量 `pnpm test` 通过（含构建）；DSH 0.2.2-rc.1 配合两个 stdio MCP 服务实机验证工作区切换与隔离。Sonar QG 通过（复审时新增 2 项问题，见 R32-03）。
-- 环境边界：本会话沙箱内 pwsh 无法初始化（0xC0000142），git 命令经逐次批准提权执行；属执行环境限制，不计为产品缺陷。
+- 环境边界：本会话沙箱内 pwsh 无法初始化（0xC0000142），git/构建/测试命令经逐次批准提权执行；属执行环境限制，不计为产品缺陷。
 - 本报告为本地记录，尚未贴到 PR；对外发布需维护者确认。
 
 ## 结论
 
 - **初审**：方向正确、实现质量较高，宿主契约全部核实；建议补文档同步并实机复核后合入。
-- **复审**：发现 R32-01（P0）——等待钩子位于宿主快照之后，宣称的「首个模型请求等到工具就绪」在慢挂载场景不成立。**当前暂缓合入**：请作者先解决等待时序（或移除等待并改文档），同批处理 R32-02/R32-03；P2 可 follow-up。合入时事项（R32-11）与实机复核（R32-12）不变。
+- **复审**：发现 R32-01（P0）——等待钩子位于宿主快照之后，宣称的「首个模型请求等到工具就绪」在慢挂载场景不成立。
+- **修复实施（2026-11-12）**：经维护者选定「等待移回会话创建路径」方案，R32-01 已修复；R32-02/R32-03（S1994）及 P2 各项（R32-05～R32-10）已一并落实，全量 `pnpm test` 通过。**合入前仍余**：R32-04（UI/CLI idle 死分支，follow-up）、R32-03 的 S9382 Sonar 侧 accepted、R32-11 合入时事项、R32-12 实机 GUI 复核。详见实施记录。
 
-## 附：提交清单
+## 实施记录（2026-11-12，pr-32 分支）
+
+经用户指示，将审查报告与索引落到 `pr-32` 提交，并按本报告实施必要修复。P0 方案由维护者在「等待移回会话创建」与「移除等待并改文档」之间选定前者。
+
+**处置映射**：
+
+| 编号 | 处置 | 产物 |
+| --- | --- | --- |
+| R32-01 | 完成 | `src/registry.ts`：删除 `agent/pre-step` 钩子，`agent/created` 串行返回前对新建会话 `waitForVisibleEager`（≤20s、100ms 轮询、replay 不等待、agent 离列即停）；`test/test-registry.mjs` 两处用例改断言创建时等待/取消/replay 不等待/lazy-only 不等待；CHANGELOG 与 how-it-works 中英同步 |
+| R32-02 | 完成 | AGENTS.md（skipReason/summary.idle、事件清单、全局 vs 项目、生效名、工作区挂载）、registry 模块头、how-it-works 中英「生效名」段、lazy-mcp.md 文首 PR #32 生命周期更新注记 |
+| R32-03 | 部分 | S1994：`availableServerName` 改 `while` 循环；S9382：轮询处注明有意串行（Sonar 侧 accepted 待维护者操作） |
+| R32-05 | 完成 | `clearClosedWorkspaceFocus` 补 `liveSessionCwds()` 恢复会话检查 |
+| R32-06 | 完成 | `isLive()` 注释宿主 agent 同一性假设与 fail-closed 后果 |
+| R32-07 | 完成 | `filterMcpPrompt` 注释来源包（dsh-mcp-client / dsh-mcp-resources）与 fail-closed 方向 |
+| R32-08 | 完成 | `test/test-model.mjs` 补 retained 保留、宿主全局名优先、生成名撞字面名哈希后缀兜底三组断言 |
+| R32-09 | 完成 | `LazyConnections.release` 的 `closing.then(drop, drop)` 两态均摘除集合元素 |
+| R32-10 | 完成 | AGENTS.md 与 how-it-works 中英明示「冲突消失后已挂实例保持前缀名直到卸载」 |
+| R32-04 | 留 follow-up | 本轮不改 UI/CLI；AGENTS.md 已标「空闲」为遗留分支 |
+
+**本地提交**（接在作者 `b5e75a9` 之后）：
+
+- `3e9bddd` — docs(review): 归档 PR #32 两轮审查报告并更新记录索引。
+- `ac554f9` — fix(mcp): 生效名兜底改 while 循环并补碰撞单测（R32-03/R32-08）。
+- `662ba8d` — fix(lazy): 连接释放清理链补防御性拒绝处理（R32-09）。
+- `0f165b6` — fix(mcp): Eager 等待移回会话创建并加固隔离（R32-01/R32-05/R32-06/R32-07）。
+- `a2e756f` — docs(mcp): 同步常驻挂载与 Lazy 会话生命周期口径（R32-02/R32-10）。
+- 本实施记录提交 — 报告状态与实施记录回填（提交本身不嵌入自身 hash）。
+
+**验证**：核心 `npx tsc --noEmit` exit 0；全量 `pnpm test`（pretest 完整 core/UI 构建）**exit 0**——model 36、mcp-file 7、json-file 13、json-write 6、registry 64、project-watch 5、cli 21、ui-collapse 14、ui-paste 14、ui-display 7、ui-workspace 11、ui-entries 9、bundle 7、ui-client-wiring 17，lazy lifecycle/dependency/naming 与 panel-helpers、ui-lifecycle 全通过。新增生效名单测与改写的会话等待用例均通过，未删除/跳过/放宽既有断言。
+
+**保留边界**：未实机 GUI 点测、未做 npm 发布 smoke；R32-01 建议维护者用延迟 initialize 的 stdio 服务器做慢挂载实机复验。本轮不改版本号、不发布、不推送；合入远端 `dev` 由维护者决定。
+
+## 附：作者提交清单（PR head `b5e75a9`）
 
 | 提交 | 说明 |
 | --- | --- |
