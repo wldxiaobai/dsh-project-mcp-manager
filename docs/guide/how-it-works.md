@@ -11,12 +11,10 @@ English | [中文](how-it-works.zh.md)
 - **Mounting**: each `(project, serverName)` pair in the project layers mounts
   one `@deepseek-ai/dsh-mcp-client` instance (`ctx.plugin`) on the host ctx and
   registers it into the global tool layer; multiple sessions inside the same
-  project share a single connection. Before a workspace is focused,
-  project-layer fibers are created only for projects with a live session or
-  the process cwd, and they unmount after a 5 minute grace. Once the user
-  focuses a workspace, only that project stays mounted and the others
-  unmount immediately, so a desktop workspace switch cannot leave another
-  project's tools in the global list. The catalog entry and watcher remain.
+  project share a single connection. At startup, restored sessions and the
+  process start directory supply the initial workspaces. Workspaces with MCP
+  configuration stay mounted once discovered. Session focus updates the settings
+  target, and Lazy servers still connect on demand.
   **Every user-layer row mounts exactly one instance** (global, independent of
   the number of projects) — see
   [configuration sources and layers](layers.md).
@@ -56,4 +54,6 @@ English | [中文](how-it-works.zh.md)
   every project server except those of the session's own project, plus the
   global servers suppressed by the project's own rows; a session without a cwd
   falls back to the owner project (subagents), then to the project containing
-  the dsh process cwd. Released when the session is destroyed.
+  the dsh process cwd. The same scope filters server instructions and resource
+  discovery, and resource calls are checked per session. Tool restrictions are
+  released when the session is destroyed.

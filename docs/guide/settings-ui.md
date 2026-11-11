@@ -194,7 +194,7 @@ through a confirmation (see below).
 |---|---|
 | Running · N tools | Connected, tools registered. Green switch. |
 | Available on demand | Enabled Lazy row. Its on-demand connection is not projected and may already be open from a recent call; the next `mcp_search` / `mcp_describe` / `mcp_call` uses it, reconnecting if it was closed. |
-| Enabled · waiting for a session | Switched on but not mounted, e.g. no session in that workspace yet, or unmounted after the idle grace. White switch. |
+| Enabled · waiting for a session | Switched on but not mounted, e.g. the host has yet to load its configuration. White switch. |
 | Starting | Mount in progress. The page keeps refreshing until it settles. |
 | Failed to start | The connection failed. |
 | Not started · name in use / missing environment variable / invalid after variable expansion / invalid config / retries stopped | The loader skipped the row. The full reason is on the next line. |

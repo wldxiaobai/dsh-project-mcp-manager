@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Keep MCP servers mounted for every discovered workspace when users switch
+  sessions. Each session sees its own workspace and shared MCP tools, server
+  instructions, and resources.
+
 - Lazy cancellation now releases the final waiter's pending connection without
   cancelling other callers. Generation shutdown is serialized with reconnects,
   including SDK stdio negotiation, idle close, mode changes and repeated disposal.

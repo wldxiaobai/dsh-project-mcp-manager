@@ -8,11 +8,7 @@
  * 装载模型：
  *   - 每个 (项目, serverName) 在宿主 ctx 上装载一个 @deepseek-ai/dsh-mcp-client
  *     实例（ctx.plugin），注册进全局工具层——同一项目内多会话共享同一连接；
- *     扫描与生效名按全量已知项目计算。尚未聚焦时，项目层只给「有活跃会话 ∪
- *     进程 cwd」的项目装载，离开后宽限 5 分钟再卸载。一旦用户聚焦某个工作区
- *     （agent/created、session/created、session/event），项目层只保留这一处，
- *     其它工作区立刻卸载，避免全局工具层把它们泄漏给当前会话；条目与 watcher
- *     保留。用户层仍宿主级常驻一条；
+ *     已知项目的 MCP 在插件运行期间保持装载，切换焦点只影响界面。
  *   - 生效名：原始 serverName 在整个目录（全局行 + 全部项目行）中唯一时保持
  *     原名；否则按 model.effectiveServerNames 规则改名（确定性、与装载顺序
  *     无关），避免 dsh-mcp-client 按进程根的 serverName 预留冲突；
@@ -160,6 +156,35 @@ function expandToToolNames(serverNames: Iterable<string>, toolIds: string[]): st
   return out;
 }
 
+const MCP_RESOURCE_TOOLS = new Set(["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]);
+
+interface McpPromptPresentation {
+  sections: { name: string; text: string; interpolate?: boolean }[];
+}
+
+function filterMcpPrompt<T extends McpPromptPresentation>(prompt: T, hidden: Set<string>): T {
+  if (hidden.size === 0) return prompt;
+  const sections = prompt.sections.flatMap((section) => {
+    if (section.name.startsWith("mcp:") && hidden.has(section.name.slice(4))) return [];
+    if (section.name !== "mcp-resource-servers") return [section];
+
+    // The host resource section ends with a JSON array of effective server names.
+    const match = /^(.*: )(\[.*\])\.$/s.exec(section.text);
+    if (match === null) return [];
+    let names: string[];
+    try {
+      names = JSON.parse(match[2]);
+      if (!Array.isArray(names) || names.some((name) => typeof name !== "string")) return [];
+    } catch {
+      return [];
+    }
+    const visible = names.filter((name) => !hidden.has(name));
+    if (visible.length === 0) return [];
+    return [{ ...section, text: match[1] + JSON.stringify(visible) + "." }];
+  });
+  return { ...prompt, sections };
+}
+
 /** 一个已装载（或装载中）的 MCP 服务器的运行时状态。 */
 export interface ProjectServerState {
   /** 项目根；全局层行为空串（scope="global"）。 */
@@ -218,8 +243,6 @@ export interface ProjectMcpRegistryOptions {
   statFile?: (path: string) => Promise<{ mtimeMs: number; size: number } | null>;
   /** 工具预算告警阈值（测试注入）；缺省读 `DSH_MCP_TOOL_BUDGET_WARN`。 */
   toolBudget?: { maxTools: number; maxBytes: number };
-  /** 无会话后卸载宽限（毫秒）；缺省 `UNMOUNT_GRACE_MS`（5 分钟）。测试注入。 */
-  unmountGraceMs?: number;
   /** 打开配置文件的宿主动作（配套 UI 的「打开配置文件」按钮）；缺省时该按钮不可用。 */
   openPath?: (path: string) => void | Promise<void>;
   /**
@@ -437,8 +460,6 @@ export const GLOBAL_SCOPE_KEY = "\u0000global";
 export const HEALTH_REMOUNT_LIMIT = 3;
 /** 0 工具去抖与两次重挂之间的缺省退避（毫秒）。测试可经 options 注入 0。 */
 export const HEALTH_REMOUNT_BACKOFF_MS = 5_000;
-/** 项目无活跃会话且不是进程 cwd 之后，再卸载其服务器的缺省宽限。 */
-export const UNMOUNT_GRACE_MS = 5 * 60 * 1000;
 
 /** 服务身份键。口径在 `serviceIdentityKeyOf`，设置页用同一函数，避免异名同命令只在装载器折叠。 */
 function serviceIdentityKey(item: SourcedRow): string | undefined {
@@ -818,6 +839,7 @@ export class ProjectMcpRegistry {
   private effective = new Map<string, string>();
   /** agent id → 其会话项目 key（undefined 表示无项目）。 */
   private readonly agentProjects = new Map<string, string | undefined>();
+  private applyingRestrictions = false;
   /** agent id → 当前 restrict 的 disposer。 */
   private readonly restrictions = new Map<string, () => void>();
 
@@ -874,8 +896,6 @@ export class ProjectMcpRegistry {
    */
   private readonly warnGates = new Map<string, string>();
   private timer: ReturnType<typeof setTimeout> | undefined;
-  /** 无会话宽限期到期后补一次对账（注入 `now` 时由测试自行 reconcileNow）。 */
-  private graceTimer: ReturnType<typeof setTimeout> | undefined;
   private chain: Promise<void> = Promise.resolve();
   private disposed = false;
   /** 配置文件读取次数（scan / 用户层；测试用指纹跳过断言）。 */
@@ -898,22 +918,14 @@ export class ProjectMcpRegistry {
   private readonly healthByMount = new Map<string, MountHealth>();
   /** 作用域键 → 超预算的生效名（写入 diag summary；每轮重算）。 */
   private readonly toolBudgetHits = new Map<string, { name: string; tools: number; bytes: number }[]>();
-  /** 项目离开活跃挂载集的时刻（宽限内仍保持装载）。 */
-  private readonly idleSince = new Map<string, number>();
   /** session id → 该会话 cwd 解析出的项目根。session/created 先于 agent 入列时也要能装载。 */
   private readonly sessionRoots = new Map<string, string>();
-  /**
-   * 用户当前聚焦的项目（agent/created、session/created、session/event）。
-   * 桌面端切换工作区不会 dispose 上一个会话，若继续按「全部在线会话」挂载，
-   * 全局工具层会把别的工作区的 MCP 暴露给当前会话。有焦点后只挂这一处。
-   */
+  /** 当前工作区仅用于管理页展示和写入目标。 */
   private foregroundKey: string | undefined;
   /** 已解析过的 cwd / 项目根 → projectKey。session/event 上同步切焦点，不等再次走盘。 */
   private readonly cwdKey = new Map<string, string>();
   /** projectKey → 解析时的项目根。焦点可以落在还没有配置文件的工作区上。 */
   private readonly projectRoots = new Map<string, string>();
-  /** 上一轮 sweep 见到的工具 id。切焦点时先按这份名单补 deny，再卸掉其它项目。 */
-  private lastToolIds: string[] = [];
   /** 上一轮对账结束时的在线目录签名；补扫发现变化才再对账。 */
   private liveWatchSig = "";
   private liveWatchTimer: ReturnType<typeof setInterval> | undefined;
@@ -989,13 +1001,30 @@ export class ProjectMcpRegistry {
       if (event?.type !== "user/message") return;
       this.onSessionActivity(session);
     }, watchOpts);
+    ctx.on("tools/change", () => this.sweepRestrictions(), watchOpts);
+    ctx.on("system-prompt/assemble", async (
+      _assembly: McpPromptPresentation,
+      context: { scope?: { id?: string } },
+      next: () => Promise<McpPromptPresentation>
+    ) => {
+      const hidden = this.hiddenServersFor(this.projectOf(context.scope));
+      return filterMcpPrompt(await next(), hidden);
+    }, watchOpts);
+    ctx.on("tools/pre-execute", (
+      exec: { name: string; arguments?: { server?: string }; agent?: { id?: string } },
+      next: () => Promise<unknown>
+    ) => {
+      const server = exec.arguments?.server;
+      if (MCP_RESOURCE_TOOLS.has(exec.name) && typeof server === "string"
+          && this.hiddenServersFor(this.projectOf(exec.agent)).has(server)) {
+        return Promise.resolve({ kind: "deny", reason: "MCP resource server is unavailable in this session" });
+      }
+      return next();
+    }, watchOpts);
     this.armLiveWatch();
 
     // 插件热更重载时已存在的会话也要覆盖。
     this.schedule(async () => {
-      for (const agent of this.liveAgents()) {
-        this.agentProjects.set(agent.id, await this.resolveProject(agent));
-      }
       if (!this.hostFocusSealed) await this.alignForegroundToHost();
       this.hostFocusSealed = true;
       await this.reconcileAll();
@@ -1008,7 +1037,6 @@ export class ProjectMcpRegistry {
     this.disposed = true;
     if (this.timer !== undefined) clearTimeout(this.timer);
     if (this.liveWatchTimer !== undefined) clearInterval(this.liveWatchTimer);
-    if (this.graceTimer !== undefined) clearTimeout(this.graceTimer);
     if (this.watcher !== undefined) void this.watcher.close().catch(() => {});
     if (this.userWatcher !== undefined) void this.userWatcher.close().catch(() => {});
     this.disposeRestrictions();
@@ -1168,10 +1196,7 @@ export class ProjectMcpRegistry {
     return undefined;
   }
 
-  /**
-   * 用户刚在这个会话里写下一条消息。cwd 已经解析过就当场把其它项目的服务器拆掉，
-   * 不等对账链；第一次见到的目录仍走异步解析。调用方必须先确认这是 user/message。
-   */
+  /** 用户消息更新管理页焦点。首次见到的目录还需要发现配置。 */
   private onSessionActivity(session: any): void {
     const cwd = session?.header?.cwd;
     if (typeof cwd !== "string" || cwd === "") return;
@@ -1187,44 +1212,7 @@ export class ProjectMcpRegistry {
     }
     if (cached === this.foregroundKey) return;
     this.foregroundKey = cached;
-    this.sweepCached();
-    this.detachProjectsExcept(cached);
-    this.schedule(async () => {
-      await this.reconcileAll();
-    });
-  }
-
-  /** 用上一轮工具名单给每个在线 agent 补上 deny。切焦点时服务器还在，必须先挡住再拆。 */
-  private sweepCached(): void {
-    const groups = this.activeMountGroups();
-    for (const agent of this.liveAgents()) {
-      const project = this.agentProjects.get(agent.id);
-      const hidden = [...denySetFor(project, groups)];
-      if (project !== undefined) {
-        for (const rawName of this.suppressedGlobals.get(project) ?? []) {
-          if (this.globalServers.has(rawName)) hidden.push(rawName);
-        }
-      }
-      const deny = expandToToolNames(hidden, this.lastToolIds);
-      this.appendLazyProxyDenies(project, this.lastToolIds, deny);
-      this.applyRestriction(agent, deny);
-    }
-  }
-
-  /**
-   * 立刻从装载表拿掉非当前工作区的服务器（全局工具层不再看见这些名字）。
-   * dispose 记在生效名上，同名重挂要等它结束；不能在这里裸调且不等待。
-   */
-  private detachProjectsExcept(keep: string): void {
-    for (const [key, entry] of this.projects) {
-      if (key === keep) continue;
-      for (const state of entry.servers.values()) {
-        entry.servers.delete(state.rawName);
-        state.phase = "unloading";
-        this.releaseFiber(state);
-      }
-      this.idleSince.delete(key);
-    }
+    this.emitUpdated();
   }
 
   /** 把 fiber.dispose 串到该生效名的释放链上。后一次同名挂载会等到整条链结束。 */
@@ -1260,14 +1248,23 @@ export class ProjectMcpRegistry {
    * `sessions.current()` 在恢复过程中指向正在恢复的会话，不能拿来校正焦点。
    */
   private hostVisibleCwd(): string | undefined {
+    const listed = this.hostSessionList();
+    return cwdOfListedSession(listed?.current, listed);
+  }
+
+  private hostSessionList(): any {
     try {
-      const sessions = this.ctx.sessions;
-      if (sessions == null || typeof sessions !== "object") return undefined;
-      const listed = typeof sessions.list === "function" ? sessions.list() : sessions.list;
-      return cwdOfListedSession(listed?.current, listed);
+      const sessions = typeof this.ctx.get === "function" ? this.ctx.get("sessions") : this.ctx.sessions;
+      return typeof sessions?.list === "function" ? sessions.list() : sessions?.list;
     } catch {
       return undefined;
     }
+  }
+
+  private liveSessionCwds(): string[] {
+    const listed = this.hostSessionList();
+    if (!Array.isArray(listed)) return [];
+    return listed.map(cwdOfSessionRecord).filter((cwd): cwd is string => cwd !== undefined);
   }
 
   /** 多个会话同时恢复时，可见工作区不一定是最后一条 agent/created。只在冷启动那一轮调用。 */
@@ -1286,7 +1283,7 @@ export class ProjectMcpRegistry {
 
   /** 在线 agent cwd、session/created 记下的根、进程 cwd。排序后比较，发现新工作区。 */
   private async liveDirectorySignature(): Promise<string> {
-    const parts: string[] = [];
+    const parts = this.liveSessionCwds();
     for (const agent of this.liveAgents()) {
       const cwd = agent?.session?.header?.cwd;
       if (typeof cwd === "string" && cwd !== "") parts.push(cwd);
@@ -1319,6 +1316,7 @@ export class ProjectMcpRegistry {
       const cwd = agent?.session?.header?.cwd;
       if (typeof cwd === "string" && cwd !== "") await add(cwd);
     }
+    for (const cwd of this.liveSessionCwds()) await add(cwd);
     for (const root of this.sessionRoots.values()) await add(root);
     try {
       await add(process.cwd());
@@ -1581,85 +1579,6 @@ export class ProjectMcpRegistry {
     return this.providers.healthRemountLimit ?? HEALTH_REMOUNT_LIMIT;
   }
 
-  private unmountGraceMs(): number {
-    return this.providers.unmountGraceMs ?? UNMOUNT_GRACE_MS;
-  }
-
-  /**
-   * 尚未聚焦：有活跃会话的项目 ∪ 进程 cwd。
-   * 已聚焦：只挂当前工作区。焦点指向的项目已经不在线（会话销毁）时清掉焦点，
-   * 退回「全部在线会话」以免把一个死项目钉住。
-   */
-  private async liveMountKeys(): Promise<Set<string>> {
-    const keys = new Set<string>();
-    for (const agent of this.liveAgents()) {
-      await this.rememberAgent(agent);
-      const project = this.agentProjects.get(agent.id) ?? await this.resolveProject(agent);
-      if (project !== undefined) {
-        this.agentProjects.set(agent.id, project);
-        keys.add(project);
-      }
-    }
-    for (const root of this.sessionRoots.values()) keys.add(projectKeyOf(root));
-    try {
-      keys.add(projectKeyOf(await findProjectRoot(process.cwd())));
-    } catch {
-      // 启动目录不可解析：不强制挂载
-    }
-    if (this.foregroundKey !== undefined && !keys.has(this.foregroundKey)) this.foregroundKey = undefined;
-    if (this.foregroundKey !== undefined) return new Set([this.foregroundKey]);
-    return keys;
-  }
-
-  /**
-   * 刚离开活跃集且当前仍有装载的项目记下 idle 起点；已在宽限中的保持原时间戳。
-   */
-  private touchIdleSince(live: Set<string>): void {
-    const now = this.nowMs();
-    for (const [key, entry] of this.projects) {
-      if (live.has(key)) {
-        this.idleSince.delete(key);
-        continue;
-      }
-      if (entry.servers.size > 0 && !this.idleSince.has(key)) this.idleSince.set(key, now);
-    }
-  }
-
-  private shouldKeepMounts(key: string, live: Set<string>): boolean {
-    if (live.has(key)) return true;
-    // 用户已经聚焦别的工作区：不要再宽限 5 分钟，全局工具层会在这期间继续泄漏。
-    if (this.foregroundKey !== undefined) return false;
-    const since = this.idleSince.get(key);
-    if (since === undefined) return false;
-    return this.nowMs() - since < this.unmountGraceMs();
-  }
-
-  private scheduleGraceUnmount(): void {
-    if (this.graceTimer !== undefined) {
-      clearTimeout(this.graceTimer);
-      this.graceTimer = undefined;
-    }
-    if (this.providers.now !== undefined) return;
-    const grace = this.unmountGraceMs();
-    if (grace <= 0) return;
-    const now = Date.now();
-    let delayMs: number | undefined;
-    for (const since of this.idleSince.values()) {
-      const remaining = since + grace - now;
-      if (remaining <= 0) continue;
-      if (delayMs === undefined || remaining < delayMs) delayMs = remaining;
-    }
-    if (delayMs === undefined) return;
-    this.graceTimer = setTimeout(() => {
-      this.graceTimer = undefined;
-      this.schedule(async () => {
-        await this.reconcileAll();
-      });
-    }, delayMs);
-    // 宽限 timer 同样不挡住退出（与 kick 的 150ms 防抖同口径）。
-    this.graceTimer.unref();
-  }
-
   private async statConfigFile(path: string): Promise<{ mtimeMs: number; size: number } | "missing"> {
     try {
       if (this.providers.statFile !== undefined) {
@@ -1767,19 +1686,18 @@ export class ProjectMcpRegistry {
     const globalNames = [...hostGlobalNames, ...globalMerged.rows.map((row) => row.rawName)];
     this.effective = effectiveServerNames(catalogProjects, globalNames);
 
-    const live = await this.liveMountKeys();
-    this.touchIdleSince(live);
+    await this.refreshAgentProjects();
+    await this.clearClosedWorkspaceFocus();
     for (const [key, entry] of desiredByProject) {
-      await this.reconcileProject(key, entry, this.shouldKeepMounts(key, live));
+      await this.reconcileProject(key, entry);
     }
     await this.reconcileGlobals(globalMerged.rows, hostGlobalNames);
     this.prunePerProjectState(new Set(desiredByProject.keys()));
     this.syncLazyProxies();
     await this.remountUnhealthy();
-    await this.sweepRestrictions();
+    this.sweepRestrictions();
     this.inspectToolBudgets();
     await this.writeSummaries();
-    this.scheduleGraceUnmount();
     await this.refreshWatchersAfterReconcile();
     this.emitUpdated();
   }
@@ -1970,9 +1888,6 @@ export class ProjectMcpRegistry {
     for (const key of this.identityShadowSigs.keys()) {
       if (!knownKeys.has(key)) this.identityShadowSigs.delete(key);
     }
-    for (const key of this.idleSince.keys()) {
-      if (!knownKeys.has(key)) this.idleSince.delete(key);
-    }
     for (const key of this.lastScanDesired.keys()) {
       if (!knownKeys.has(key)) this.lastScanDesired.delete(key);
     }
@@ -2011,7 +1926,7 @@ export class ProjectMcpRegistry {
     }
   }
 
-  private async reconcileProject(key: string, entry: { projectRoot: string; rows: DesiredProjectRow[] }, keepMounts: boolean) {
+  private async reconcileProject(key: string, entry: { projectRoot: string; rows: DesiredProjectRow[] }) {
     let project = this.projects.get(key);
     if (project === undefined) {
       // 只为「确实有行要装载」的项目建条目：否则会话/进程访问过的每个目录都会
@@ -2020,21 +1935,10 @@ export class ProjectMcpRegistry {
       if (entry.rows.length === 0) return;
       project = { projectRoot: entry.projectRoot, servers: new Map() };
       this.projects.set(key, project);
-      if (keepMounts) {
-        const names = entry.rows.map((row) => row.rawName).join("、");
-        this.ctx.logger.info?.(`项目 MCP：开始装载 ${entry.projectRoot}（${names}）`);
-      }
+      const names = entry.rows.map((row) => row.rawName).join("、");
+      this.ctx.logger.info?.(`项目 MCP：开始装载 ${entry.projectRoot}（${names}）`);
     }
-    const catalog = entry.rows;
-    const desired = keepMounts ? catalog : [];
-    await this.reconcileContainer(this.projectContainer(key, project), desired, new Set(), catalog);
-    if (!keepMounts) {
-      for (const item of catalog) {
-        if (project.servers.has(item.rawName)) continue;
-        const markKey = key + "\u0000" + item.rawName;
-        if (!this.skipReasons.has(markKey)) this.skipReasons.set(markKey, "idle");
-      }
-    }
+    await this.reconcileContainer(this.projectContainer(key, project), entry.rows);
   }
 
   /** 全局（用户层）对账：与项目数量无关，宿主级只挂一条连接。 */
@@ -2100,7 +2004,7 @@ export class ProjectMcpRegistry {
     const plan = planProjectChanges(current, desired, effectiveMap, container.key);
     // 清理死键：从未挂上（被跳过）的行若从文件里删掉，既不在 toMount 也不在
     // toUnmount，其 skipReasons 标记没人再触碰——按配置目录剪掉，不能按本轮
-    // 装载集（idle 卸载 desired=[] 时否则会把 env-missing 一并抹掉）。
+    // 装载集。
     // blocked（撞名被拒）的行保留其标记，供快照展示 skipReason。
     const catalogNames = new Set([...catalog.map((item) => item.rawName), ...blocked]);
     const markPrefix = container.key + "\u0000";
@@ -2415,10 +2319,10 @@ export class ProjectMcpRegistry {
     }
     const state = container.servers.get(rawName);
     if (state === undefined) return;
-    container.servers.delete(rawName);
     state.phase = "unloading";
     this.releaseFiber(state);
     await this.waitForNameRelease(state.effectiveName);
+    container.servers.delete(rawName);
   }
 
   private healthKey(containerKey: string, rawName: string): string {
@@ -2547,7 +2451,7 @@ export class ProjectMcpRegistry {
   private kickSweep() {
     if (this.disposed) return;
     this.schedule(async () => {
-      await this.sweepRestrictions();
+      this.sweepRestrictions();
     });
   }
 
@@ -2590,29 +2494,60 @@ export class ProjectMcpRegistry {
     deny.push(...LAZY_TOOL_NAMES.filter((name) => toolIds.includes(name)));
   }
 
-  private async sweepRestrictions() {
-    if (this.disposed) return;
-    const groups = this.activeMountGroups();
-    const toolIds = this.registeredToolIds();
-    this.lastToolIds = toolIds;
+  private async refreshAgentProjects(): Promise<void> {
     for (const agent of this.liveAgents()) {
-      const project = this.agentProjects.get(agent.id) ?? await this.resolveProject(agent);
+      await this.rememberAgent(agent);
+      if (this.agentProjects.has(agent.id)) continue;
+      const project = await this.resolveProject(agent);
       if (project !== undefined) this.agentProjects.set(agent.id, project);
-      const hidden = [...denySetFor(project, groups)];
-      // 项目侧压制：本项目自身行遮蔽过的全局服务器，在本会话 deny 其工具
-      // （全局实例仍只挂一条，只有该项目的会话看不见）。
-      // 守卫 globalServers.has：没有全局实例的名字一律不 deny——`mcp__<name>__*`
-      // 前缀会命中项目自己（生效名未改名时）或宿主 patch 行的工具，等于自杀式 deny。
-      if (project !== undefined) {
-        for (const rawName of this.suppressedGlobals.get(project) ?? []) {
-          if (this.globalServers.has(rawName)) hidden.push(rawName);
-        }
-      }
-      const deny = expandToToolNames(hidden, toolIds);
-      deny.push(...this.toolFilterDeniesForSession(project, toolIds));
-      this.appendLazyProxyDenies(project, toolIds, deny);
-      this.applyRestriction(agent, deny);
     }
+  }
+
+  private async clearClosedWorkspaceFocus(): Promise<void> {
+    const focus = this.foregroundKey;
+    if (focus === undefined) return;
+    if (this.liveAgents().some((agent) => this.agentProjects.get(agent.id) === focus)) return;
+    if ([...this.sessionRoots.values()].some((root) => projectKeyOf(root) === focus)) return;
+    try {
+      if (projectKeyOf(await findProjectRoot(process.cwd())) === focus) return;
+    } catch {
+      // An unavailable process cwd cannot keep the workspace focused.
+    }
+    if (this.foregroundKey === focus) this.foregroundKey = undefined;
+  }
+
+  private sweepRestrictions(): void {
+    // 宿主注册工具和应用限制都会同步发 tools/change。
+    if (this.disposed || this.applyingRestrictions) return;
+    this.applyingRestrictions = true;
+    try {
+      const groups = this.projectMountGroups();
+      const toolIds = this.registeredToolIds();
+      for (const agent of this.liveAgents()) {
+        const project = this.agentProjects.get(agent.id);
+        const deny = expandToToolNames(this.hiddenServersFor(project, groups), toolIds);
+        deny.push(...this.toolFilterDeniesForSession(project, toolIds));
+        this.appendLazyProxyDenies(project, toolIds, deny);
+        this.applyRestriction(agent, deny);
+      }
+    } finally {
+      this.applyingRestrictions = false;
+    }
+  }
+
+  private projectOf(agent: { id?: string } | undefined): string | undefined {
+    return agent?.id === undefined ? undefined : this.agentProjects.get(agent.id);
+  }
+
+  private hiddenServersFor(project: string | undefined, groups = this.projectMountGroups()): Set<string> {
+    const hidden = new Set(denySetFor(project, groups));
+    if (project !== undefined) {
+      for (const rawName of this.suppressedGlobals.get(project) ?? []) {
+        // Host-owned profile patch names are outside the managed global layer.
+        if (this.globalServers.has(rawName)) hidden.add(rawName);
+      }
+    }
+    return hidden;
   }
 
   /** 本会话可见的服务器上，条目 tools.allow/deny 展开成已注册工具名。 */
@@ -2623,7 +2558,6 @@ export class ProjectMcpRegistry {
     skip?: (state: ProjectServerState) => boolean
   ): void {
     for (const state of servers.values()) {
-      if (state.phase !== "active") continue;
       if (skip?.(state) === true) continue;
       deny.push(...deniedToolsForFilter(state.effectiveName, toolFilterFromConfig(state.row.config), toolIds));
     }
@@ -2638,13 +2572,13 @@ export class ProjectMcpRegistry {
     return deny;
   }
 
-  /** 各装载容器里已 active 的生效名，按项目根分组（deny 计算的输入）。 */
-  private activeMountGroups(): { projectRoot: string; effectiveNames: string[] }[] {
+  /** 装载中的工具可能已注册，卸载中的工具可能尚未注销。两者都参与隔离。 */
+  private projectMountGroups(): { projectRoot: string; effectiveNames: string[] }[] {
     const groups: { projectRoot: string; effectiveNames: string[] }[] = [];
     for (const entry of this.projects.values()) {
       const names: string[] = [];
       for (const state of entry.servers.values()) {
-        if (state.phase === "active") names.push(state.effectiveName);
+        names.push(state.effectiveName);
       }
       if (names.length > 0) groups.push({ projectRoot: entry.projectRoot, effectiveNames: names });
     }
@@ -2673,7 +2607,9 @@ export class ProjectMcpRegistry {
       return;
     }
     try {
-      const disposer = agent.ctx.tools.restrict({ deny });
+      // Agent scopes can be minted without declaring a tools dependency.
+      const tools = typeof agent.ctx.get === "function" ? agent.ctx.get("tools") : agent.ctx.tools;
+      const disposer = tools.restrict({ deny });
       if (previous !== undefined) {
         this.restrictions.delete(agent.id);
         try {
