@@ -20,7 +20,7 @@ function test(name, run) {
   console.log("PASS  " + name);
 }
 
-const schema = (name, description = "", parameters = { type: "object", properties: {} }) => ({ name, description, parameters });
+const schema = (name, description = "", parameters) => ({ name, description, parameters: parameters ?? { type: "object", properties: {} } });
 
 test("estimateSchemaTokens mirrors the DSH 4-chars-per-token heuristic", () => {
   assert.equal(estimateSchemaTokens(0), 0, "empty list prices as 0, not BLOCK_OVERHEAD");
