@@ -100,7 +100,7 @@ import {
 } from "./model.js";
 import { mcpToolBudgetStats, mcpToolCount, parseToolBudgetWarn, schemaToolId } from "./status.js";
 import { LazyConnections } from "./lazy/connection.js";
-import { LAZY_TOOL_NAMES, registerLazyTools, type LazyMount } from "./lazy/proxies.js";
+import { LAZY_TOOL_NAMES, isLazyToolName, registerLazyTools, type LazyMount } from "./lazy/proxies.js";
 import { contextCostSignature, mcpContextCost, mcpResultCost, resultCostSignature, type McpContextCost, type McpResultCost } from "./context-cost.js";
 
 const EAGER_STARTUP_WAIT_MS = 20_000;
@@ -2968,17 +2968,17 @@ export class ProjectMcpRegistry {
   }
 
   /** 指定会话，或焦点所在工作区里最近的那个会话；都找不到返回 undefined。 */
-  private contextCostAgent(sessionId?: string): any | undefined {
+  private contextCostAgent(sessionId?: string): any {
     const agents = this.liveAgents();
     if (sessionId !== undefined && sessionId !== "") {
       return agents.find((agent: any) => agent?.id === sessionId || agent?.session?.id === sessionId);
     }
     if (this.foregroundKey !== undefined) {
       const focused = agents.filter((agent: any) => this.agentProjects.get(agent?.id) === this.foregroundKey);
-      if (focused.length > 0) return focused[focused.length - 1];
+      if (focused.length > 0) return focused.at(-1);
     }
     // 还没定焦点（仅一个工作区或刚启动）：在线会话里取最后一个。
-    return agents.length > 0 ? agents[agents.length - 1] : undefined;
+    return agents.at(-1);
   }
 
   /**
@@ -3001,7 +3001,7 @@ export class ProjectMcpRegistry {
       if (!Array.isArray(list)) return [];
       const project = this.agentProjects.get(agent?.id);
       if (this.visibleLazyMounts(project).length > 0) return list;
-      return list.filter((schema) => !LAZY_TOOL_NAMES.some((name) => name === schemaToolId(schema)));
+      return list.filter((schema) => !isLazyToolName(schemaToolId(schema)));
     } catch {
       return [];
     }

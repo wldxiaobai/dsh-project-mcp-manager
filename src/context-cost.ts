@@ -13,7 +13,7 @@
  * 两者都是估算，不是 provider 精确计数；工具定义口径也不含服务器 instructions。
  */
 
-import { LAZY_PROXY_GROUP_NAME, LAZY_TOOL_NAMES } from "./lazy/tool-names.js";
+import { LAZY_PROXY_GROUP_NAME, isLazyToolName } from "./lazy/tool-names.js";
 
 export const MCP_TOOL_PREFIX = "mcp__";
 /** 提醒阈值：达到后抬头标签变为提醒色。 */
@@ -61,6 +61,13 @@ export function contextCostLevel(estTokens: number, warn = CONTEXT_COST_WARN_TOK
   if (estTokens >= alert) return "alert";
   if (estTokens >= warn) return "warn";
   return "ok";
+}
+
+/** 分项排序：估算 token 从大到小，同量按名称的 UTF-16 码元序。 */
+function byEstimatedSize(a: { name: string; estTokens: number }, b: { name: string; estTokens: number }): number {
+  if (a.estTokens !== b.estTokens) return b.estTokens - a.estTokens;
+  if (a.name === b.name) return 0;
+  return a.name < b.name ? -1 : 1;
 }
 
 function toolNameOf(schema: any): string {
@@ -127,7 +134,7 @@ export function mcpContextCost(input: ContextCostInput): McpContextCost {
   for (const schema of input.schemas) {
     if ((schema as any)?.deferLoading === true) continue;
     const name = toolNameOf(schema);
-    const isLazyProxy = LAZY_TOOL_NAMES.some((proxy) => proxy === name);
+    const isLazyProxy = isLazyToolName(name);
     const server = isLazyProxy ? LAZY_PROXY_GROUP_NAME : mcpServerOfTool(name, input.knownServers);
     if (server === undefined) continue;
     const facing = modelFacing(schema);
@@ -146,7 +153,7 @@ export function mcpContextCost(input: ContextCostInput): McpContextCost {
       estTokens: estimateSchemaTokens(chars)
     };
   });
-  servers.sort((a, b) => b.estTokens - a.estTokens || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  servers.sort(byEstimatedSize);
   const chars = all.length === 0 ? 0 : serializedLength(all);
   const estTokens = estimateSchemaTokens(chars);
   return {
@@ -306,7 +313,7 @@ function resultTargetOf(call: ToolCallRef, knownServers: readonly string[]): { n
     const server = mcpServerOfTool(call.name, knownServers);
     return server === undefined ? undefined : { name: server };
   }
-  if (!LAZY_TOOL_NAMES.some((name) => name === call.name)) return undefined;
+  if (!isLazyToolName(call.name)) return undefined;
   const server = lazyTargetServer(call.arguments);
   return server === undefined
     ? { name: LAZY_PROXY_GROUP_NAME, kind: "lazy-proxy" }
@@ -349,7 +356,7 @@ export function mcpResultCost(input: ResultCostInput): McpResultCost {
     if (entry.kind === undefined && target.kind !== undefined) entry.kind = target.kind;
     totals.set(target.name, entry);
   }
-  const servers = [...totals.values()].sort((a, b) => b.estTokens - a.estTokens || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const servers = [...totals.values()].sort(byEstimatedSize);
   return {
     sessionId: input.sessionId,
     calls: count,
