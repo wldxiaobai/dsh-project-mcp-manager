@@ -2,7 +2,7 @@
   "name": "dsh-project-mcp-ui",
   "version": "0.12.0",
   "private": false,
-  "description": "Sidebar page and settings tab included by dsh-project-mcp-manager. Same-version peer of the loader; disable mcp-project-ui to hide both entries.",
+  "description": "Main sidebar page, settings sidebar section, and Built-in plugins settings tab included by dsh-project-mcp-manager. Same-version peer of the loader; disable mcp-project-ui to hide all three entries.",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
