@@ -2715,6 +2715,20 @@ export class ProjectMcpRegistry {
     } catch (error) {
       // 未知名（装载未 settle）竞态：保留上一份限制，下一次 sweep 会补上。
       this.ctx.logger.warn(`会话 ${agent.id} 的项目 MCP 过滤暂未应用：${error instanceof Error ? error.message : String(error)}`);
+      if (previous === undefined) {
+        // 新会话没有「上一份」可保留：fail-open 会让它在下次成功 sweep 前看见全部
+        // 工作区的 MCP（对账链卡在慢 dispose 且无 tools/change 时窗口可任意长）。
+        // 改为 fail-closed：临时 deny 全部已注册 MCP 工具（精确名，不会再触发
+        // unknown-name），下一次成功 sweep 恢复精确可见性。兜底自身同步发的
+        // tools/change 由 applyingRestrictions 守卫挡住，不会递归。
+        try {
+          const fallbackTools = typeof agent.ctx.get === "function" ? agent.ctx.get("tools") : agent.ctx.tools;
+          const fallback = this.registeredToolIds().filter((id) => id.startsWith("mcp__"));
+          if (fallback.length > 0) this.restrictions.set(agent.id, fallbackTools.restrict({ deny: fallback }));
+        } catch {
+          // 兜底也失败只能等下一次 sweep；上面的 warn 已留痕。
+        }
+      }
     }
   }
 

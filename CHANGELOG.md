@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A new session whose first tool restriction cannot be applied now fails
+  closed: all registered MCP tools are temporarily denied until the next
+  successful sweep, instead of leaving the session able to see every
+  workspace's tools. Covered by the isolation race suite (T1–T5).
+
 - Creating a session applies tool isolation immediately and waits up to 20
   seconds for its visible Eager servers to finish mounting, so the first model
   request sees them; sessions restored at startup skip the wait. Newly
