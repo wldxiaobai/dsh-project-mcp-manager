@@ -34,7 +34,6 @@
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\"",
     "build": "npm run clean && tsc -p tsconfig.json && node build-client.mjs",
-    "test": "node --experimental-strip-types test/panel-helpers.mjs",
     "prepack": "npm run build"
   },
   "peerDependencies": {
