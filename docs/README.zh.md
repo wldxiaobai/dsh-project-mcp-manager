@@ -139,7 +139,7 @@ headless profile 没有页面，装载器照常工作。页面用法见
 ```powershell
 pnpm install
 pnpm run build     # 核心 tsc → lib/；然后 UI tsc + 浏览器 bundle → packages/ui/lib/
-pnpm test          # node 直跑 test/ 下的 .mjs（装载器、CLI 与页面辅助函数）
+pnpm test          # 先构建，再跑装载器、CLI、页面辅助、Lazy 与隔离竞态等测试
 ```
 
 ## 工作原理

@@ -160,7 +160,7 @@ component in the plugin manager.
 ```powershell
 pnpm install
 pnpm run build     # core: tsc → lib/; then UI: tsc + browser bundle → packages/ui/lib/
-pnpm test          # node test/*.mjs (loader, CLI, and page helpers)
+pnpm test          # builds, then runs the node suites (loader, CLI, UI helpers, Lazy, isolation)
 ```
 
 ## How it works
