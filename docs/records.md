@@ -26,6 +26,7 @@ Most records are written in Chinese.
 
 ## Release notes
 
+[v0.13.0](releases/v0.13.0.md) ·
 [v0.12.0](releases/v0.12.0.md) ·
 [v0.11.1](releases/v0.11.1.md) ·
 [v0.11.0](releases/v0.11.0.md) ·

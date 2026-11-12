@@ -33,7 +33,7 @@ official profile HMR. **Transport types are decided by the official client.**
 
 | Plugin | dsh |
 |---|---|
-| v0.11.x – v0.12.x | `0.2` line, from `0.2.2-rc.1` (`engines.dsh`: `^0.2.2-rc.1`) |
+| v0.11.x – v0.13.x | `0.2` line, from `0.2.2-rc.1` (`engines.dsh`: `^0.2.2-rc.1`) |
 | v0.10.x | `0.2.1-rc.2` – `0.2.1-rc.5` |
 | v0.7.x – v0.8.x | `0.2.0` line, from `0.2.0-rc.2` |
 | v0.6.0 | `0.1.5` |
