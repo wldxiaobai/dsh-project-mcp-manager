@@ -165,14 +165,20 @@ not allow a deep import of `lib/registry.js`.
 import {
   PROJECT_MCP_SERVICE,
   PROJECT_MCP_UPDATED_EVENT,
+  type ContextCostLevel,
   type FiberPhaseView,
   type McpAddDraft,
+  type McpContextCost,
   type McpLoadingMode,
+  type McpResultCost,
+  type McpResultServerCost,
   type McpRowSource,
   type McpScopeInfo,
+  type McpServerContextCost,
   type McpServerRuntimeView,
   type McpServerView,
   type McpTransport,
+  type McpWriteTarget,
   type PatchRow,
   type ProjectFileState,
   type ProjectMcpService,
@@ -187,7 +193,9 @@ import {
 `McpServerRuntimeView` (`McpServerView` plus `source`, `fiberPhase`,
 `skipReason`, and `toolCount`). `globalState()` returns `ProjectServerState`.
 `McpServerView.mode` is optional; absent means Eager. `McpAddDraft.mode` is also
-optional; the add form sends it only for Lazy.
+optional; the add form sends it only for Lazy. `contextCost()` returns
+`McpContextCost` with `McpServerContextCost` groups and a `ContextCostLevel`;
+`resultCost()` returns `McpResultCost` with `McpResultServerCost` groups.
 
 ## Semver for the companion UI
 

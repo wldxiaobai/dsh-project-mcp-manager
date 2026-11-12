@@ -139,14 +139,20 @@ diff。派发是同步的，不会等待监听方返回的 Promise。监听方�
 import {
   PROJECT_MCP_SERVICE,
   PROJECT_MCP_UPDATED_EVENT,
+  type ContextCostLevel,
   type FiberPhaseView,
   type McpAddDraft,
+  type McpContextCost,
   type McpLoadingMode,
+  type McpResultCost,
+  type McpResultServerCost,
   type McpRowSource,
   type McpScopeInfo,
+  type McpServerContextCost,
   type McpServerRuntimeView,
   type McpServerView,
   type McpTransport,
+  type McpWriteTarget,
   type PatchRow,
   type ProjectFileState,
   type ProjectMcpService,
@@ -160,7 +166,9 @@ import {
 `snapshot()` 的元素类型是 `ProjectFileState`。每一行是 `McpServerRuntimeView`
 （`McpServerView` 再加 `source`、`fiberPhase`、`skipReason`、`toolCount`）。
 `globalState()` 返回 `ProjectServerState`。`McpServerView.mode` 可选；缺省表示 Eager。
-`McpAddDraft.mode` 同样可选，添加表单只在选 Lazy 时发送。
+`McpAddDraft.mode` 同样可选，添加表单只在选 Lazy 时发送。`contextCost()` 返回
+`McpContextCost`，分项是 `McpServerContextCost`，并带 `ContextCostLevel`；
+`resultCost()` 返回 `McpResultCost`，分项是 `McpResultServerCost`。
 
 ## 对配套 UI 的语义化版本
 

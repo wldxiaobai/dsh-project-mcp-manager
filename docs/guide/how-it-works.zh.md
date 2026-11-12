@@ -44,3 +44,9 @@
   自身行压制过的全局服务器；会话无 cwd 时回退 owner 项目（子代理），再回退 dsh
   进程 cwd 所在项目。服务器说明和资源列表按同一规则过滤，资源调用也按会话校验。
   会话销毁时释放工具限制。
+- **上下文占用**：`contextCost()` 给会话可见的 MCP 工具定义计价；`resultCost()`
+  给仍保留的、能对应到 MCP 工具调用的 `tool/result` 消息计价，数据取自
+  `session.deriveMessages()`，被裁剪或压缩掉的结果自然不再计入。Lazy 代理定义作为
+  共享开销只计一次，Lazy 结果按代理参数里的 `server` 归属。两者都按 token-meter
+  口径估算；请求头、工具结果或压缩替换 surface 改变数字后，registry 会重发
+  `projectMcp/updated`。见[查询面](service.zh.md#工具调用结果占用)。
