@@ -3225,6 +3225,111 @@ await withLazyProjects({
   }
 }
 
+// ── contextCost：活动会话选择 + 代码模式（PTC）无法估算 ──────────────────────
+{
+  const dirSel = await mkdtemp(join(tmpdir(), "dsh-mcp-cost-select-"));
+  const homeSel = join(dirSel, "home");
+  const projSel = join(dirSel, "proj");
+  await mkdir(join(homeSel, ".dsh"), { recursive: true });
+  await mkdir(projSel, { recursive: true });
+  await writeManagedRows(projectMcpFile(projSel), [stdioRow("alpha")], { createIfMissing: true });
+  const savedCwdSel = process.cwd();
+  try {
+    process.chdir(dirSel);
+    const ctxSel = fakeCtx();
+    const registrySel = new ProjectMcpRegistry(ctxSel, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(homeSel, ".dsh", "mcp.yml"), mcpJson: join(homeSel, ".dsh", "mcp.json"), profilesDir: join(homeSel, ".dsh", "profiles") }
+    });
+    const agentA = fakeAgent("sel-a", projSel);
+    const agentB = fakeAgent("sel-b", projSel);
+    agentA.session.id = "sel-a";
+    agentB.session.id = "sel-b";
+    agentA.ctx.tools.schemas = () => [{ name: "mcp__alpha__read", description: "Read", parameters: { type: "object", properties: {} } }];
+    agentB.ctx.tools.schemas = () => [
+      { name: "mcp__alpha__read", description: "Read", parameters: { type: "object", properties: {} } },
+      { name: "mcp__alpha__write", description: "Write", parameters: { type: "object", properties: {} } }
+    ];
+    // B 后枚举：旧实现会拿「最后一个」冒充活动会话。
+    ctxSel.agentsList.push(agentA, agentB);
+    await registrySel.reconcileNow();
+
+    // 没有宿主当前项、也没有用户回合时，才退回焦点工作区里最后一个。
+    assert.equal(registrySel.contextCost().sessionId, "sel-b", "fallback is the last focused agent");
+
+    // 宿主当前选中 A：即便 B 后枚举，也要读 A。
+    ctxSel.sessions = { list: () => ({ current: { id: "sel-a" } }) };
+    assert.equal(registrySel.contextCost().sessionId, "sel-a", "host current wins over enumeration order");
+    assert.equal(registrySel.contextCost().tools, 1);
+    assert.equal(registrySel.resultCost().sessionId, "sel-a", "result cost follows the same selection");
+    // current 也可能是字符串 id。
+    ctxSel.sessions = { list: () => ({ current: "sel-b" }) };
+    assert.equal(registrySel.contextCost().sessionId, "sel-b", "string current id is honoured");
+    assert.equal(registrySel.contextCost().tools, 2);
+
+    // 宿主没有当前项（数组形态）时，跟随最近一次顶层用户回合。
+    ctxSel.sessions = { list: () => [] };
+    ctxSel.emit("session/event", { id: "sel-a", header: agentA.session.header }, { type: "user/message" });
+    assert.equal(registrySel.contextCost().sessionId, "sel-a", "the latest top-level user turn selects the session");
+    ctxSel.emit("session/event", { id: "sel-b", header: agentB.session.header }, { type: "user/message" });
+    assert.equal(registrySel.contextCost().sessionId, "sel-b", "switching sessions in the same workspace re-selects");
+
+    // 子代理的 user/message 不能把选择从真实会话上抢走。
+    ctxSel.emit("session/event", { id: "sel-child", header: { cwd: projSel, origin: "subagent" } }, { type: "user/message" });
+    assert.equal(registrySel.contextCost().sessionId, "sel-b", "a subagent turn does not steal the selection");
+    ctxSel.emit("session/event", { id: "sel-deep", header: { cwd: projSel, delegationDepth: 2 } }, { type: "user/message" });
+    assert.equal(registrySel.contextCost().sessionId, "sel-b", "a delegated turn does not steal the selection");
+    // 压缩注入的 surface-replace（也是 user/message）同样不挪选择。
+    ctxSel.emit("session/event", { id: "sel-a", header: agentA.session.header }, { type: "user/message", surfaceOp: { op: "replace", startSeq: 0, endSeq: 0 } });
+    assert.equal(registrySel.contextCost().sessionId, "sel-b", "a compaction replace does not steal the selection");
+
+    // 活动会话被销毁后清掉记录，退回焦点兜底。
+    ctxSel.emit("session/disposed", { id: "sel-b" });
+    assert.equal(registrySel.contextCost().sessionId, "sel-b", "disposed id falls back to the last focused agent");
+
+    // 代码模式（PTC）：请求头里有保留名 run_code → 定义与结果都报无法估算。
+    const agentPtc = fakeAgent("sel-ptc", projSel);
+    agentPtc.session.id = "sel-ptc";
+    agentPtc.session.requestHeader = () => ({ tools: [{ name: "run_code" }, { name: "mcp__alpha__read" }] });
+    agentPtc.session.requestContext = () => ({ contextWindow: 200000 });
+    agentPtc.ctx.tools.schemas = () => [{ name: "mcp__alpha__read", description: "x".repeat(40000), parameters: { type: "object", properties: {} } }];
+    agentPtc.session.deriveMessages = () => [
+      { role: "assistant", content: [{ type: "tool-call", id: "c1", name: "mcp__alpha__read", arguments: "{}" }] },
+      { role: "tool", toolCallId: "c1", content: [{ type: "text", text: "x".repeat(40000) }] }
+    ];
+    ctxSel.agentsList.push(agentPtc);
+    ctxSel.sessions = { list: () => ({ current: { id: "sel-ptc" } }) };
+    const ptcCost = registrySel.contextCost();
+    assert.equal(ptcCost.unsupported, "code-mode", "PTC definitions are not priced from raw schemas");
+    assert.equal(ptcCost.sessionId, "sel-ptc");
+    assert.deepEqual([ptcCost.tools, ptcCost.estTokens, ptcCost.servers], [0, 0, []]);
+    assert.equal(ptcCost.contextWindow, 200000);
+    const ptcResult = registrySel.resultCost();
+    assert.equal(ptcResult.unsupported, "code-mode", "PTC results nested in run_code are not attributed");
+    assert.deepEqual([ptcResult.calls, ptcResult.estTokens], [0, 0]);
+
+    // 切回原生执行器（请求头没有 run_code）即恢复估算，不被 unsupported 缓存住。
+    agentPtc.session.seq = 1;
+    agentPtc.session.requestHeader = () => ({ tools: [{ name: "mcp__alpha__read" }] });
+    const nativeAgain = registrySel.contextCost();
+    assert.equal(nativeAgain.unsupported, undefined, "native executor is estimated again");
+    assert.equal(nativeAgain.tools, 1);
+    assert.equal(registrySel.resultCost().calls, 1, "native results are attributed again");
+    // 还没有请求头（刚恢复的会话）按原生口径估算，首次请求后自我纠正。
+    agentPtc.session.requestHeader = () => undefined;
+    assert.equal(registrySel.contextCost().unsupported, undefined, "no header yet falls back to native estimate");
+
+    for (const disposer of ctxSel.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    pass("contextCost follows the active session and reports code mode as unsupported");
+  } finally {
+    process.chdir(savedCwdSel);
+    await rmRetry(dirSel);
+  }
+}
+
 console.log("\n" + passed + " passed, 0 failed");
 console.log("ALL PROJECT REGISTRY TESTS PASSED");
 // chokidar close() is fire-and-forget in registry dispose; on Windows a

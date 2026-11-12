@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import {
+  CODE_MODE_TOOL_NAME,
   CONTEXT_COST_ALERT_TOKENS,
   CONTEXT_COST_WARN_TOKENS,
   contextCostLevel,
   contextCostSignature,
   estimateMessageTokens,
   estimateSchemaTokens,
+  isCodeModeTools,
   mcpContextCost,
   mcpResultCost,
   mcpServerOfTool,
@@ -281,6 +283,57 @@ test("resultCostSignature changes when retained results change", () => {
   assert.notEqual(resultCostSignature(before), resultCostSignature(longer));
   assert.notEqual(resultCostSignature(before), resultCostSignature(empty));
   assert.equal(resultCostSignature(before), resultCostSignature({ ...before }));
+});
+
+// ── 代码模式（PTC）：无法估算，不报零 ───────────────────────────────────────
+
+test("isCodeModeTools keys on the reserved run_code tool name", () => {
+  assert.equal(CODE_MODE_TOOL_NAME, "run_code");
+  assert.equal(isCodeModeTools([{ name: "run_code" }, { name: "mcp__alpha__read" }]), true);
+  assert.equal(isCodeModeTools([{ name: "mcp__alpha__read" }, { name: "bash" }]), false, "native list is not code mode");
+  assert.equal(isCodeModeTools([]), false);
+  assert.equal(isCodeModeTools(undefined), false, "no request header yet");
+  assert.equal(isCodeModeTools(null), false);
+  assert.equal(isCodeModeTools([{ id: "run_code" }]), false, "matches the model-facing name, not id");
+  assert.equal(isCodeModeTools([null, { name: "run_code" }]), true, "tolerates sparse entries");
+});
+
+test("mcpContextCost reports code mode as unsupported instead of a misleading zero", () => {
+  const cost = mcpContextCost({
+    sessionId: "ptc",
+    schemas: [schema("mcp__alpha__read", "x".repeat(4000))],
+    codeMode: true,
+    contextWindow: 200000
+  });
+  assert.equal(cost.unsupported, "code-mode");
+  assert.equal(cost.sessionId, "ptc");
+  assert.deepEqual(
+    { tools: cost.tools, chars: cost.chars, estTokens: cost.estTokens, level: cost.level, servers: cost.servers },
+    { tools: 0, chars: 0, estTokens: 0, level: "ok", servers: [] }
+  );
+  assert.equal(cost.contextWindow, 200000, "the window still travels for the share display");
+  assert.equal(cost.warnTokens, CONTEXT_COST_WARN_TOKENS);
+  assert.equal(cost.alertTokens, CONTEXT_COST_ALERT_TOKENS);
+});
+
+test("mcpResultCost reports code mode as unsupported even with retained MCP-looking results", () => {
+  const cost = mcpResultCost({
+    sessionId: "ptc",
+    messages: [call("c1", "mcp__alpha__read", {}), result("c1", "x".repeat(40000))],
+    codeMode: true
+  });
+  assert.equal(cost.unsupported, "code-mode");
+  assert.deepEqual([cost.calls, cost.estTokens, cost.servers], [0, 0, []]);
+});
+
+test("code-mode signatures differ from native so the panel re-reads on executor switch", () => {
+  const native = mcpContextCost({ sessionId: "s", schemas: [schema("mcp__alpha__read")] });
+  const ptc = mcpContextCost({ sessionId: "s", schemas: [], codeMode: true });
+  assert.notEqual(contextCostSignature(native), contextCostSignature(ptc));
+  const nativeResult = mcpResultCost({ sessionId: "s", messages: [] });
+  const ptcResult = mcpResultCost({ sessionId: "s", messages: [], codeMode: true });
+  assert.notEqual(resultCostSignature(nativeResult), resultCostSignature(ptcResult));
+  assert.equal(contextCostSignature(ptc), contextCostSignature({ ...ptc }));
 });
 
 console.log(`\n${passed} context-cost checks passed`);

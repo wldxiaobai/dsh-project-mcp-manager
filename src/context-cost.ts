@@ -11,11 +11,31 @@
  *   口径计价。被裁剪或压缩掉的结果不在当前上下文里，不计。
  *
  * 两者都是估算，不是 provider 精确计数；工具定义口径也不含服务器 instructions。
+ *
+ * 代码模式（PTC / run_code）下两份口径都无法成立：工具定义被渲染进系统提示词
+ * 的 `tools:sdk` 文本（不是逐工具的请求 `tools` 列表），MCP 调用又嵌在 `run_code`
+ * 内部、surface 上只剩外层结果。此时返回 `unsupported: "code-mode"`，由调用方
+ * 明确显示「无法估算」，而不是给出误导性的零或按原生口径硬算。
  */
 
 import { LAZY_PROXY_GROUP_NAME, isLazyToolName } from "./lazy/tool-names.js";
 
 export const MCP_TOOL_PREFIX = "mcp__";
+/**
+ * 代码模式（PTC）执行器对外暴露的唯一工具名。宿主把它列为保留名（注册/限制
+ * 都会拒绝），所以某次请求的 `tools` 里出现它就等价于该会话走 PTC。这里镜像
+ * 宿主常量、不新增依赖；判定只读请求头，不触碰执行器私有接口。
+ */
+export const CODE_MODE_TOOL_NAME = "run_code";
+
+/**
+ * 某次请求的工具列表是否来自代码模式（PTC）执行器。`run_code` 是保留名，
+ * 原生执行器不会注册它，因此出现即判定为代码模式。只读、不抛错。
+ */
+export function isCodeModeTools(tools: readonly unknown[] | undefined): boolean {
+  if (!Array.isArray(tools)) return false;
+  return tools.some((tool) => (tool as { name?: unknown } | null)?.name === CODE_MODE_TOOL_NAME);
+}
 /** 提醒阈值：达到后抬头标签变为提醒色。 */
 export const CONTEXT_COST_WARN_TOKENS = 5_000;
 /** 警告阈值：达到后标签变为警告色并加警告图标。 */
@@ -49,6 +69,11 @@ export interface McpContextCost {
   servers: McpServerContextCost[];
   warnTokens: number;
   alertTokens: number;
+  /**
+   * 代码模式（PTC）下定义走系统提示词渲染，无法按工具 schema 估算；
+   * 置 `"code-mode"` 时其余数值字段为零、`servers` 为空，调用方应显示「无法估算」。
+   */
+  unsupported?: "code-mode";
 }
 
 /** DSH token-meter 的工具 schema 估算口径。空列表为 0。 */
@@ -118,6 +143,8 @@ export interface ContextCostInput {
   contextWindow?: number;
   warnTokens?: number;
   alertTokens?: number;
+  /** 会话走代码模式（PTC）：定义无法按 schema 估算，返回 unsupported。 */
+  codeMode?: boolean;
 }
 
 /**
@@ -129,6 +156,20 @@ export interface ContextCostInput {
 export function mcpContextCost(input: ContextCostInput): McpContextCost {
   const warnTokens = input.warnTokens ?? CONTEXT_COST_WARN_TOKENS;
   const alertTokens = input.alertTokens ?? CONTEXT_COST_ALERT_TOKENS;
+  if (input.codeMode === true) {
+    return {
+      sessionId: input.sessionId,
+      tools: 0,
+      chars: 0,
+      estTokens: 0,
+      level: "ok",
+      ...(input.contextWindow !== undefined && input.contextWindow > 0 ? { contextWindow: input.contextWindow } : {}),
+      servers: [],
+      warnTokens,
+      alertTokens,
+      unsupported: "code-mode"
+    };
+  }
   const groups = new Map<string, unknown[]>();
   const all: unknown[] = [];
   for (const schema of input.schemas) {
@@ -201,6 +242,11 @@ export interface McpResultCost {
   contextWindow?: number;
   /** 按估算 token 从大到小排序。 */
   servers: McpResultServerCost[];
+  /**
+   * 代码模式（PTC）下 MCP 调用嵌在 `run_code` 内部，surface 上无法归属到
+   * 具体 MCP 结果；置 `"code-mode"` 时 `calls`/`estTokens` 为零、`servers` 为空。
+   */
+  unsupported?: "code-mode";
 }
 
 export interface ResultCostInput {
@@ -209,6 +255,8 @@ export interface ResultCostInput {
   messages: readonly unknown[];
   knownServers?: readonly string[];
   contextWindow?: number;
+  /** 会话走代码模式（PTC）：结果无法归属，返回 unsupported。 */
+  codeMode?: boolean;
 }
 
 function blockTypeOf(block: unknown): string {
@@ -333,6 +381,16 @@ function toolCallIdOf(message: ContextMessageLike): string | undefined {
  * surface 上的结果不进入当前上下文，因此不计。
  */
 export function mcpResultCost(input: ResultCostInput): McpResultCost {
+  if (input.codeMode === true) {
+    return {
+      sessionId: input.sessionId,
+      calls: 0,
+      estTokens: 0,
+      ...(input.contextWindow !== undefined && input.contextWindow > 0 ? { contextWindow: input.contextWindow } : {}),
+      servers: [],
+      unsupported: "code-mode"
+    };
+  }
   const knownServers = input.knownServers ?? [];
   const calls = toolCallsOf(input.messages);
   const totals = new Map<string, McpResultServerCost>();
@@ -368,10 +426,10 @@ export function mcpResultCost(input: ResultCostInput): McpResultCost {
 
 /** 推送去重用的签名：只含会改变显示的字段。 */
 export function contextCostSignature(cost: McpContextCost): string {
-  return JSON.stringify([cost.sessionId, cost.estTokens, cost.contextWindow ?? null, cost.servers.map((s) => [s.name, s.tools, s.estTokens, s.kind ?? null])]);
+  return JSON.stringify([cost.sessionId, cost.estTokens, cost.contextWindow ?? null, cost.unsupported ?? null, cost.servers.map((s) => [s.name, s.tools, s.estTokens, s.kind ?? null])]);
 }
 
 /** 推送去重用的签名：只含会改变显示的字段。 */
 export function resultCostSignature(cost: McpResultCost): string {
-  return JSON.stringify([cost.sessionId, cost.calls, cost.estTokens, cost.contextWindow ?? null, cost.servers.map((s) => [s.name, s.calls, s.estTokens, s.kind ?? null])]);
+  return JSON.stringify([cost.sessionId, cost.calls, cost.estTokens, cost.contextWindow ?? null, cost.unsupported ?? null, cost.servers.map((s) => [s.name, s.calls, s.estTokens, s.kind ?? null])]);
 }

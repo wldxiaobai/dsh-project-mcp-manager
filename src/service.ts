@@ -33,12 +33,14 @@ export interface ProjectMcpService {
   globalState(rawName: string): ProjectServerState | undefined;
   /**
    * 某个会话可见的 MCP 工具定义占多少上下文（同步、只读内存）。
-   * 不传 `sessionId` 时取焦点工作区里最近的会话；没有会话时 `sessionId` 为 null。
+   * 不传 `sessionId` 时取当前活动会话（宿主选中或最近一次顶层用户回合）；
+   * 没有会话时 `sessionId` 为 null。代码模式（PTC）会话返回 `unsupported: "code-mode"`。
    */
   contextCost(sessionId?: string): McpContextCost;
   /**
    * 某个会话当前仍保留的 MCP 工具调用结果占多少上下文（同步、只读内存）。
    * 不传 `sessionId` 时与 `contextCost()` 选同一个会话；被裁剪或压缩掉的结果不计。
+   * 代码模式（PTC）会话返回 `unsupported: "code-mode"`。
    */
   resultCost(sessionId?: string): McpResultCost;
   /** 触发一次全量对账（等同 `registry.reconcileNow()`）。 */

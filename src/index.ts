@@ -23,12 +23,15 @@ export type { PatchRow } from "./mcp-file.js";
 export type { McpRowSource } from "./json-file.js";
 export type { ContextCostLevel, McpContextCost, McpResultCost, McpResultServerCost, McpServerContextCost } from "./context-cost.js";
 export {
+  CODE_MODE_TOOL_NAME,
   CONTEXT_COST_ALERT_TOKENS,
   CONTEXT_COST_WARN_TOKENS,
   contextCostLevel,
+  contextCostSignature,
   estimateContentTokens,
   estimateMessageTokens,
   estimateSchemaTokens,
+  isCodeModeTools,
   mcpContextCost,
   mcpResultCost,
   mcpServerOfTool,
