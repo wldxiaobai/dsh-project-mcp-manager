@@ -7,17 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-12
+
+Versioned together with `dsh-project-mcp-ui` 0.13.0. This source version and
+Git tag do not imply that either package has been published to npm.
+
+Host alignment is unchanged (dsh **0.2.2-rc.1** and later `0.2` releases).
+The config format gains an optional per-row `mode`; the `projectMcp` service
+gains `setLoadingMode`, `contextCost` and `resultCost`; the package entry
+exports the context-cost estimators and their view types; the UI state route
+gains fields. Existing config files, CLI commands and service methods stay
+compatible. The main runtime behavior change: discovered workspaces now stay
+mounted instead of unmounting after their last session (see Changed / Removed).
+
 ### Added
 
 - Per-server Lazy mode. The MCP Manager and project config support opt-in
   discovery and invocation through three session-scoped proxies.
   Contributed by [@yangjh0127](https://github.com/yangjh0127) in
   [#30](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/30).
-- `projectMcp.setLoadingMode` and optional `mode` fields on drafts/views;
-  additive minor API changes require a synchronized manager/UI minor release.
+- `projectMcp.setLoadingMode` and optional `mode` fields on drafts/views. The
+  JSON dialect reads a top-level `mode` per entry, and `dsh-mcp import` keeps it.
+  These are additive API changes, shipped as a synchronized manager/UI minor
+  release.
 - Lazy lifecycle, two-project authorization, official naming parity and dependency
   compatibility regression tests. See the [Gate 1 review](docs/code-review/pr30-lazy-gate1.zh.md).
-
 - **Session-level MCP context cost.** `projectMcp.contextCost(sessionId?)` reads
   the tool schemas a session actually exposes (after `tools.restrict` and the
   row `tools.allow` / `tools.deny` filters) and prices every
@@ -27,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   server and tagged `ok` / `warn` (5,000) / `alert` (10,000). The registry
   re-emits `projectMcp/updated` when the figure changes after a `request/header`
   or `request/context` event, so the UI never polls.
+  ([#33](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/33))
 - **Context-cost tag in the workspace header.** The MCP page shows a compact
   `MCP 3.4k` tag: neutral below 5,000, the reminder colour from 5,000, and the
   warning colour plus a warning icon from 10,000. The detail (estimate basis,
@@ -34,7 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   click-to-open bubble, so the header stays quiet. Colour is never the only
   signal: the number is always visible and the tag carries an `aria-label`.
   The tag is hidden when there is no session or no MCP tool.
-
+  ([#33](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/33))
 - **Tool-result context cost and a second header tag.** `projectMcp.resultCost(sessionId?)`
   reads the session's current `deriveMessages()` and prices every retained
   `tool/result` message whose originating call is an MCP tool, using the same
@@ -45,8 +60,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MCP 3.4k`; its bubble gives the window share, the combined definitions +
   results total, and the largest result groups. Results pruned or compacted
   away are not counted. The registry re-emits `projectMcp/updated` after a
-  `tool/result` or compaction event when the figure changes. Additive API;
-  requires a synchronized manager/UI minor release.
+  `tool/result` or compaction event when the figure changes.
+  ([#33](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/33))
+- Bilingual contributor guides `CONTRIBUTING.md` / `CONTRIBUTING.zh.md` (PR
+  rules, build and test commands, documentation sync requirements), linked from
+  the "Contributing" section of both READMEs.
+
+### Changed
+
+- **Discovered workspaces stay mounted.** MCP servers of every discovered
+  workspace with configuration now stay mounted for the plugin's lifetime when
+  users switch sessions. Each session sees its own workspace's servers plus the
+  global ones (tools, server instructions and resources), isolated by
+  `tools.restrict({ deny })`. Focus only drives what the management page shows
+  and where it writes. Contributed by [@yangjh0127](https://github.com/yangjh0127)
+  in [#32](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/32).
+- The test suite is reorganized by domain: `test-registry.mjs` is split into
+  `test-registry-{pure,layers,core,service,lazy,context}.mjs` with a shared fake
+  host in `test/helpers/registry-harness.mjs`; `test-bundle.mjs` and
+  `test-lazy-dependencies.mjs` merge into `test-package-contract.mjs`;
+  `test-ui-paste.mjs` becomes `test-ui-add-server.mjs`. New suites:
+  `test-context-cost.mjs`, `test-isolation-race.mjs`, `test-lazy-lifecycle.mjs`,
+  `test-lazy-naming.mjs`.
+  ([#34](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/34))
+
+### Removed
+
+- On-demand workspace mounting and the 5-minute unmount grace after a
+  workspace's last session ends (internal `UNMOUNT_GRACE_MS` and the
+  `unmountGraceMs` provider option; neither was exported from the package
+  entry). Diagnostics no longer produce the `idle` skip reason or
+  `summary.idle`; older diagnostic files that contain them still parse, and
+  `dsh-mcp status` still reads them.
+  ([#32](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/32))
+- `dsh-project-mcp-ui`'s package-level `test` script, which pointed at the
+  deleted `test/panel-helpers.mjs`. UI tests run from the root `pnpm test`.
 
 ### Fixed
 
@@ -56,8 +104,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   last-enumerated agent in the focused workspace. Switching sessions within one
   workspace re-emits `projectMcp/updated`; subagent turns and compaction surface
   replacements never take the figure over, and disposing the active session
-  clears it.
-
+  clears it. ([#33](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/33))
 - **Code mode (PTC) reports "cannot estimate" instead of a wrong number.** When
   the session's latest request ran through the code-mode executor (the reserved
   `run_code` tool in the request-header tool list), both metrics return
@@ -67,13 +114,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   workspace header merges its two tags into one neutral `MCP n/a` with an
   explanatory bubble. Detection reads only the public session request header;
   switching back to the native executor restores the estimate.
-
+  ([#33](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/33))
 - **Lazy proxy context cost.** The visible `mcp_search`, `mcp_describe`, and
   `mcp_call` definitions now count in the MCP total once as a shared proxy group,
   not once per Lazy server. Lazy-only sessions keep the header tag; the breakdown
   labels the group “Lazy proxies (shared)”. No discovery or connection is started
   to calculate it. Hidden/deferred proxies and remote catalogs are not counted.
-
+  ([#33](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/33))
 - A new session whose first tool restriction cannot be applied now fails
   closed: all registered MCP tools are temporarily denied until the next
   successful sweep, instead of leaving the session able to see every
@@ -82,34 +129,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   raw error text), off-chain backoff retries restore precise visibility
   automatically even if reconciliation is stuck, and the event is logged to
   the global diagnostics. Covered by the isolation race suite (T1–T6).
-
+  ([#32](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/32))
 - Creating a session applies tool isolation immediately and waits up to 20
   seconds for its visible Eager servers to finish mounting, so the first model
   request sees them; sessions restored at startup skip the wait. Newly
   discovered workspace collisions preserve existing Eager connections.
   Contributed by [@yangjh0127](https://github.com/yangjh0127) in
   [#32](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/32).
-
 - Lazy connections activate independently on each session's first search and
   stay open across idle periods and workspace switches. Contributed by
   [@yangjh0127](https://github.com/yangjh0127) in
   [#32](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/32).
-
-- Keep MCP servers mounted for every discovered workspace when users switch
-  sessions. Each session sees its own workspace and shared MCP tools, server
-  instructions, and resources. Contributed by
-  [@yangjh0127](https://github.com/yangjh0127) in
-  [#32](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/32).
-
 - Lazy cancellation now releases the final waiter's pending connection without
   cancelling other callers. Generation shutdown is serialized with reconnects,
   including SDK stdio negotiation, idle close, mode changes and repeated disposal.
+  ([#30](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/30))
 - Discovery has a separate 30-second timeout, and MCP client metadata uses the
   package version instead of a stale literal.
+  ([#30](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/30))
 - Invalid disabled placeholders cannot be turned into incomplete mode-only rows;
   Lazy standby rows are not counted as running in the workspace header.
+  ([#30](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/30))
 - The leftover idle workspace tag and its hint are removed from the management
   page, and the enabled-but-not-started status now reads "waiting to load".
+  ([#32](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/32))
 
 ### Architecture
 
@@ -1223,7 +1266,8 @@ carry an explicit `type`.
 Security note: `stdio` lines in `.dsh/mcp.yml` spawn their `command` inside the dsh host
 process, so project files are executable-code carriers — add them only in trusted projects.
 
-[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.12.0...HEAD
+[unreleased]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/wldxiaobai/dsh-project-mcp-manager/compare/v0.10.0...v0.11.0
