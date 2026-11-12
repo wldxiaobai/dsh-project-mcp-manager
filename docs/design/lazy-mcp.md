@@ -274,7 +274,7 @@ Lazy **延迟连接，不延迟信任决策**：
 - **版本漂移**：DSH 或 `dsh-mcp-client` 升级后，官方依赖的 SDK / subprocess 版本可能
   变化；本插件仍固定旧版时会出现两份实现，协议或环境擦除行为可能不一致。
   缓解：随 `dsh-mcp-client` 的版本同步提升这两个精确版本；CI 必须运行
-  `node test/test-lazy-dependencies.mjs`，同时核对 manager 的直接精确版本、官方
+  `node test/test-package-contract.mjs`，同时核对 manager 的直接精确版本、官方
   `dependencies` / `peerDependencies` 声明和安装后的嵌套实际版本。
 - **清单范围不一致**：`@deepseek-ai/dsh-mcp-client` 仍是 `^0.2.2-rc.1`，而两个直接依赖
   是精确版本。消费方安装时可能解析到更新的官方客户端，SDK / subprocess 却仍是
@@ -294,12 +294,12 @@ Lazy **延迟连接，不延迟信任决策**：
 ## 7. 验证与记录
 
 `package.json` 的 `test` 脚本串起 Lazy 专项回归；下列单条命令假定已执行
-`pnpm run build`（UI 路由读 `packages/ui/lib`）。`test-lazy-dependencies` 只读已安装
+`pnpm run build`（UI 路由读 `packages/ui/lib`）。`test-package-contract` 只读已安装
 元数据，install 后可直接运行。
 
 ```powershell
 node test/test-lazy-lifecycle.mjs
-node test/test-lazy-dependencies.mjs
+node test/test-package-contract.mjs
 node test/test-lazy-naming.mjs
 node test/test-ui-lifecycle.mjs
 node test/test-ui-workspace.mjs
@@ -311,14 +311,14 @@ npx tsc --noEmit
 - `test-lazy-lifecycle.mjs`：并发请求共享连接、取消只结束发起者、最后一个取消者回收
   未完成世代；已激活连接跨空闲保留、失败后可重试、dispose 屏障、晚到 spawn 不逃逸、
   clientInfo 版本。
-- `test-lazy-dependencies.mjs`：manager 直接精确依赖 vs 官方 `dependencies` /
+- `test-package-contract.mjs`：manager 直接精确依赖 vs 官方 `dependencies` /
   `peerDependencies` vs 安装后的嵌套实际版本；官方 `^` 范围解析到不同契约时失败。
 - `test-lazy-naming.mjs`：通过官方公开 `apply` 对拍合法名、非法字符、长名、64/65 边界、
   哈希与工具过滤；不深导入。
 - `test-ui-lifecycle.mjs`：UI `/api/project-mcp/server` 的 `action:"mode"` 合法/非法
   模式、JSON takeover ack 门槛、core 错误响应与无成功副作用。
 - `test-ui-workspace.mjs`：active Lazy 计入 standby/待使用，不计入 running。
-- `test/test-registry.mjs` 的 Lazy 块：启动不 spawn、跨项目隔离、全局遮蔽、并发共享、
+- `test/test-registry-lazy.mjs` 的 Lazy 块：启动不 spawn、跨项目隔离、全局遮蔽、并发共享、
   过滤、热切换与 `mode` 不进入官方客户端配置。
 
 Gate 1 的审查、处置和验证记录见

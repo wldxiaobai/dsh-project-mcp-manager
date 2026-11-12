@@ -30,8 +30,8 @@ pnpm test          # 先构建，再用 node 依次运行全部测试套件
 
 - 从 `dev` 拉分支，PR 目标为 `dev`。`main` 是稳定分支，只由维护者发布时合入。
 - `pnpm run build` 与 `pnpm test` 通过。
-- 行为变更和 bug 修复附带 `test/` 下的测试（UI 辅助函数在 `packages/ui/test/`；直接用
-  `node` 运行的脚本，不使用测试框架）。
+- 行为变更和 bug 修复附带 `test/` 下的测试（直接用 `node` 运行的脚本，
+  不使用测试框架）。
 - 用户可见的改动同时更新中英文文档：`README.md` 与 `docs/README.zh.md`，以及对应的
   `docs/guide/*.md` / `*.zh.md`。
 - 在 [CHANGELOG.md](CHANGELOG.md) 的 `[Unreleased]` 下添加条目。
