@@ -4,9 +4,12 @@ import {
   CONTEXT_COST_WARN_TOKENS,
   contextCostLevel,
   contextCostSignature,
+  estimateMessageTokens,
   estimateSchemaTokens,
   mcpContextCost,
-  mcpServerOfTool
+  mcpResultCost,
+  mcpServerOfTool,
+  resultCostSignature
 } from "../lib/context-cost.js";
 import { LAZY_PROXY_GROUP_NAME, LAZY_TOOL_NAMES } from "../lib/lazy/tool-names.js";
 
@@ -194,6 +197,90 @@ test("contextCostSignature changes when visible Lazy proxy definitions change", 
   assert.notEqual(contextCostSignature(before), contextCostSignature(hidden));
   assert.notEqual(contextCostSignature(before), contextCostSignature(described));
   assert.equal(contextCostSignature(before), contextCostSignature({ ...before }));
+});
+
+// ── 工具调用结果 ─────────────────────────────────────────────────────────
+
+const call = (id, name, args = {}) => ({
+  role: "assistant",
+  content: [{ type: "tool-call", id, name, arguments: typeof args === "string" ? args : JSON.stringify(args) }]
+});
+const result = (id, text) => ({ role: "tool", toolCallId: id, source: { kind: "tool", callId: id }, content: [{ type: "text", text }] });
+
+test("estimateMessageTokens mirrors the token-meter per-message heuristic", () => {
+  assert.equal(estimateMessageTokens({ role: "tool", content: [{ type: "text", text: "12345678" }] }), 10, "ceil(8/4)+4 block +4 role");
+  assert.equal(estimateMessageTokens({ role: "tool", content: [] }), 4, "an empty result still keeps role framing");
+  assert.equal(estimateMessageTokens({ role: "system", content: [] }), 0, "an empty system prompt prices as 0");
+  assert.equal(estimateMessageTokens({ role: "system", content: [{ type: "text", text: "12345678" }] }), 6, "system text has no per-block overhead");
+});
+
+test("mcpResultCost attributes Eager, Lazy and shared proxy results", () => {
+  const cost = mcpResultCost({
+    sessionId: "s1",
+    knownServers: ["alpha", "demo"],
+    messages: [
+      call("c1", "mcp__alpha__read", { path: "x" }),
+      result("c1", "x".repeat(8)),
+      call("c2", "mcp_call", { server: "demo", tool: "ping", arguments: {} }),
+      result("c2", "y".repeat(4)),
+      call("c3", "mcp_search", { query: "x" }),
+      result("c3", "z".repeat(12)),
+      call("c4", "mcp_search", { query: "x", server: "demo" }),
+      result("c4", ""),
+      call("c5", "bash", {}),
+      result("c5", "host tool output")
+    ]
+  });
+  assert.equal(cost.sessionId, "s1");
+  assert.equal(cost.calls, 4, "the host tool result is excluded");
+  assert.equal(cost.estTokens, 10 + 9 + 11 + 8);
+  assert.deepEqual(cost.servers, [
+    { name: "demo", kind: "lazy", calls: 2, estTokens: 17 },
+    { name: LAZY_PROXY_GROUP_NAME, kind: "lazy-proxy", calls: 1, estTokens: 11 },
+    { name: "alpha", calls: 1, estTokens: 10 }
+  ]);
+});
+
+test("mcpResultCost skips results that no longer have a matching MCP call", () => {
+  const cost = mcpResultCost({
+    sessionId: "s1",
+    messages: [
+      call("host", "bash", {}),
+      result("host", "x"),
+      result("orphan", "y"),
+      { role: "tool", toolCallId: "no-source", content: [{ type: "text", text: "z" }] }
+    ]
+  });
+  assert.deepEqual([cost.calls, cost.estTokens, cost.servers], [0, 0, []]);
+});
+
+test("mcpResultCost tolerates malformed tool-call arguments and unknown blocks", () => {
+  const cost = mcpResultCost({
+    sessionId: "s1",
+    messages: [
+      call("c1", "mcp_call", "{not json"),
+      { role: "tool", toolCallId: "c1", content: [{ type: "image", attachment: { id: "img-1" } }] }
+    ]
+  });
+  assert.equal(cost.calls, 1, "a failed Lazy call is still a retained result");
+  assert.deepEqual(cost.servers.map(({ name, kind }) => ({ name, kind })), [{ name: LAZY_PROXY_GROUP_NAME, kind: "lazy-proxy" }]);
+  assert.ok(cost.estTokens >= 4, "the image block keeps its structural price: " + cost.estTokens);
+});
+
+test("mcpResultCost carries the context window only when it is usable", () => {
+  const messages = [call("c1", "mcp__alpha__read", {}), result("c1", "x")];
+  assert.equal(mcpResultCost({ sessionId: "s1", messages, contextWindow: 200000 }).contextWindow, 200000);
+  assert.equal("contextWindow" in mcpResultCost({ sessionId: "s1", messages, contextWindow: 0 }), false);
+});
+
+test("resultCostSignature changes when retained results change", () => {
+  const messages = [call("c1", "mcp__alpha__read", {}), result("c1", "x")];
+  const before = mcpResultCost({ sessionId: "s1", messages });
+  const longer = mcpResultCost({ sessionId: "s1", messages: [call("c1", "mcp__alpha__read", {}), result("c1", "x".repeat(8))] });
+  const empty = mcpResultCost({ sessionId: "s1", messages: [] });
+  assert.notEqual(resultCostSignature(before), resultCostSignature(longer));
+  assert.notEqual(resultCostSignature(before), resultCostSignature(empty));
+  assert.equal(resultCostSignature(before), resultCostSignature({ ...before }));
 });
 
 console.log(`\n${passed} context-cost checks passed`);

@@ -3161,12 +3161,55 @@ await withLazyProjects({
     ];
     assert.equal(registryCost.contextCost().level, "alert", "40k characters is well past 10k estimated tokens");
 
+    // 工具调用结果：读会话当前的 deriveMessages()，Eager 与 Lazy 都按服务器归属。
+    const resultMessages = [
+      { role: "assistant", content: [{ type: "tool-call", id: "c1", name: "mcp__alpha__read_file", arguments: "{}" }] },
+      { role: "tool", toolCallId: "c1", content: [{ type: "text", text: "x".repeat(8) }] },
+      { role: "assistant", content: [{ type: "tool-call", id: "c2", name: "mcp_call", arguments: JSON.stringify({ server: "demo", tool: "ping" }) }] },
+      { role: "tool", toolCallId: "c2", content: [{ type: "text", text: "y".repeat(4) }] },
+      { role: "assistant", content: [{ type: "tool-call", id: "c3", name: "bash", arguments: "{}" }] },
+      { role: "tool", toolCallId: "c3", content: [{ type: "text", text: "host output" }] }
+    ];
+    costAgent.session.deriveMessages = () => resultMessages;
+    const resultCost = registryCost.resultCost();
+    assert.equal(resultCost.sessionId, "session-cost", "the focused session is measured");
+    assert.equal(resultCost.calls, 2, "host tool results are excluded");
+    assert.equal(resultCost.estTokens, 19, "10 for the Eager result + 9 for the Lazy result");
+    assert.equal(resultCost.contextWindow, 200000, "the window comes from the same session route metadata");
+    assert.deepEqual(resultCost.servers.map(({ name, kind, calls }) => ({ name, kind, calls })), [
+      { name: "alpha", kind: undefined, calls: 1 },
+      { name: "demo", kind: "lazy", calls: 1 }
+    ]);
+    assert.equal(registryCost.resultCost("no-such-session").calls, 0, "an unknown session gets zero, not the focused session's figure");
+    costAgent.session.deriveMessages = () => { throw new Error("surface unavailable"); };
+    assert.equal(registryCost.resultCost().calls, 0, "a failing deriveMessages() must not throw through the query face");
+
+    // tool/result 改变仍保留的结果集时补发一次 updated；签名没变则不重复发。
+    costAgent.session.deriveMessages = () => resultMessages;
+    const resultUpdates = [];
+    const unsubscribeResults = registryCost.subscribeUpdated(() => resultUpdates.push("updated"));
+    ctxCost.emit("session/event", costAgent.session, { type: "tool/result" });
+    assert.equal(resultUpdates.length, 1, "a new retained result emits projectMcp/updated");
+    ctxCost.emit("session/event", costAgent.session, { type: "tool/result" });
+    assert.equal(resultUpdates.length, 1, "an unchanged result signature does not re-emit");
+    const longerResults = [
+      ...resultMessages,
+      { role: "assistant", content: [{ type: "tool-call", id: "c4", name: "mcp_call", arguments: JSON.stringify({ server: "demo", tool: "echo" }) }] },
+      { role: "tool", toolCallId: "c4", content: [{ type: "text", text: "z".repeat(8) }] }
+    ];
+    costAgent.session.deriveMessages = () => longerResults;
+    ctxCost.emit("session/event", costAgent.session, { type: "tool/result" });
+    assert.equal(resultUpdates.length, 2, "a larger retained result emits again");
+    unsubscribeResults();
+
     // 上下文窗口未知时省略该字段，而不是写 0。
     costAgent.session.requestContext = () => undefined;
     assert.equal("contextWindow" in registryCost.contextCost(), false);
 
     const serviceCost = bindProjectMcpService(registryCost);
     assert.equal(serviceCost.contextCost().sessionId, "session-cost", "the service exposes the same read");
+    costAgent.session.deriveMessages = () => resultMessages;
+    assert.equal(serviceCost.resultCost().calls, 2, "the service exposes the same result read");
 
     for (const disposer of ctxCost.disposers) {
       const cleanup = disposer();

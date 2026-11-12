@@ -21,14 +21,18 @@ export type { McpLoadingMode, McpScopeInfo, McpServerView, McpTransport, Reconne
 export { projectKeyOf, serviceIdentityKeyOf } from "./model.js";
 export type { PatchRow } from "./mcp-file.js";
 export type { McpRowSource } from "./json-file.js";
-export type { ContextCostLevel, McpContextCost, McpServerContextCost } from "./context-cost.js";
+export type { ContextCostLevel, McpContextCost, McpResultCost, McpResultServerCost, McpServerContextCost } from "./context-cost.js";
 export {
   CONTEXT_COST_ALERT_TOKENS,
   CONTEXT_COST_WARN_TOKENS,
   contextCostLevel,
+  estimateContentTokens,
+  estimateMessageTokens,
   estimateSchemaTokens,
   mcpContextCost,
-  mcpServerOfTool
+  mcpResultCost,
+  mcpServerOfTool,
+  resultCostSignature
 } from "./context-cost.js";
 
 export const name = "dsh-project-mcp-manager";

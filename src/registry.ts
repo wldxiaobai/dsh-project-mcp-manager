@@ -101,7 +101,7 @@ import {
 import { mcpToolBudgetStats, mcpToolCount, parseToolBudgetWarn, schemaToolId } from "./status.js";
 import { LazyConnections } from "./lazy/connection.js";
 import { LAZY_TOOL_NAMES, registerLazyTools, type LazyMount } from "./lazy/proxies.js";
-import { contextCostSignature, mcpContextCost, type McpContextCost } from "./context-cost.js";
+import { contextCostSignature, mcpContextCost, mcpResultCost, resultCostSignature, type McpContextCost, type McpResultCost } from "./context-cost.js";
 
 const EAGER_STARTUP_WAIT_MS = 20_000;
 const EAGER_STARTUP_POLL_MS = 100;
@@ -980,8 +980,10 @@ export class ProjectMcpRegistry {
   private readonly nameRelease = new Map<string, Promise<void>>();
   private disposeLazyTools?: () => void;
   private readonly closedLazySessions = new WeakSet<object>();
-  /** 上一次推送的 MCP 上下文占用签名；只在真正变化时补发 `projectMcp/updated`。 */
-  private lastContextCostSignature = "";
+  /** 上一次推送的 MCP 上下文占用签名（工具定义 + 调用结果）；只在真正变化时补发。 */
+  private lastContextUsageSignature = "";
+  /** 会话对象 → 该 seq 时算好的结果占用；只在日志长度变化后重算。 */
+  private readonly resultCostCache = new WeakMap<object, { seq: number; cost: McpResultCost }>();
 
   constructor(ctx: any, providers: ProjectMcpRegistryOptions) {
     this.ctx = ctx;
@@ -1053,12 +1055,13 @@ export class ProjectMcpRegistry {
       if (event?.type !== "user/message") return;
       this.onSessionActivity(session);
     }, watchOpts);
-    // 工具目录 / 上下文窗口只在请求头变化时更新：这两个事件足以覆盖「本次请求带什么工具」，
-    // 变没变再按签名判一次，避免每一步都惊动页面。
+    // 工具目录 / 上下文窗口在请求头变化时更新；工具结果在写入 surface 时更新，
+    // 压缩/裁剪改写结果时同样更新。变没变再按签名判一次，避免每一步都惊动页面。
     ctx.on("session/event", (_session: any, event: any) => {
       const type = event?.type;
-      if (type !== "request/header" && type !== "request/context") return;
-      this.emitContextCostIfChanged();
+      if (type !== "request/header" && type !== "request/context"
+        && type !== "tool/result" && type !== "compaction/summary" && type !== "compaction/prune") return;
+      this.emitContextUsageIfChanged();
     }, watchOpts);
     ctx.on("tools/change", () => this.sweepRestrictions(), watchOpts);
     ctx.on("system-prompt/assemble", async (
@@ -2930,6 +2933,36 @@ export class ProjectMcpRegistry {
     });
   }
 
+  /**
+   * 某个会话当前仍保留的 MCP 工具调用结果占多少上下文（token 为 DSH
+   * token-meter 口径的逐条消息估算）。
+   *
+   * 只读内存：读该会话当前的模型可见消息（`session.deriveMessages()`），
+   * 不读盘、不驱动对账。被裁剪或压缩掉的结果已不在 surface 上，不计。
+   * Eager 结果按 `mcp__<生效名>__` 归属；Lazy 结果按代理参数里的 `server`
+   * 归属，`mcp_search` 未指定服务器时归入共享代理组。
+   */
+  resultCost(sessionId?: string): McpResultCost {
+    const agent = this.contextCostAgent(sessionId);
+    if (agent === undefined) return mcpResultCost({ sessionId: sessionId ?? null, messages: [] });
+    const session = agent.session;
+    const id = typeof agent.id === "string" && agent.id !== "" ? agent.id : null;
+    const seq = typeof session?.seq === "number" ? session.seq : undefined;
+    if (session !== undefined && seq !== undefined) {
+      const cached = this.resultCostCache.get(session);
+      if (cached !== undefined && cached.seq === seq && cached.cost.sessionId === id) return cached.cost;
+    }
+    const contextWindow = this.contextWindowOf(agent);
+    const cost = mcpResultCost({
+      sessionId: id,
+      messages: this.messagesForAgent(agent),
+      knownServers: this.knownEffectiveNames(),
+      ...(contextWindow === undefined ? {} : { contextWindow })
+    });
+    if (session !== undefined && seq !== undefined) this.resultCostCache.set(session, { seq, cost });
+    return cost;
+  }
+
   /** 指定会话，或焦点所在工作区里最近的那个会话；都找不到返回 undefined。 */
   private contextCostAgent(sessionId?: string): any | undefined {
     const agents = this.liveAgents();
@@ -2970,6 +3003,22 @@ export class ProjectMcpRegistry {
     }
   }
 
+  /**
+   * 该会话当前的模型可见消息。`deriveMessages()` 是 Session 的公开读法，
+   * 自带缓存、按 surface 顺序返回（压缩/裁剪后的内容已经生效）。
+   * 会话对象或读法不可用时返回空数组，不把异常抛给查询方。
+   */
+  private messagesForAgent(agent: any): readonly unknown[] {
+    const session = agent?.session;
+    if (session === undefined || typeof session.deriveMessages !== "function") return [];
+    try {
+      const messages = session.deriveMessages();
+      return Array.isArray(messages) ? messages : [];
+    } catch {
+      return [];
+    }
+  }
+
   private contextWindowOf(agent: any): number | undefined {
     try {
       const context = agent?.session?.requestContext?.();
@@ -2990,17 +3039,17 @@ export class ProjectMcpRegistry {
     return [...names];
   }
 
-  /** 占用签名变了才补发一次 `projectMcp/updated`，让页面重读并更新抬头标签。 */
-  private emitContextCostIfChanged(): void {
+  /** 定义或结果占用签名变了才补发一次 `projectMcp/updated`，让页面重读抬头标签。 */
+  private emitContextUsageIfChanged(): void {
     if (this.disposed) return;
     let signature: string;
     try {
-      signature = contextCostSignature(this.contextCost());
+      signature = JSON.stringify([contextCostSignature(this.contextCost()), resultCostSignature(this.resultCost())]);
     } catch {
       return;
     }
-    if (signature === this.lastContextCostSignature) return;
-    this.lastContextCostSignature = signature;
+    if (signature === this.lastContextUsageSignature) return;
+    this.lastContextUsageSignature = signature;
     this.emitUpdated();
   }
 

@@ -1,10 +1,16 @@
 /**
- * 会话级 MCP 工具定义的上下文占用估算（纯函数）。
+ * 会话级 MCP 上下文占用估算（纯函数）。
  *
- * 输入是某个会话可见的工具 schema（`agent.ctx` 视角的 `tools.schemas()`，已经过
- * 本插件的 deny 与条目 allow/deny）。统计 `mcp__<生效名>__<工具>` 及可见的三个 Lazy 代理。
- * token 按 DSH token-meter 的同一口径估算：`ceil(JSON.stringify(tools).length / 4) + 4`，
- * 不是 provider 精确计数，也不含服务器 instructions。
+ * 两份口径：
+ * - 工具定义：输入是某个会话可见的工具 schema（`agent.ctx` 视角的
+ *   `tools.schemas()`，已经过本插件的 deny 与条目 allow/deny）。统计
+ *   `mcp__<生效名>__<工具>` 及可见的三个 Lazy 代理，按
+ *   `ceil(JSON.stringify(tools).length / 4) + 4` 计价。
+ * - 工具调用结果：输入是会话当前模型可见的消息（`session.deriveMessages()`），
+ *   只取仍留在 surface 上的 `tool/result` 消息，按 DSH token-meter 的逐条消息
+ *   口径计价。被裁剪或压缩掉的结果不在当前上下文里，不计。
+ *
+ * 两者都是估算，不是 provider 精确计数；工具定义口径也不含服务器 instructions。
  */
 
 import { LAZY_PROXY_GROUP_NAME, LAZY_TOOL_NAMES } from "./lazy/tool-names.js";
@@ -156,7 +162,209 @@ export function mcpContextCost(input: ContextCostInput): McpContextCost {
   };
 }
 
+// ── 工具调用结果 ─────────────────────────────────────────────────────────
+
+/** 模型可见消息的最小形状；只读计价，不复制内容。 */
+export interface ContextMessageLike {
+  readonly role?: string;
+  readonly content?: readonly unknown[];
+  readonly source?: { readonly callId?: string };
+  readonly toolCallId?: string;
+}
+
+/** 一台服务器（或共享 Lazy 代理组）仍留在会话里的调用结果。 */
+export interface McpResultServerCost {
+  /** 服务器生效名；无法归属到单台服务器的 Lazy 结果归入 `[lazy proxies]`。 */
+  name: string;
+  /** `lazy`：经 Lazy 代理调用的某台服务器；`lazy-proxy`：跨服务器的共享代理结果。 */
+  kind?: "lazy" | "lazy-proxy";
+  /** 结果消息条数（每条对应一次已完成的调用）。 */
+  calls: number;
+  estTokens: number;
+}
+
+/** 会话当前仍保留的 MCP 工具调用结果占用。 */
+export interface McpResultCost {
+  /** 被统计的会话 id；找不到当前会话时为 null，其余字段为零。 */
+  sessionId: string | null;
+  /** 计入的结果消息条数；被裁剪或压缩掉的不算。 */
+  calls: number;
+  estTokens: number;
+  /** 模型上下文窗口（来自会话最近一次请求的路由信息）；未知时省略。 */
+  contextWindow?: number;
+  /** 按估算 token 从大到小排序。 */
+  servers: McpResultServerCost[];
+}
+
+export interface ResultCostInput {
+  sessionId: string | null;
+  /** 会话当前的模型可见消息（`session.deriveMessages()`）；会话缺失时传空数组。 */
+  messages: readonly unknown[];
+  knownServers?: readonly string[];
+  contextWindow?: number;
+}
+
+function blockTypeOf(block: unknown): string {
+  const type = (block as { type?: unknown } | null)?.type;
+  return typeof type === "string" ? type : "";
+}
+
+function textOf(block: unknown): string {
+  const text = (block as { text?: unknown } | null)?.text;
+  return typeof text === "string" ? text : "";
+}
+
+function stringFieldOf(block: unknown, field: string): string {
+  const value = (block as Record<string, unknown> | null)?.[field];
+  return typeof value === "string" ? value : "";
+}
+
+/** 图像以外未知块的保守 JSON 结构价；与 token-meter 的 `estimateStructuralBlock` 一致。 */
+function estimateStructuralTokens(block: unknown): number {
+  if (blockTypeOf(block) === "image") {
+    const { offloaded: _offloaded, ...reference } = block as Record<string, unknown>;
+    return BLOCK_OVERHEAD + Math.ceil(serializedLength(reference) / CHARS_PER_TOKEN);
+  }
+  return BLOCK_OVERHEAD + Math.ceil(serializedLength(block) / CHARS_PER_TOKEN);
+}
+
+/**
+ * 一组模型可见 content 的估算 token。口径镜像
+ * `@deepseek-ai/dsh-token-meter/estimate` 的 `estimateContent`：文本/推理按
+ * `ceil(字符数 / 4) + 4`，tool-call 按名字与原始参数串，未知块按 JSON 结构。
+ */
+export function estimateContentTokens(blocks: readonly unknown[]): number {
+  let tokens = 0;
+  for (const block of blocks) {
+    const type = blockTypeOf(block);
+    if (type === "text" || type === "reasoning") {
+      tokens += Math.ceil(textOf(block).length / CHARS_PER_TOKEN) + BLOCK_OVERHEAD;
+    } else if (type === "tool-call") {
+      tokens += Math.ceil(stringFieldOf(block, "name").length / CHARS_PER_TOKEN)
+        + Math.ceil(stringFieldOf(block, "arguments").length / CHARS_PER_TOKEN)
+        + BLOCK_OVERHEAD;
+    } else {
+      tokens += estimateStructuralTokens(block);
+    }
+  }
+  return tokens;
+}
+
+/**
+ * 一条模型可见消息的估算 token。镜像 token-meter 的 `estimateMessage`：
+ * system 只按文本字符计价，其它角色是 content 价加 4 的角色开销。
+ */
+export function estimateMessageTokens(message: ContextMessageLike): number {
+  const content = Array.isArray(message?.content) ? message.content : [];
+  if (message?.role === "system") {
+    if (content.length === 0) return 0;
+    let characters = 0;
+    for (const block of content) {
+      characters += blockTypeOf(block) === "text" ? textOf(block).length : serializedLength(block);
+    }
+    return Math.ceil(characters / CHARS_PER_TOKEN) + BLOCK_OVERHEAD;
+  }
+  return estimateContentTokens(content) + BLOCK_OVERHEAD;
+}
+
+/** `mcp_call` / `mcp_describe` / 带 `server` 的 `mcp_search` 的目标服务器。 */
+function lazyTargetServer(argumentsJson: string): string | undefined {
+  if (argumentsJson === "") return undefined;
+  try {
+    const server = (JSON.parse(argumentsJson) as { server?: unknown } | null)?.server;
+    return typeof server === "string" && server !== "" ? server : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+interface ToolCallRef {
+  name: string;
+  arguments: string;
+}
+
+/** 会话里出现过的工具调用：callId → 工具名与原始参数。结果消息只带 callId。 */
+function toolCallsOf(messages: readonly unknown[]): Map<string, ToolCallRef> {
+  const calls = new Map<string, ToolCallRef>();
+  for (const message of messages) {
+    const candidate = message as { role?: unknown; content?: unknown };
+    if (candidate?.role !== "assistant" || !Array.isArray(candidate.content)) continue;
+    for (const block of candidate.content) {
+      if (blockTypeOf(block) !== "tool-call") continue;
+      const id = stringFieldOf(block, "id");
+      const name = stringFieldOf(block, "name");
+      if (id === "" || name === "") continue;
+      calls.set(id, { name, arguments: stringFieldOf(block, "arguments") });
+    }
+  }
+  return calls;
+}
+
+/** 一次调用的归属；不是 MCP 调用时返回 undefined。 */
+function resultTargetOf(call: ToolCallRef, knownServers: readonly string[]): { name: string; kind?: "lazy" | "lazy-proxy" } | undefined {
+  if (call.name.startsWith(MCP_TOOL_PREFIX)) {
+    const server = mcpServerOfTool(call.name, knownServers);
+    return server === undefined ? undefined : { name: server };
+  }
+  if (!LAZY_TOOL_NAMES.some((name) => name === call.name)) return undefined;
+  const server = lazyTargetServer(call.arguments);
+  return server === undefined
+    ? { name: LAZY_PROXY_GROUP_NAME, kind: "lazy-proxy" }
+    : { name: server, kind: "lazy" };
+}
+
+function toolCallIdOf(message: ContextMessageLike): string | undefined {
+  if (typeof message.toolCallId === "string" && message.toolCallId !== "") return message.toolCallId;
+  const callId = message.source?.callId;
+  return typeof callId === "string" && callId !== "" ? callId : undefined;
+}
+
+/**
+ * 汇总会话当前 surface 上仍保留的 MCP 工具调用结果。只统计能对应到 MCP 工具调用的
+ * `tool/result` 消息：Eager 按 `mcp__<生效名>__<工具>` 归属；Lazy 按代理参数里的
+ * `server` 归属，`mcp_search` 未指定服务器时归入共享代理组。被裁剪、压缩或已不在
+ * surface 上的结果不进入当前上下文，因此不计。
+ */
+export function mcpResultCost(input: ResultCostInput): McpResultCost {
+  const knownServers = input.knownServers ?? [];
+  const calls = toolCallsOf(input.messages);
+  const totals = new Map<string, McpResultServerCost>();
+  let count = 0;
+  let tokens = 0;
+  for (const message of input.messages) {
+    const candidate = message as ContextMessageLike;
+    if (candidate?.role !== "tool") continue;
+    const callId = toolCallIdOf(candidate);
+    if (callId === undefined) continue;
+    const call = calls.get(callId);
+    if (call === undefined) continue;
+    const target = resultTargetOf(call, knownServers);
+    if (target === undefined) continue;
+    const price = estimateMessageTokens(candidate);
+    count += 1;
+    tokens += price;
+    const entry = totals.get(target.name) ?? { name: target.name, calls: 0, estTokens: 0 };
+    entry.calls += 1;
+    entry.estTokens += price;
+    if (entry.kind === undefined && target.kind !== undefined) entry.kind = target.kind;
+    totals.set(target.name, entry);
+  }
+  const servers = [...totals.values()].sort((a, b) => b.estTokens - a.estTokens || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return {
+    sessionId: input.sessionId,
+    calls: count,
+    estTokens: tokens,
+    ...(input.contextWindow !== undefined && input.contextWindow > 0 ? { contextWindow: input.contextWindow } : {}),
+    servers
+  };
+}
+
 /** 推送去重用的签名：只含会改变显示的字段。 */
 export function contextCostSignature(cost: McpContextCost): string {
   return JSON.stringify([cost.sessionId, cost.estTokens, cost.contextWindow ?? null, cost.servers.map((s) => [s.name, s.tools, s.estTokens, s.kind ?? null])]);
+}
+
+/** 推送去重用的签名：只含会改变显示的字段。 */
+export function resultCostSignature(cost: McpResultCost): string {
+  return JSON.stringify([cost.sessionId, cost.calls, cost.estTokens, cost.contextWindow ?? null, cost.servers.map((s) => [s.name, s.calls, s.estTokens, s.kind ?? null])]);
 }
