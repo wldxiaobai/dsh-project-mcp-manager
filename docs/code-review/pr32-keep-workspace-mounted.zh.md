@@ -212,3 +212,9 @@ T1 修复后兜底是「静默生效」的：模型只会发现工具突然消�
 - **验证**：T6 覆盖通知内容与脱敏、健康会话无通知、卡链下的链外自愈、重试用尽转手动指引、手动触发恢复、诊断事件落盘；T1–T6 与全量 `npm test` 通过。AGENTS.md「会话隔离」条目与目录结构段已同步。
 - **未做**：管理页横幅（方案 B）留作可选后续；模型没有主动触发 reload 的工具，通知以「等自动重试 / 请用户操作」为恢复指引。
 - 本地 `pr-32` 现领先远端 PR head 四个提交（T1 修复、报告回填、保护通知与重试、本次文档同步），推送待维护者指示。
+
+## 2026-11-12（续二）：SonarCloud 14 项研判与 CHANGELOG 署名
+
+- 远端 PR head 已更新为 `891d4a8`（含 T1 修复与保护通知提交），Sonar 重扫基线与本地一致。14 条 OPEN issues 全部研判：**4 条修复**（S3776 applyRestriction 拆分、S7747 Map 直接迭代、S7739 假 fiber 改真 Promise——唯一门禁阻塞项、S7770 map(String)），**10 条有意串行 S9382 保留**（理由 A/G，建议维护者 Accepted）。Quality Gate 现为 ERROR（`new_reliability_rating` 3>1，仅由 S7739 导致），修复重扫后预期恢复。逐条清单见 [Sonar PR #32 研判报告](<sonar-pr32.zh.md>)。
+- **R32-11 部分完成**：CHANGELOG 三条属于作者贡献的 Unreleased/Fixed 条目已补 `Contributed by @yangjh0127 in #32`（格式对齐 #30）；维护者侧审查修复沿用 #30 先例不署名。两版 README「致谢」小节仍待合入时补充。
+- 本地提交：`537721e`（registry 重构）、`f4db7fa`（测试改造）、`0736efb`（CHANGELOG 署名）、本次报告回填。T1–T6 与全量 `npm test` exit 0。`pr-32` 现领先远端 PR head（`891d4a8`）四个提交，推送待维护者指示。
