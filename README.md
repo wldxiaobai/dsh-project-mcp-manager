@@ -79,7 +79,9 @@ not provider counts, and exclude server instructions and conversation history.
 A tag is absent when there is no session or nothing to price; clicking it opens
 the per-server breakdown and the context-window share. The **Results** bubble
 also shows definitions + results combined. The figure refreshes after request
-headers, tool results, and compaction replacements without polling. Details:
+headers, tool results, and compaction replacements without polling. In code mode
+(PTC) the two tags merge into one `MCP n/a`, explicitly marked as not estimable
+on this basis rather than shown as zero. Details:
 [MCP Manager page](docs/guide/settings-ui.md#mcp-context-cost) and
 [query surface](docs/guide/service.md#tool-result-cost).
 

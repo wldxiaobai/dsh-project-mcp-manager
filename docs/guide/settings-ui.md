@@ -150,8 +150,11 @@ All three entries render the same panel, so all three open with the same
 
 The header also carries short tags such as `MCP 3.4k` and `Results 1.2k`: roughly
 how many tokens of MCP tool definitions the **current session** sends with every
-request, and how many tokens of MCP tool results it still keeps in context. Each
-tag shows only its number; clicking it opens the detail:
+request, and how many tokens of MCP tool results it still keeps in context. The
+"current session" prefers the host's selected session, then the session of the
+latest top-level user turn — switching sessions within a workspace or running a
+subagent never moves the tags onto a different session. Each tag shows only its
+number; clicking it opens the detail:
 
 - the definition estimate is `ceil(characters / 4) + 4`, the same heuristic the
   host uses for tool schemas — not a provider count, and it excludes server
@@ -183,6 +186,14 @@ tools / no retained MCP results. They refresh themselves: the host re-emits its
 update signal whenever the request header or route changes, and also when a
 tool result or a compaction changes the retained result set; the page re-reads
 on that event.
+
+When the current session runs in **code mode (PTC)**, the two tags merge into one
+neutral `MCP n/a`: code mode renders MCP capabilities into the system prompt and
+nests calls inside `run_code`, so neither the tool-schema basis nor per-server
+result attribution applies, and a hard number would be misleading — the panel
+says "cannot estimate" instead of showing zero. The detail explains why and notes
+that switching back to the native executor restores the estimate. The tag follows
+the update signal when the executor changes.
 
 When the host cannot tell yet (several workspaces and no session focus), the
 name reads **Current workspace not determined**, the path is hidden, and the

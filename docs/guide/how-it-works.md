@@ -69,9 +69,12 @@ English | [中文](how-it-works.zh.md)
 - **Context cost**: `contextCost()` prices the MCP tool definitions visible to
   a session; `resultCost()` prices every retained `tool/result` message whose
   originating call is an MCP tool, read from `session.deriveMessages()` so
-  pruned or compacted results drop out. Lazy proxy definitions count once as
-  shared overhead, and Lazy results are attributed by the proxy's `server`
-  argument. Both use the token-meter heuristic and are estimates; the registry
-  re-emits `projectMcp/updated` after request headers, tool results, or a
-  compaction surface replacement changes the figure. See
+  pruned or compacted results drop out. Without an explicit session id the
+  active session is the host's selected one, then the latest top-level user turn
+  (subagents and surface replacements never take it over). Lazy proxy definitions
+  count once as shared overhead, and Lazy results are attributed by the proxy's
+  `server` argument. Both use the token-meter heuristic and are estimates; in
+  code mode (PTC) they return `unsupported: "code-mode"` instead of a misleading
+  number. The registry re-emits `projectMcp/updated` after request headers, tool
+  results, or a compaction surface replacement changes the figure. See
   [query surface](service.md#tool-result-cost).

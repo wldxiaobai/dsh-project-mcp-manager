@@ -16,7 +16,7 @@ the SSE channel provided by the bundled companion UI.
 | `snapshot()` | In-memory partitions from the previous reconcile (project files and the user layer). Joins the reconcile queue, does not read disk, and does not start a reconcile. |
 | `serverView(projectRoot, rawName)` | One row's in-memory view. Same queue rules as `snapshot()`. |
 | `globalState(rawName)` | Live global-layer state for that raw name, or `undefined` for a project row. |
-| `contextCost(sessionId?)` | How much context that session's visible MCP tool definitions take. Synchronous, memory-only. Without `sessionId` it picks the session in the focused workspace. |
+| `contextCost(sessionId?)` | How much context that session's visible MCP tool definitions take. Synchronous, memory-only. Without `sessionId` it prefers the host's currently selected session, then the session of the latest top-level user turn, and only falls back to the last session in the focused workspace when neither is available. |
 | `resultCost(sessionId?)` | How much context that session's retained MCP tool results take. Synchronous, memory-only; same session selection as `contextCost()`. |
 | `reload()` | One full reconcile (`reconcileNow`). |
 | `writeTargets()` | Managed yml locations the add dialog can write: the current workspace, the user layer, and the active profile. |
@@ -108,6 +108,29 @@ surface and is not counted. It is an **estimate**, not a provider count; image
 results are priced by their structural reference, not by the route's visual
 tokens.
 
+### Code mode (PTC)
+
+When the session's latest request ran through the code-mode executor (the host's
+reserved `run_code` tool appears in the request-header tool list), both metrics
+return `unsupported: "code-mode"` with the numeric fields zeroed:
+
+- Definitions are no longer priced from tool schemas — code mode renders the MCP
+  capabilities into the system prompt's `tools:sdk` text (including
+  `output.schema`), and the request's tool list holds only `run_code`, so a
+  native-schema estimate would be wrong.
+- Results are no longer attributed per server — MCP calls happen inside
+  `run_code`, and the surface shows the outer `run_code` result, which cannot be
+  split into per-server MCP occupancy; summing every internal call would also
+  count intermediate results that were never printed into context.
+
+So code mode reports "cannot estimate" explicitly rather than a misleading zero
+or a hard-coded number. Detection only reads the session request header
+(`session.requestHeader().tools`) and never touches private executor interfaces;
+a session without a header yet (just restored) is estimated natively and
+self-corrects after its first request. Switching back to the native executor
+restores the estimate. `unsupported` is part of the occupancy signature, so an
+executor switch re-emits `projectMcp/updated` for the page to re-read.
+
 ## Loading mode
 
 `McpLoadingMode` is `"eager" | "lazy"`. The field is optional everywhere;
@@ -195,7 +218,9 @@ import {
 `McpServerView.mode` is optional; absent means Eager. `McpAddDraft.mode` is also
 optional; the add form sends it only for Lazy. `contextCost()` returns
 `McpContextCost` with `McpServerContextCost` groups and a `ContextCostLevel`;
-`resultCost()` returns `McpResultCost` with `McpResultServerCost` groups.
+`resultCost()` returns `McpResultCost` with `McpResultServerCost` groups. Both
+carry an optional `unsupported: "code-mode"` when the session runs in code mode
+(see [Code mode (PTC)](#code-mode-ptc)); the numeric fields are then zero.
 
 ## Semver for the companion UI
 

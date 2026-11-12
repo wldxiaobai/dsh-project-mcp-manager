@@ -15,7 +15,7 @@
 | `snapshot()` | 上一轮对账的内存分区（项目文件与用户层）。进对账队列，不读盘，不发起对账。 |
 | `serverView(projectRoot, rawName)` | 一行的内存 view。排队规则与 `snapshot()` 相同。 |
 | `globalState(rawName)` | 该原名的全局层运行态；项目行返回 `undefined`。 |
-| `contextCost(sessionId?)` | 该会话可见的 MCP 工具定义占多少上下文。同步、只读内存；不传会话时取焦点工作区里的会话。 |
+| `contextCost(sessionId?)` | 该会话可见的 MCP 工具定义占多少上下文。同步、只读内存；不传会话时优先取宿主当前选中的会话，其次是最近一次顶层用户回合的会话，都拿不到才退回焦点工作区里最后一个。 |
 | `resultCost(sessionId?)` | 该会话当前仍保留的 MCP 工具调用结果占多少上下文。同步、只读内存；会话选择与 `contextCost()` 相同。 |
 | `reload()` | 一次全量对账（`reconcileNow`）。 |
 | `writeTargets()` | 添加对话框当前能写的受管 yml：当前工作区、用户层、当前 profile。 |
@@ -93,6 +93,22 @@ surface 上的每条 `tool/result` 消息按 `dsh-token-meter` 的逐条消息�
 不计。数字是**估算**，不是 provider 计数；图片结果按结构引用计价，不用路由的
 视觉 token 口径。
 
+### 代码模式（PTC）
+
+会话最近一次请求若走代码模式执行器（请求头工具列表里出现宿主保留名 `run_code`），
+两份口径都返回 `unsupported: "code-mode"`，其余数值字段为零：
+
+- 定义不再按工具 schema 计价——代码模式把 MCP 能力渲染进系统提示词的 `tools:sdk`
+  文本（含 `output.schema`），请求的工具列表里只有 `run_code`，按原生 schema 估算会失真。
+- 结果不再按服务器归属——MCP 调用嵌在 `run_code` 内部，surface 上可见的是外层
+  `run_code` 的结果，无法拆出每台 MCP 服务器的占用；把所有内部调用相加又会把
+  没有打印进上下文的中间结果也算进去。
+
+因此代码模式下明确报「无法估算」，而不是给出误导性的零或硬算的数字。判定只读
+会话请求头（`session.requestHeader().tools`），不触碰执行器私有接口；还没有请求头
+（刚恢复的会话）时按原生口径估算，首次请求后自我纠正。切回原生执行器即恢复估算。
+`unsupported` 进入占用签名，执行器切换时页面会收到 `projectMcp/updated` 重读。
+
 ## 加载模式
 
 `McpLoadingMode` 是 `"eager" | "lazy"`。`mode` 在所有结构里都是可选字段，省略等价于
@@ -168,7 +184,9 @@ import {
 `globalState()` 返回 `ProjectServerState`。`McpServerView.mode` 可选；缺省表示 Eager。
 `McpAddDraft.mode` 同样可选，添加表单只在选 Lazy 时发送。`contextCost()` 返回
 `McpContextCost`，分项是 `McpServerContextCost`，并带 `ContextCostLevel`；
-`resultCost()` 返回 `McpResultCost`，分项是 `McpResultServerCost`。
+`resultCost()` 返回 `McpResultCost`，分项是 `McpResultServerCost`。两者在会话走
+代码模式时都带可选 `unsupported: "code-mode"`（见[代码模式（PTC）](#代码模式ptc)），
+此时数值字段为零。
 
 ## 对配套 UI 的语义化版本
 

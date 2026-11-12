@@ -50,6 +50,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Context cost follows the active session.** Without an explicit `sessionId`,
+  `contextCost()` / `resultCost()` now prefer the host's currently selected
+  session, then the session of the latest top-level user turn, instead of the
+  last-enumerated agent in the focused workspace. Switching sessions within one
+  workspace re-emits `projectMcp/updated`; subagent turns and compaction surface
+  replacements never take the figure over, and disposing the active session
+  clears it.
+
+- **Code mode (PTC) reports "cannot estimate" instead of a wrong number.** When
+  the session's latest request ran through the code-mode executor (the reserved
+  `run_code` tool in the request-header tool list), both metrics return
+  `unsupported: "code-mode"` with zeroed numeric fields: definitions are rendered
+  into the system prompt's `tools:sdk` text and MCP calls nest inside `run_code`,
+  so neither the tool-schema basis nor per-server result attribution applies. The
+  workspace header merges its two tags into one neutral `MCP n/a` with an
+  explanatory bubble. Detection reads only the public session request header;
+  switching back to the native executor restores the estimate.
+
 - **Lazy proxy context cost.** The visible `mcp_search`, `mcp_describe`, and
   `mcp_call` definitions now count in the MCP total once as a shared proxy group,
   not once per Lazy server. Lazy-only sessions keep the header tag; the breakdown
