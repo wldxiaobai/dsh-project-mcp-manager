@@ -2,7 +2,7 @@
 
 [← 返回 README](../README.zh.md) ｜ 相关：[配置格式](../guide/format.zh.md#加载模式) · [查询面](../guide/service.zh.md) · [MCP 管理页](../guide/settings-ui.zh.md#加载模式)
 
-**状态**：已实现，待合入（分支 `pr30-lazy`） ｜ **记录日期**：2026-11-10 ｜ **目标版本**：未定；本分支源码仍为 0.12.0，发版时按 minor 同步升版两个包
+**状态**：已实现并合入 `dev`（PR #30）；连接生命周期已按 PR #32 改为按会话口径 ｜ **记录日期**：2026-11-10 ｜ **目标版本**：未定；当前源码版本仍为 0.12.0，发版时按 minor 同步升版两个包
 **关联**：`AGENTS.md`（装载、会话隔离、写入边界）、`src/lazy/connection.ts`、`src/lazy/proxies.ts`、`src/registry.ts`（`setLoadingMode`、`syncLazyProxies`）、`packages/ui/src/client/McpPanel.tsx`
 
 > **2026-11-12 更新（PR #32）**：连接生命周期已改为**按会话**，本文「空闲五分钟关闭」的原始设计已被取代，仅作历史记录保留。现行口径：每台 Lazy 行由 `LazyConnections` 为每个会话维护独立 `LazyServer`，会话首次成功 `mcp_search` 时激活自己的连接；连接在空闲与切换工作区时保持，直到**会话结束、行卸载/替换或插件销毁**才释放；不再有五分钟空闲计时器。首次发现尚未完成时最后一个等待者取消仍会回收该未完成连接。当前权威说明见 [配置格式 · 加载模式](../guide/format.zh.md#加载模式) 与 [工作原理](../guide/how-it-works.zh.md)。
@@ -150,8 +150,9 @@ Lazy 没有启动连接，因此不执行官方的 `reconnect` 与 `failOnStartu
 
 ### 3.4 作用域与可见性
 
-- 项目层 Lazy 行只属于该项目容器；会话按 `header.cwd` 解析项目，非焦点项目会卸载，
-  其 Lazy 连接随 `unmountServer()` 关闭。
+- 项目层 Lazy 行随项目容器常驻挂载；会话按 `header.cwd` 解析项目，只激活并看到本项目的行。
+  每台行在每个会话按需创建独立 `LazyServer` 与连接，切换焦点不卸载项目，也不关闭已激活连接；
+  连接在会话结束、行卸载/替换或插件销毁时释放。
 - 全局（用户层 / profile 层）Lazy 行按宿主级一条登记，所有会话可见，除非项目行在影子
   规则里压制了同名全局服务器；压制时 `visibleLazyMounts()` 会排除该全局行。
 - 行级 `tools.allow` / `deny` 在目录返回后、搜索/描述/调用之前过滤工具；完整名
@@ -307,8 +308,9 @@ npx tsc --noEmit
 
 覆盖：
 
-- `test-lazy-lifecycle.mjs`：调用方取消只结束自己、存活调用继续；最后一个取消者关闭
-  世代；连接/失败/空闲/idle 回收、dispose 屏障、晚到 spawn 不逃逸、clientInfo 版本。
+- `test-lazy-lifecycle.mjs`：并发请求共享连接、取消只结束发起者、最后一个取消者回收
+  未完成世代；已激活连接跨空闲保留、失败后可重试、dispose 屏障、晚到 spawn 不逃逸、
+  clientInfo 版本。
 - `test-lazy-dependencies.mjs`：manager 直接精确依赖 vs 官方 `dependencies` /
   `peerDependencies` vs 安装后的嵌套实际版本；官方 `^` 范围解析到不同契约时失败。
 - `test-lazy-naming.mjs`：通过官方公开 `apply` 对拍合法名、非法字符、长名、64/65 边界、
