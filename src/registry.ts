@@ -1059,8 +1059,12 @@ export class ProjectMcpRegistry {
     // 压缩/裁剪改写结果时同样更新。变没变再按签名判一次，避免每一步都惊动页面。
     ctx.on("session/event", (_session: any, event: any) => {
       const type = event?.type;
+      // 压缩把旧结果替换成摘要时事件类型是 user/message（surfaceOp.replace）；
+      // 只按 tool/result 监听会漏掉这次结果集缩小，标签要等下一次请求才更新。
+      const replacing = event?.surfaceOp?.op === "replace";
       if (type !== "request/header" && type !== "request/context"
-        && type !== "tool/result" && type !== "compaction/summary" && type !== "compaction/prune") return;
+        && type !== "tool/result" && type !== "compaction/summary" && type !== "compaction/prune"
+        && !replacing) return;
       this.emitContextUsageIfChanged();
     }, watchOpts);
     ctx.on("tools/change", () => this.sweepRestrictions(), watchOpts);

@@ -3200,6 +3200,9 @@ await withLazyProjects({
     costAgent.session.deriveMessages = () => longerResults;
     ctxCost.emit("session/event", costAgent.session, { type: "tool/result" });
     assert.equal(resultUpdates.length, 2, "a larger retained result emits again");
+    costAgent.session.deriveMessages = () => resultMessages;
+    ctxCost.emit("session/event", costAgent.session, { type: "user/message", surfaceOp: { op: "replace", startSeq: 0, endSeq: 0 } });
+    assert.equal(resultUpdates.length, 3, "a compaction replacement that drops results emits too");
     unsubscribeResults();
 
     // 上下文窗口未知时省略该字段，而不是写 0。
