@@ -3201,7 +3201,7 @@ await withLazyProjects({
     ctxCost.emit("session/event", costAgent.session, { type: "tool/result" });
     assert.equal(resultUpdates.length, 2, "a larger retained result emits again");
     costAgent.session.deriveMessages = () => resultMessages;
-    ctxCost.emit("session/event", costAgent.session, { type: "user/message", surfaceOp: { op: "replace", startSeq: 0, endSeq: 0 } });
+    ctxCost.emit("session/event", costAgent.session, { type: "assistant/message", surfaceOp: { op: "replace", startSeq: 0, endSeq: 0 } });
     assert.equal(resultUpdates.length, 3, "a compaction replacement that drops results emits too");
     unsubscribeResults();
 
