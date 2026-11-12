@@ -235,3 +235,7 @@ Thanks to everyone who has contributed code to this project:
 - [@yangjh0127](https://github.com/yangjh0127): per-server Lazy loading mode
   and its MCP Manager switch
   ([#30](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/30)).
+- [@yangjh0127](https://github.com/yangjh0127): persistent workspace MCP
+  mounts with per-session tool, instruction, and resource isolation, plus
+  per-session Lazy activation
+  ([#32](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/32)).

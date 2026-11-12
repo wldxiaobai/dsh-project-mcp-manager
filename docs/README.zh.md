@@ -202,3 +202,6 @@ PR 请提交到 `dev` 分支。环境搭建、自查清单与提交约定见
 - [@yangjh0127](https://github.com/yangjh0127)：逐服务器的 Lazy 按需加载模式，
   以及 MCP 管理页中的加载模式切换
   （[#30](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/30)）。
+- [@yangjh0127](https://github.com/yangjh0127)：切换会话时保持工作区 MCP 常驻挂载，
+  工具、服务器说明与资源按会话隔离，Lazy 按会话独立激活
+  （[#32](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/32)）。
