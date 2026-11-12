@@ -349,4 +349,29 @@ test("workspace copy exists in both languages", () => {
   assert.equal(en.contextResultServerLine, "{name} · {count} calls · {tokens}");
 });
 
+test("code mode shows an explicit unsupported view instead of hiding or pricing zero", () => {
+  const view = contextCostView(cost({ tools: 0, estTokens: 0, servers: [], unsupported: "code-mode" }));
+  assert.notEqual(view, null, "the label stays visible so the user knows why there is no number");
+  assert.equal(view.unsupported, true);
+  assert.equal(view.estTokens, 0);
+  assert.equal(view.percent, null);
+  assert.deepEqual(view.top, []);
+  const results = resultCostView(resultCost({ calls: 0, estTokens: 0, servers: [], unsupported: "code-mode" }));
+  assert.notEqual(results, null);
+  assert.equal(results.unsupported, true);
+  assert.deepEqual(results.top, []);
+  // 没有会话时仍然不显示，unsupported 不能凭空造出一个标签。
+  assert.equal(contextCostView(cost({ sessionId: null, unsupported: "code-mode" })), null);
+  assert.equal(resultCostView(resultCost({ sessionId: null, unsupported: "code-mode" })), null);
+});
+
+test("code-mode copy exists in both languages", () => {
+  assert.equal(zh.contextCostCodeModeTag, "MCP 无法估算");
+  assert.equal(en.contextCostCodeModeTag, "MCP n/a");
+  assert.ok(zh.contextCostCodeModeHelp.length > 0);
+  assert.ok(en.contextCostCodeModeHelp.length > 0);
+  assert.ok(zh.contextCostCodeModeAria.length > 0);
+  assert.ok(en.contextCostCodeModeAria.length > 0);
+});
+
 console.log(passed + " passed");

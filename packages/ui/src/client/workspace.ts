@@ -151,6 +151,8 @@ export interface ContextCostView {
   readonly level: McpUiContextCost["level"];
   /** 定义最大的几台服务器，供说明气泡分项列出。 */
   readonly top: readonly { name: string; kind?: "lazy-proxy"; tools: number; tokens: string }[];
+  /** 代码模式（PTC）：无法估算，标签显示「无法估算」而非数值。 */
+  readonly unsupported?: boolean;
 }
 
 /** 千位以上折成一位小数的 `k`；`3.0k` 写作 `3k`。 */
@@ -166,10 +168,15 @@ export function formatTokenCount(tokens: number): string {
 
 /**
  * 抬头标签的显示模型。没有会话、或会话里没有任何 MCP 工具时不显示（返回 null），
- * 免得每一页都挂一个恒为 0 的标签。
+ * 免得每一页都挂一个恒为 0 的标签。代码模式（PTC）无法估算时返回 unsupported
+ * 视图，由面板显示「无法估算」而不是误导性的零。
  */
 export function contextCostView(cost: McpUiContextCost | undefined, topCount = 3): ContextCostView | null {
-  if (cost === undefined || cost.sessionId === null || cost.tools === 0) return null;
+  if (cost === undefined || cost.sessionId === null) return null;
+  if (cost.unsupported === "code-mode") {
+    return { tokens: "", estTokens: 0, percent: null, level: "ok", top: [], unsupported: true };
+  }
+  if (cost.tools === 0) return null;
   const percent = cost.contextWindow === undefined || cost.contextWindow <= 0
     ? null
     : Math.min(100, Math.round(cost.estTokens / cost.contextWindow * 100));
@@ -198,14 +205,21 @@ export interface ResultCostView {
   readonly percent: number | null;
   /** 结果最大的几台服务器，供说明气泡分项列出。 */
   readonly top: readonly { name: string; kind?: "lazy" | "lazy-proxy"; calls: number; tokens: string }[];
+  /** 代码模式（PTC）：无法估算，标签显示「无法估算」而非数值。 */
+  readonly unsupported?: boolean;
 }
 
 /**
  * 「结果」标签的显示模型。没有会话、或当前 surface 上没有 MCP 结果时不显示；
  * 结果已经全部被裁剪或压缩掉时也不显示，免得挂一个恒为 0 的标签。
+ * 代码模式（PTC）无法归属时返回 unsupported 视图。
  */
 export function resultCostView(cost: McpUiResultCost | undefined, topCount = 3): ResultCostView | null {
-  if (cost === undefined || cost.sessionId === null || cost.calls === 0) return null;
+  if (cost === undefined || cost.sessionId === null) return null;
+  if (cost.unsupported === "code-mode") {
+    return { tokens: "", estTokens: 0, percent: null, top: [], unsupported: true };
+  }
+  if (cost.calls === 0) return null;
   const percent = cost.contextWindow === undefined || cost.contextWindow <= 0
     ? null
     : Math.min(100, Math.round(cost.estTokens / cost.contextWindow * 100));

@@ -50,6 +50,8 @@ export interface McpUiContextCost {
   servers: { name: string; kind?: "lazy-proxy"; tools: number; estTokens: number }[];
   warnTokens: number;
   alertTokens: number;
+  /** 代码模式（PTC）：定义走系统提示词渲染，无法估算；其余数值为零。 */
+  unsupported?: "code-mode";
 }
 
 /** 会话级 MCP 工具调用结果的上下文占用估算。token 是启发式估算，不是 provider 计数。 */
@@ -63,6 +65,8 @@ export interface McpUiResultCost {
   contextWindow?: number;
   /** 按估算 token 从大到小。 */
   servers: { name: string; kind?: "lazy" | "lazy-proxy"; calls: number; estTokens: number }[];
+  /** 代码模式（PTC）：结果嵌在 run_code 内无法归属；calls/estTokens 为零。 */
+  unsupported?: "code-mode";
 }
 
 export interface McpUiOpenTarget {

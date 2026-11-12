@@ -705,6 +705,7 @@ function WorkspaceHeader({ activeProject, activeProjectKey, servers, contextCost
   const header = workspaceHeader(activeProject, activeProjectKey, servers);
   const cost = contextCostView(contextCost);
   const results = resultCostView(resultCost);
+  const codeMode = cost?.unsupported === true || results?.unsupported === true;
   return (
     <section className="workspace-head">
       <p className="workspace-label">{t("currentWorkspace")}</p>
@@ -714,11 +715,17 @@ function WorkspaceHeader({ activeProject, activeProjectKey, servers, contextCost
       </div>
       {(cost !== null || results !== null) && (
         <div className="workspace-costs">
-          {cost !== null && contextCost !== undefined && (
-            <ContextCostTag cost={cost} warnTokens={contextCost.warnTokens} alertTokens={contextCost.alertTokens} t={t} />
-          )}
-          {results !== null && (
-            <ResultCostTag cost={results} definitions={cost?.estTokens ?? 0} t={t} />
+          {codeMode ? (
+            <CodeModeCostTag t={t} />
+          ) : (
+            <>
+              {cost !== null && contextCost !== undefined && (
+                <ContextCostTag cost={cost} warnTokens={contextCost.warnTokens} alertTokens={contextCost.alertTokens} t={t} />
+              )}
+              {results !== null && (
+                <ResultCostTag cost={results} definitions={cost?.estTokens ?? 0} t={t} />
+              )}
+            </>
           )}
         </div>
       )}
@@ -827,6 +834,23 @@ function ResultCostTag({ cost, definitions, t }: {
       <Tooltip label={lines.join("\n")} side="bottom" portal maxWidth={360} openOnClick>
         <button type="button" className="workspace-cost-anchor" aria-label={t("contextResultAria", { tokens: cost.tokens })}>
           <Tag tone="neutral">{t("contextResultTag", { tokens: cost.tokens })}</Tag>
+        </button>
+      </Tooltip>
+    </p>
+  );
+}
+
+/**
+ * 代码模式（PTC）标签：定义被渲染进系统提示词、结果嵌在 run_code 内部，
+ * 两份口径都无法按工具估算。显示一个「无法估算」并在气泡里说明原因，
+ * 不给出误导性的零，也不按原生口径硬算。
+ */
+function CodeModeCostTag({ t }: { readonly t: McpPanelProps["t"] }) {
+  return (
+    <p className="workspace-cost cost-ok">
+      <Tooltip label={t("contextCostCodeModeHelp")} side="bottom" portal maxWidth={360} openOnClick>
+        <button type="button" className="workspace-cost-anchor" aria-label={t("contextCostCodeModeAria")}>
+          <Tag tone="neutral">{t("contextCostCodeModeTag")}</Tag>
         </button>
       </Tooltip>
     </p>

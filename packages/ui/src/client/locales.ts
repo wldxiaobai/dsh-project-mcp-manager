@@ -136,6 +136,9 @@ export type McpUiLocaleKey =
   | "contextResultServerLine"
   | "contextResultLazyName"
   | "contextResultAria"
+  | "contextCostCodeModeTag"
+  | "contextCostCodeModeHelp"
+  | "contextCostCodeModeAria"
   | "backToWorkspace"
   | "entriesTitle"
   | "entriesHint"
@@ -285,6 +288,9 @@ export const en: Record<McpUiLocaleKey, string> = {
   contextResultServerLine: "{name} · {count} calls · {tokens}",
   contextResultLazyName: "{name} (Lazy)",
   contextResultAria: "MCP tool results use about {tokens} tokens",
+  contextCostCodeModeTag: "MCP n/a",
+  contextCostCodeModeHelp: "This session runs in code mode (PTC): MCP tool definitions are rendered into the system prompt and MCP calls happen inside run_code, so neither can be estimated per tool. Switch to the native tool executor to see estimates.",
+  contextCostCodeModeAria: "MCP context usage cannot be estimated in code mode",
   backToWorkspace: "Back to current workspace",
   entriesTitle: "MCP management page entries",
   entriesHint: "Choose where the MCP management page appears.",
@@ -435,6 +441,9 @@ export const zh: Record<McpUiLocaleKey, string> = {
   contextResultServerLine: "{name} · {count} 次调用 · {tokens}",
   contextResultLazyName: "{name}（Lazy）",
   contextResultAria: "MCP 工具调用结果约占 {tokens} token",
+  contextCostCodeModeTag: "MCP 无法估算",
+  contextCostCodeModeHelp: "这个会话运行在代码模式（PTC）：MCP 工具定义被渲染进系统提示词，MCP 调用又嵌在 run_code 内部，两份口径都无法按工具估算。切回原生工具执行器即可看到估算。",
+  contextCostCodeModeAria: "代码模式下无法估算 MCP 上下文占用",
   backToWorkspace: "回到当前工作区",
   entriesTitle: "MCP 管理页入口",
   entriesHint: "选择在哪些位置显示 MCP 管理页。",
