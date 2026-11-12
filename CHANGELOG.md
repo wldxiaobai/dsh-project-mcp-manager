@@ -33,13 +33,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   seconds for its visible Eager servers to finish mounting, so the first model
   request sees them; sessions restored at startup skip the wait. Newly
   discovered workspace collisions preserve existing Eager connections.
+  Contributed by [@yangjh0127](https://github.com/yangjh0127) in
+  [#32](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/32).
 
 - Lazy connections activate independently on each session's first search and
-  stay open across idle periods and workspace switches.
+  stay open across idle periods and workspace switches. Contributed by
+  [@yangjh0127](https://github.com/yangjh0127) in
+  [#32](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/32).
 
 - Keep MCP servers mounted for every discovered workspace when users switch
   sessions. Each session sees its own workspace and shared MCP tools, server
-  instructions, and resources.
+  instructions, and resources. Contributed by
+  [@yangjh0127](https://github.com/yangjh0127) in
+  [#32](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/32).
 
 - Lazy cancellation now releases the final waiter's pending connection without
   cancelling other callers. Generation shutdown is serialized with reconnects,
