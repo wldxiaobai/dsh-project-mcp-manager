@@ -3,12 +3,13 @@
 // 运行：node test/test-isolation-race.mjs（依赖 lib/，先 npm run build:core）。
 // 与 test-registry.mjs 不同：本文件逐场景收集失败而非 fail-fast，便于一次跑完看全貌。
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ProjectMcpRegistry, projectMcpFile } from "../lib/registry.js";
 import { writeManagedRows } from "../lib/mcp-file.js";
 import { byCodeUnit } from "../lib/model.js";
+import { DIAG_FILE } from "../lib/dsh-paths.js";
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -139,7 +140,7 @@ function fakeAgent(id, cwd) {
 }
 
 /** 两工作区各一台 Eager（alpha/beta），两个会话已创建且 deny 落定。 */
-async function setupTwoWorkspaces(prefix) {
+async function setupTwoWorkspaces(prefix, extraProviders = {}) {
   const dir = await mkdtemp(join(tmpdir(), prefix));
   const home = join(dir, "home");
   const projA = join(dir, "a");
@@ -155,7 +156,8 @@ async function setupTwoWorkspaces(prefix) {
   ctx.schemas.push({ name: "mcp__alpha__read" }, { name: "mcp__beta__read" });
   const registry = new ProjectMcpRegistry(ctx, {
     globalNames: async () => [],
-    userLayerPaths: { mcpYml: join(home, ".dsh", "mcp.yml"), mcpJson: join(home, ".dsh", "mcp.json"), profilesDir: join(home, ".dsh", "profiles") }
+    userLayerPaths: { mcpYml: join(home, ".dsh", "mcp.yml"), mcpJson: join(home, ".dsh", "mcp.json"), profilesDir: join(home, ".dsh", "profiles") },
+    ...extraProviders
   });
   const agentA = fakeAgent("session-a", projA);
   const agentB = fakeAgent("session-b", projB);
@@ -415,6 +417,107 @@ await scenario("T5 reentrant tools/change storm keeps restrictions consistent", 
   }
 });
 
+// ── T6：fail-closed 兜底的保护通知、链外自动重试、重试用尽与手动恢复 ────────────
+// 通知必须含成因简述与恢复路径、不含原始错误文本（可能带别家工具名）；
+// 重试走链外定时器：对账链卡在慢 dispose 时也能自愈；用尽后转手动指引。
+await scenario("T6 protection notice, off-chain retry, cap and manual recovery", async () => {
+  const s = await setupTwoWorkspaces("dsh-mcp-race-t6-", { fallbackRetryDelaysMs: [10, 20, 30] });
+  let stuck;
+  try {
+    const [assemble] = s.ctx.handlers.get("system-prompt/assemble");
+    const sections = [
+      { name: "mcp:alpha", text: "A instructions" },
+      { name: "mcp:beta", text: "B instructions" }
+    ];
+    const next = async () => ({ sections });
+    const noticeOf = async (agent) => {
+      const prompt = await assemble({ sections }, { scope: agent }, next);
+      return prompt.sections.find(({ name }) => name === "mcp-protection-notice");
+    };
+
+    // 卡住对账链，制造「无 tools/change、尾部 sweep 到不了」的环境。
+    s.ctx.holdDispose = true;
+    await writeManagedRows(projectMcpFile(s.projA), [stdioRow("alpha", ["srv-alpha-v2.js"])], { createIfMissing: true });
+    stuck = s.registry.reconcileNow();
+    assert.ok(await until(() => s.ctx.disposals.includes("alpha")), "alpha dispose starts and is held");
+
+    // 首次失败 → 兜底 + 通知。
+    const victim = fakeAgent("session-v1", s.projB);
+    victim.failRestrictOnce();
+    s.ctx.agentsList.push(victim);
+    await s.created({ agent: victim, source: "startup" });
+    assert.deepEqual(victim.currentDeny(), ["mcp__alpha__read", "mcp__beta__read"], "fail-closed fallback active");
+    const notice = await noticeOf(victim);
+    assert.ok(notice !== undefined, "victim prompt carries the protection notice");
+    assert.ok(notice.text.includes("temporarily denied"), "notice states the effect");
+    assert.ok(notice.text.includes("background retry"), "notice states automatic recovery");
+    assert.ok(!notice.text.includes("simulated host restrict failure"), "notice must not leak the raw error text");
+    assert.equal(await noticeOf(s.agentA), undefined, "healthy sessions carry no notice");
+
+    // 链外重试：对账链仍卡着，兜底也应自动恢复精确可见性，通知随之消失。
+    assert.ok(await until(() => (victim.currentDeny() ?? []).length === 1, 3000), "off-chain retry recovers while the chain is stuck");
+    assert.deepEqual(victim.currentDeny(), ["mcp__alpha__read"], "precise visibility restored");
+    assert.equal(await noticeOf(victim), undefined, "notice disappears after recovery");
+
+    // 重试用尽：持续失败 → 通知转为手动指引；随后手动触发（释放对账链）恢复。
+    const stubborn = fakeAgent("session-v2", s.projB);
+    let fails = 4; // 首次 + 3 次重试都失败，第 5 次（手动触发的 sweep）成功
+    const originalRestrict = stubborn.ctx.tools.restrict;
+    stubborn.ctx.tools.restrict = (opts) => {
+      // 只让精确 deny（单工具名）失败，模拟未知名竞态；兜底的全量精确名不受影响。
+      if (opts.deny.length === 1 && fails > 0) {
+        fails -= 1;
+        throw new Error("persistent host failure");
+      }
+      return originalRestrict(opts);
+    };
+    s.ctx.agentsList.push(stubborn);
+    await s.created({ agent: stubborn, source: "startup" });
+    // 轮询通知文本直到重试用尽（10+20+30ms 退避，毫秒级到达）。
+    const deadline = Date.now() + 3000;
+    let text = "";
+    while (Date.now() < deadline) {
+      const n = await noticeOf(stubborn);
+      text = n?.text ?? "";
+      if (text.includes("exhausted")) break;
+      await delay(15);
+    }
+    assert.ok(text.includes("exhausted"), "notice switches to manual guidance after retries are exhausted");
+    assert.ok(text.includes("edit any MCP configuration file"), "manual recovery path is stated");
+    assert.deepEqual(stubborn.currentDeny(), ["mcp__alpha__read", "mcp__beta__read"], "still fail-closed after cap");
+
+    s.ctx.holdDispose = false;
+    for (const release of s.ctx.releaseDispose.splice(0)) release();
+    await stuck;
+    stuck = undefined;
+    assert.deepEqual(stubborn.currentDeny(), ["mcp__alpha__read"], "manual trigger (reconcile tail sweep) recovers");
+    assert.equal(await noticeOf(stubborn), undefined, "notice cleared after manual recovery");
+
+    // 全局诊断留有 restrict-fallback 事件（含成因与 agent）；落盘走锁，异步轮询。
+    const diagPath = join(s.home, ".dsh", DIAG_FILE);
+    const diagDeadline = Date.now() + 3000;
+    let recorded = false;
+    while (Date.now() < diagDeadline) {
+      try {
+        const doc = JSON.parse(await readFile(diagPath, "utf8"));
+        recorded = (doc.events ?? []).some((e) => e.type === "restrict-fallback" && e.agent === "session-v1");
+        if (recorded) break;
+      } catch {
+        // 尚未落盘
+      }
+      await delay(15);
+    }
+    assert.ok(recorded, "global diag records the fallback event");
+  } finally {
+    if (stuck !== undefined) {
+      s.ctx.holdDispose = false;
+      for (const release of s.ctx.releaseDispose.splice(0)) release();
+      await stuck.catch(() => {});
+    }
+    await teardown(s);
+  }
+});
+
 await delay(200);
 if (unhandled.length > 0) {
   failures.push({ name: "unhandledRejection", error: unhandled[0] });
@@ -428,5 +531,5 @@ if (failures.length > 0) {
   }
   process.exitCode = 1;
 } else {
-  console.log("\nALL ISOLATION RACE TESTS PASSED (T1 restrict-failure window, T2 late registration, T3 fail-closed gates, T4 name swap, T5 reentrancy)");
+  console.log("\nALL ISOLATION RACE TESTS PASSED (T1 restrict-failure window, T2 late registration, T3 fail-closed gates, T4 name swap, T5 reentrancy, T6 protection notice and retry)");
 }

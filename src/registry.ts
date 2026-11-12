@@ -198,6 +198,20 @@ function filterMcpPrompt<T extends McpPromptPresentation>(prompt: T, hidden: Set
   return { ...prompt, sections };
 }
 
+/** fail-closed 兜底期间的模型告知：成因简述 + 恢复路径。不含原始错误文本，避免泄漏别的工作区的工具名。 */
+function protectionNoticeText(attempts: number, retryLimit: number): string {
+  const recovery = attempts <= retryLimit
+    ? "A background retry restores precise visibility automatically within seconds."
+    : "Automatic retries are exhausted. Ask the user to edit any MCP configuration file or open a new session to trigger a refresh.";
+  return [
+    "## MCP protection state",
+    "",
+    "Applying this session's MCP tool-visibility filter failed (the host rejected the restriction, e.g. a tool-name registration race), so all mcp__* tools are temporarily denied for this session to prevent cross-workspace access. Lazy proxies (mcp_search / mcp_describe / mcp_call), if present, keep their own per-session checks.",
+    recovery,
+    "Do not call mcp__* tools while this notice is present, and tell the user about this state if MCP tools are needed."
+  ].join("\n");
+}
+
 /** 一个已装载（或装载中）的 MCP 服务器的运行时状态。 */
 export interface ProjectServerState {
   /** 项目根；全局层行为空串（scope="global"）。 */
@@ -252,6 +266,8 @@ export interface ProjectMcpRegistryOptions {
   healthRemountBackoffMs?: number;
   /** 健康重挂次数上限；缺省 `HEALTH_REMOUNT_LIMIT`。 */
   healthRemountLimit?: number;
+  /** fail-closed 兜底的链外重试退避（测试注入）；缺省 `FALLBACK_RETRY_DELAYS_MS`。 */
+  fallbackRetryDelaysMs?: number[];
   /** 配置文件指纹（测试注入）；缺省 `fs.stat`。返回 `null` 视为缺失。 */
   statFile?: (path: string) => Promise<{ mtimeMs: number; size: number } | null>;
   /** 工具预算告警阈值（测试注入）；缺省读 `DSH_MCP_TOOL_BUDGET_WARN`。 */
@@ -473,6 +489,8 @@ export const GLOBAL_SCOPE_KEY = "\u0000global";
 export const HEALTH_REMOUNT_LIMIT = 3;
 /** 0 工具去抖与两次重挂之间的缺省退避（毫秒）。测试可经 options 注入 0。 */
 export const HEALTH_REMOUNT_BACKOFF_MS = 5_000;
+/** fail-closed 兜底的链外重试退避；用尽后保留保护通知，等手动触发恢复。 */
+export const FALLBACK_RETRY_DELAYS_MS = [500, 2_000, 5_000];
 
 /** 服务身份键。口径在 `serviceIdentityKeyOf`，设置页用同一函数，避免异名同命令只在装载器折叠。 */
 function serviceIdentityKey(item: SourcedRow): string | undefined {
@@ -859,6 +877,8 @@ export class ProjectMcpRegistry {
   private applyingRestrictions = false;
   /** agent id → 当前 restrict 的 disposer。 */
   private readonly restrictions = new Map<string, () => void>();
+  /** 处于 fail-closed 兜底的会话：agent id → 成因与链外重试状态。成功 sweep 或释放 agent 时清除。 */
+  private readonly restrictionFallbacks = new Map<string, { cause: string; attempts: number; timer?: ReturnType<typeof setTimeout> }>();
 
   private watcher?: ReturnType<typeof chokidar.watch>;
   private watchedFiles: string[] = [];
@@ -1037,7 +1057,12 @@ export class ProjectMcpRegistry {
       next: () => Promise<McpPromptPresentation>
     ) => {
       const hidden = this.hiddenServersFor(this.projectOf(context.scope));
-      return filterMcpPrompt(await next(), hidden);
+      const filtered = filterMcpPrompt(await next(), hidden);
+      const scopeId = context.scope?.id;
+      const fallback = scopeId === undefined ? undefined : this.restrictionFallbacks.get(scopeId);
+      if (fallback === undefined) return filtered;
+      // 兜底期间告知模型成因与恢复路径；不含原始错误文本（可能带别的工作区的工具名）。
+      return { ...filtered, sections: [...filtered.sections, { name: "mcp-protection-notice", text: protectionNoticeText(fallback.attempts, this.fallbackRetryDelays().length) }] };
     }, watchOpts);
     ctx.on("tools/pre-execute", (
       exec: { name: string; arguments?: { server?: string }; agent?: { id?: string } },
@@ -1064,6 +1089,7 @@ export class ProjectMcpRegistry {
 
   private disposeRuntime(): void {
     this.disposed = true;
+    for (const id of [...this.restrictionFallbacks.keys()]) this.clearRestrictionFallback(id);
     if (this.timer !== undefined) clearTimeout(this.timer);
     if (this.liveWatchTimer !== undefined) clearInterval(this.liveWatchTimer);
     if (this.watcher !== undefined) void this.watcher.close().catch(() => {});
@@ -2697,6 +2723,7 @@ export class ProjectMcpRegistry {
       } catch {
         // agent 层已销毁
       }
+      this.clearRestrictionFallback(agent.id);
       return;
     }
     try {
@@ -2712,19 +2739,32 @@ export class ProjectMcpRegistry {
         }
       }
       this.restrictions.set(agent.id, disposer);
+      this.clearRestrictionFallback(agent.id);
     } catch (error) {
       // 未知名（装载未 settle）竞态：保留上一份限制，下一次 sweep 会补上。
       this.ctx.logger.warn(`会话 ${agent.id} 的项目 MCP 过滤暂未应用：${error instanceof Error ? error.message : String(error)}`);
-      if (previous === undefined) {
-        // 新会话没有「上一份」可保留：fail-open 会让它在下次成功 sweep 前看见全部
-        // 工作区的 MCP（对账链卡在慢 dispose 且无 tools/change 时窗口可任意长）。
-        // 改为 fail-closed：临时 deny 全部已注册 MCP 工具（精确名，不会再触发
-        // unknown-name），下一次成功 sweep 恢复精确可见性。兜底自身同步发的
-        // tools/change 由 applyingRestrictions 守卫挡住，不会递归。
+      // 新会话没有「上一份」可保留：fail-open 会让它在下次成功 sweep 前看见全部
+      // 工作区的 MCP（对账链卡在慢 dispose 且无 tools/change 时窗口可任意长）。
+      // 改为 fail-closed：临时 deny 全部已注册 MCP 工具（精确名，不会再触发
+      // unknown-name），下一次成功 sweep 恢复精确可见性。已处于兜底的会话重试
+      // 再失败时同样走这里，续上退避链。兜底自身同步发的 tools/change 由
+      // applyingRestrictions 守卫挡住，不会递归。
+      if (previous === undefined || this.restrictionFallbacks.has(agent.id)) {
         try {
           const fallbackTools = typeof agent.ctx.get === "function" ? agent.ctx.get("tools") : agent.ctx.tools;
           const fallback = this.registeredToolIds().filter((id) => id.startsWith("mcp__"));
-          if (fallback.length > 0) this.restrictions.set(agent.id, fallbackTools.restrict({ deny: fallback }));
+          if (fallback.length > 0) {
+            const disposer = fallbackTools.restrict({ deny: fallback });
+            if (previous !== undefined) {
+              try {
+                previous();
+              } catch {
+                // agent 层已销毁
+              }
+            }
+            this.restrictions.set(agent.id, disposer);
+            this.enterRestrictionFallback(agent, error);
+          }
         } catch {
           // 兜底也失败只能等下一次 sweep；上面的 warn 已留痕。
         }
@@ -2732,8 +2772,45 @@ export class ProjectMcpRegistry {
     }
   }
 
+  private fallbackRetryDelays(): number[] {
+    return this.providers.fallbackRetryDelaysMs ?? FALLBACK_RETRY_DELAYS_MS;
+  }
+
+  /** 记录兜底状态：升级日志、写全局诊断、链外退避重试。对账链可能正卡在慢 dispose，重试不能排队等它。 */
+  private enterRestrictionFallback(agent: any, error: unknown): void {
+    const id = agent.id;
+    const cause = error instanceof Error ? error.message : String(error);
+    const existing = this.restrictionFallbacks.get(id);
+    if (existing?.timer !== undefined) clearTimeout(existing.timer);
+    const attempts = (existing?.attempts ?? 0) + 1;
+    const entry: { cause: string; attempts: number; timer?: ReturnType<typeof setTimeout> } = { cause, attempts };
+    this.restrictionFallbacks.set(id, entry);
+    this.ctx.logger.warn(`会话 ${id} 的 MCP 工具已临时全部禁用（fail-closed）：${cause}。将自动重试恢复；修改 MCP 配置或新开会话也可触发恢复。`);
+    void this.writeGlobalDiag({ type: "restrict-fallback", agent: id, cause, attempts }).catch(() => {});
+    const delays = this.fallbackRetryDelays();
+    if (attempts > delays.length) return; // 重试用尽：保留保护通知，等手动触发
+    entry.timer = setTimeout(() => {
+      entry.timer = undefined;
+      if (this.disposed || !this.restrictionFallbacks.has(id)) return;
+      if (!this.liveAgents().includes(agent)) {
+        this.clearRestrictionFallback(id);
+        return;
+      }
+      this.sweepRestrictions([agent]);
+    }, delays[attempts - 1]);
+    entry.timer.unref?.();
+  }
+
+  private clearRestrictionFallback(id: string): void {
+    const entry = this.restrictionFallbacks.get(id);
+    if (entry === undefined) return;
+    if (entry.timer !== undefined) clearTimeout(entry.timer);
+    this.restrictionFallbacks.delete(id);
+  }
+
   private releaseAgent(agent: any) {
     this.agentProjects.delete(agent.id);
+    this.clearRestrictionFallback(agent.id);
     const previous = this.restrictions.get(agent.id);
     if (previous !== undefined) {
       this.restrictions.delete(agent.id);
