@@ -734,6 +734,27 @@ function WorkspaceHeader({ activeProject, activeProjectKey, servers, contextCost
   );
 }
 
+/** 阈值提醒行：达到提醒/警告阈值时才追加。 */
+function costThresholdLines(level: ContextCostView["level"], warnTokens: number, alertTokens: number, t: McpPanelProps["t"]): string[] {
+  if (level === "alert") return [t("contextCostAlert", { alert: formatTokenCount(alertTokens) })];
+  if (level === "warn") return [t("contextCostWarn", { warn: formatTokenCount(warnTokens) })];
+  return [];
+}
+
+/** 定义标签的色调：警告阈值用 danger，提醒阈值用 warning，否则 neutral。 */
+function costTagTone(level: ContextCostView["level"]): "danger" | "warning" | "neutral" {
+  if (level === "alert") return "danger";
+  if (level === "warn") return "warning";
+  return "neutral";
+}
+
+/** 结果分项的显示名：共享代理组、Lazy 服务器或普通服务器。 */
+function resultServerName(server: ResultCostView["top"][number], t: McpPanelProps["t"]): string {
+  if (server.kind === "lazy-proxy") return t("contextCostLazyProxies");
+  if (server.kind === "lazy") return t("contextResultLazyName", { name: server.name });
+  return server.name;
+}
+
 /**
  * 上下文占用标签。文字只留一个短数值，阈值细节收进点击展开的气泡：
  * 超过提醒阈值用 warning 色，超过警告阈值换 danger 色并加警告图标（不只靠颜色区分）。
@@ -754,9 +775,7 @@ function ContextCostTag({ cost, warnTokens, alertTokens, t }: {
       count: server.tools,
       tokens: server.tokens
     })),
-    ...(cost.level === "alert"
-      ? [t("contextCostAlert", { alert: formatTokenCount(alertTokens) })]
-      : cost.level === "warn" ? [t("contextCostWarn", { warn: formatTokenCount(warnTokens) })] : [])
+    ...costThresholdLines(cost.level, warnTokens, alertTokens, t)
   ];
   const label = cost.level === "alert"
     ? t("contextCostAriaAlert", { tokens: cost.tokens, alert: formatTokenCount(alertTokens) })
@@ -765,7 +784,7 @@ function ContextCostTag({ cost, warnTokens, alertTokens, t }: {
     <p className={`workspace-cost cost-${cost.level}`}>
       <Tooltip label={lines.join("\n")} side="bottom" portal maxWidth={360} openOnClick>
         <button type="button" className="workspace-cost-anchor" aria-label={label}>
-          <Tag tone={cost.level === "alert" ? "danger" : cost.level === "warn" ? "warning" : "neutral"}>
+          <Tag tone={costTagTone(cost.level)}>
             {cost.level === "alert" && <IconWarningOutlineRegular size={12} />}
             {t("contextCostTag", { tokens: cost.tokens })}
           </Tag>
@@ -798,9 +817,7 @@ function ResultCostTag({ cost, definitions, t }: {
         })]
       : []),
     ...cost.top.map((server) => t("contextResultServerLine", {
-      name: server.kind === "lazy-proxy"
-        ? t("contextCostLazyProxies")
-        : server.kind === "lazy" ? t("contextResultLazyName", { name: server.name }) : server.name,
+      name: resultServerName(server, t),
       count: server.calls,
       tokens: server.tokens
     }))
