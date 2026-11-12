@@ -1,4 +1,4 @@
-// 隔离时序缝隙探测（审查报告 R32-01 后续，T1–T5）。
+// 隔离时序缝隙探测（审查报告 R32-01 后续，T1–T6）。
 // 目标：在 deny + 提示词过滤 + 资源门 的三层防御下，尝试让会话读到不属于本工作区的 MCP。
 // 运行：node test/test-isolation-race.mjs（依赖 lib/，先 npm run build:core）。
 // 与 test-registry.mjs 不同：本文件逐场景收集失败而非 fail-fast，便于一次跑完看全貌。
