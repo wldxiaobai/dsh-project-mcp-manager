@@ -45,7 +45,7 @@ try {
   ctx.schemas.push({ name: "mcp__" + mounted.serverName + "__echo" });
   await registry.reconcileNow();
   assert.equal(agentA.denies.length, 0, "session in the owning project is never restricted");
-  assert.deepEqual(agentB.denies[agentB.denies.length - 1], ["mcp__" + mounted.serverName + "__echo"]);
+  assert.deepEqual(agentB.denies.at(-1), ["mcp__" + mounted.serverName + "__echo"]);
   pass("registry denies other projects' servers per session and keeps the session's own");
 
   // 3. 快照：项目分区含一行，scope 标注工作区

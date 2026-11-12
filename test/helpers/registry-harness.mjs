@@ -38,31 +38,39 @@ export async function readDiagSummary(dshHome, projectRoot) {
   return parseDiagDocument(JSON.parse(await readFile(diagFile(dshHome, projectRoot), "utf8"))).summary;
 }
 
+/** 串行轮询直到谓词成立或超时；每轮检查依赖上一轮状态，不能并行。 */
+export async function waitUntil(predicate, { timeoutMs = 5000, intervalMs = 100 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  const poll = async () => {
+    if (Date.now() >= deadline) return false;
+    if (await predicate()) return true;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, intervalMs));
+    return poll();
+  };
+  return poll();
+}
+
 /** 轮询 diag 直到谓词成立：事件驱动用例里对账链可能仍在落盘（不能用固定 sleep）。 */
 export async function waitForDiag(dshHome, projectRoot, predicate, timeoutMs = 5000) {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
+  return waitUntil(async () => {
     try {
-      if (predicate(await readDiag(dshHome, projectRoot))) return true;
+      return predicate(await readDiag(dshHome, projectRoot));
     } catch {
       // diag 尚不存在或正被半读到截断 JSON：视为「暂不满足」，继续轮询。
+      return false;
     }
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 150));
-  }
-  return false;
+  }, { timeoutMs, intervalMs: 150 });
 }
 
 /** Windows 上 chokidar 关闭后目录句柄可能仍短暂占用：rm 带退避重试。 */
-export async function rmRetry(path) {
-  for (let attempt = 0; attempt < 20; attempt++) {
-    try {
-      await rm(path, { recursive: true, force: true });
-      return;
-    } catch {
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
-    }
+export async function rmRetry(path, attempt = 0) {
+  try {
+    await rm(path, { recursive: true, force: true });
+  } catch (error) {
+    if (attempt >= 19) throw error;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+    return rmRetry(path, attempt + 1);
   }
-  await rm(path, { recursive: true, force: true });
 }
 
 /** 读某个 Lazy fixture 的 trace；每个标签一份，避免多个子进程并发写同一文件。 */
@@ -78,12 +86,7 @@ export async function readTraceLines(path) {
  * 每次检查与退避有先后依赖，不能预先并发启动各轮检查。
  */
 export async function waitForTrace(path, predicate, timeoutMs = 5000) {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    if (predicate(await readTraceLines(path))) return true;
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
-  }
-  return false;
+  return waitUntil(async () => predicate(await readTraceLines(path)), { timeoutMs, intervalMs: 100 });
 }
 
 export const stdioRow = (name, command = "node") => ({
@@ -141,27 +144,22 @@ export function fakeCtx() {
     holdDispose: false,
     releaseDispose: [],
     plugin(_plugin, config) {
-      let resolved = false;
-      const fiber = {
-        config,
-        dispose: async () => {
-          disposals.push(config.serverName);
-          if (ctx.holdDispose) {
-            await new Promise((resolveDispose) => {
-              ctx.releaseDispose.push(resolveDispose);
-            });
-          }
-        },
-        then(onFulfilled) {
-          if (!resolved) {
-            resolved = true;
-            if (ctx.holdFibers) ctx.held.push(() => onFulfilled?.());
-            else queueMicrotask(() => onFulfilled?.());
-          }
-          return Promise.resolve();
+      let release;
+      const fiber = new Promise((resolve) => {
+        release = resolve;
+      });
+      fiber.config = config;
+      fiber.dispose = async () => {
+        disposals.push(config.serverName);
+        if (ctx.holdDispose) {
+          await new Promise((resolveDispose) => {
+            ctx.releaseDispose.push(resolveDispose);
+          });
         }
       };
       mounts.push(config);
+      if (ctx.holdFibers) ctx.held.push(release);
+      else queueMicrotask(release);
       return fiber;
     },
     get agents() {

@@ -109,13 +109,11 @@ mcpServers:
   pass("command plus url without a transport is rejected");
 }
 
-{
-  assert.equal(parsePastedConfig("   ").ok, false);
-  assert.equal(parsePastedConfig("   ").reason, "empty");
-  assert.equal(parsePastedConfig("not a server").reason, "none");
-  assert.equal(parsePastedConfig("{").reason, "parse");
-  pass("empty, plain text, and broken json each get their own reason");
-}
+assert.equal(parsePastedConfig("   ").ok, false);
+assert.equal(parsePastedConfig("   ").reason, "empty");
+assert.equal(parsePastedConfig("not a server").reason, "none");
+assert.equal(parsePastedConfig("{").reason, "parse");
+pass("empty, plain text, and broken json each get their own reason");
 
 {
   const parsed = parsePastedConfig(`{ "httpUrl": "https://mcp.example/mcp", "headers": { "Authorization": "Bearer tok" } }`);

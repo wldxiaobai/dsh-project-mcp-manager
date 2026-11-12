@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -9,7 +8,7 @@ import { bindProjectMcpService, PROJECT_MCP_SERVICE } from "../lib/service.js";
 import { apply, PROJECT_MCP_UPDATED_EVENT } from "../lib/index.js";
 import { extractManagedRows, writeManagedRows } from "../lib/mcp-file.js";
 import { byCodeUnit } from "../lib/model.js";
-import { createReporter, fakeAgent, fakeCtx, pathExists, rmRetry, stdioRow } from "./helpers/registry-harness.mjs";
+import { createReporter, fakeAgent, fakeCtx, pathExists, rmRetry, stdioRow, waitUntil } from "./helpers/registry-harness.mjs";
 
 const { pass, report } = createReporter("PROJECT REGISTRY SERVICE");
 {
@@ -831,10 +830,7 @@ const { pass, report } = createReporter("PROJECT REGISTRY SERVICE");
     await registryChain.reconcileNow();
     ctxChain.holdDispose = true;
     const remounting = registryChain.reconcileNow();
-    const started = Date.now();
-    while (ctxChain.disposals.length === 0 && Date.now() - started < 3000) {
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
-    }
+    await waitUntil(() => ctxChain.disposals.length > 0, { timeoutMs: 3000, intervalMs: 20 });
     assert.equal(ctxChain.disposals.length, 1, "health remount disposes the dead fiber");
     const mountsAtHold = ctxChain.mounts.length;
     ctxChain.schemas.push({ name: "mcp__" + effective + "__ping" });

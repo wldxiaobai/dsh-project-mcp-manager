@@ -40,8 +40,10 @@ await Promise.all([["en", "README.md"], ["zh", "docs/README.zh.md"]].map(async (
 // Build the loader first: UI consumes its declarations and root-level npm
 // lifecycle scripts must not rely on topological order in a cyclic workspace.
 assert.equal(root.scripts.build, "npm run build:core && npm --prefix packages/ui run build");
-for (const file of ["../lib/index.js", "../lib/index.d.ts", "../packages/ui/lib/index.js", "../packages/ui/lib/index.d.ts", "../packages/ui/lib/client.js"]) {
-  assert.ok((await readFile(new URL(file, import.meta.url), "utf8")).length > 0, `${file} must be built before packaging`);
+const builtFiles = ["../lib/index.js", "../lib/index.d.ts", "../packages/ui/lib/index.js", "../packages/ui/lib/index.d.ts", "../packages/ui/lib/client.js"];
+const builtSources = await Promise.all(builtFiles.map((file) => readFile(new URL(file, import.meta.url), "utf8")));
+for (const [index, source] of builtSources.entries()) {
+  assert.ok(source.length > 0, `${builtFiles[index]} must be built before packaging`);
 }
 // Slot registrations are exercised behaviourally by test-ui-client-wiring.mjs
 // against the built browser module; only package metadata belongs here.
@@ -77,8 +79,11 @@ const require = createRequire(import.meta.url);
 const official = require("@deepseek-ai/dsh-mcp-client/package.json");
 const fromOfficial = createRequire(require.resolve("@deepseek-ai/dsh-mcp-client"));
 const lazyDependencies = ["@modelcontextprotocol/client", "@deepseek-ai/dsh-subprocess"];
-for (const name of lazyDependencies) {
+const lazyMetadata = await Promise.all(lazyDependencies.map(async (name) => {
   const [direct, nested] = await Promise.all([installedMetadata(require, name), installedMetadata(fromOfficial, name)]);
+  return { name, direct, nested };
+}));
+for (const { name, direct, nested } of lazyMetadata) {
   const declared = official.dependencies?.[name] ?? official.peerDependencies?.[name];
   assert.equal(root.dependencies[name], direct.version, `${name} is an explicit exact runtime dependency`);
   assert.equal(declared, direct.version, `${name} must match the official client's declared contract; review upgrades together`);

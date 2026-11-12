@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
-import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProjectMcpRegistry, parseDiagDocument, projectMcpFile } from "../lib/registry.js";
 import { writeManagedRows } from "../lib/mcp-file.js";
-import { createReporter, fakeAgent, fakeCtx, readDiag, readDiagSummary, rmRetry, stdioRow } from "./helpers/registry-harness.mjs";
+import { createReporter, fakeAgent, fakeCtx, readDiag, readDiagSummary, rmRetry, stdioRow, waitUntil } from "./helpers/registry-harness.mjs";
 
 const { pass, report } = createReporter("PROJECT REGISTRY CORE");
 {
@@ -29,22 +28,20 @@ const { pass, report } = createReporter("PROJECT REGISTRY CORE");
       countW = next;
     }
     await writeFile(join(homeW, "dsh-mcp.json"), JSON.stringify({ version: 1, servers: [] }), "utf8");
-    const startedW = Date.now();
     let kicked = false;
-    while (Date.now() - startedW < 5000) {
-      if (registryW.debugReconcileCount > countW) {
-        try {
-          const events = parseDiagDocument(JSON.parse(await readFile(join(homeW, ".mcp-diag.json"), "utf8"))).events;
-          if (events.some((row) => row.kind === "foreign-format" && String(row.path).includes("dsh-mcp.json"))) {
-            kicked = true;
-            break;
-          }
-        } catch {
-          // 诊断尚未落盘
+    await waitUntil(async () => {
+      if (registryW.debugReconcileCount <= countW) return false;
+      try {
+        const events = parseDiagDocument(JSON.parse(await readFile(join(homeW, ".mcp-diag.json"), "utf8"))).events;
+        if (events.some((row) => row.kind === "foreign-format" && String(row.path).includes("dsh-mcp.json"))) {
+          kicked = true;
+          return true;
         }
+      } catch {
+        // 诊断尚未落盘
       }
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, 150));
-    }
+      return false;
+    }, { timeoutMs: 5000, intervalMs: 150 });
     assert.ok(kicked, "creating dsh-mcp.json must kick reconcile and diagnose the foreign format");
     assert.equal(ctxW.mounts.length, 0, "foreign dsh-mcp.json is never mounted");
     for (const disposer of ctxW.disposers) {

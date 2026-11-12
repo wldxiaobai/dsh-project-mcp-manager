@@ -3,8 +3,8 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProjectMcpRegistry, projectMcpFile } from "../lib/registry.js";
-import { extractManagedRows, writeManagedRows } from "../lib/mcp-file.js";
-import { createReporter, fakeAgent, fakeCtx, pathExists, readTraceLines, rmRetry, stdioRow, waitForTrace } from "./helpers/registry-harness.mjs";
+import { writeManagedRows } from "../lib/mcp-file.js";
+import { createReporter, fakeAgent, fakeCtx, pathExists, readTraceLines, rmRetry, waitForTrace } from "./helpers/registry-harness.mjs";
 
 const { pass, report } = createReporter("PROJECT REGISTRY LAZY");
 // Real stdio protocol with the same fake DSH registry used by the Eager tests.
