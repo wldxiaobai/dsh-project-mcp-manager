@@ -69,8 +69,8 @@ MCP 工具」。分项按各自那一组单独计价，与总数可能差几个 
 不必自己再实现阈值。
 
 `request/header` 或 `request/context` 事件之后占用签名变化时，registry 会再发一次
-`projectMcp/updated`；`tool/result`、`compaction/summary` 或 `compaction/prune`
-改变仍保留的结果集时同样会发。页面在该事件上重读即可拿到新数字，不需要轮询。
+`projectMcp/updated`；`tool/result` 或压缩的 surface replace 改变仍保留的结果集时
+同样会发。页面在该事件上重读即可拿到新数字，不需要轮询。
 
 ### 工具调用结果占用
 

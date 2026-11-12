@@ -80,9 +80,9 @@ result carries `level` (`ok` below `warnTokens`, `warn` from 5,000, `alert` from
 10,000) so a consumer does not re-implement the thresholds.
 
 The registry re-emits `projectMcp/updated` when the occupancy signature changes
-after a `request/header` or `request/context` event, or when a `tool/result`,
-`compaction/summary`, or `compaction/prune` event changes the retained result
-set. A page that re-reads on that event sees a fresh number without polling.
+after a `request/header` or `request/context` event, after a `tool/result` event,
+or after a surface replacement (compaction) changes the retained result set. A
+page that re-reads on that event sees a fresh number without polling.
 
 ### Tool-result cost
 
