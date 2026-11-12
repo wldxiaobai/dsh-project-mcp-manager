@@ -6,7 +6,8 @@ import { matchToolGlob, toolFilterFromConfig } from "../model.js";
 import type { ProjectServerState } from "../registry.js";
 import type { LazyConnections, LazyServer, LazyTool } from "./connection.js";
 
-export const LAZY_TOOL_NAMES = ["mcp_search", "mcp_describe", "mcp_call"] as const;
+import { LAZY_TOOL_NAMES } from "./tool-names.js";
+export { LAZY_TOOL_NAMES, isLazyToolName } from "./tool-names.js";
 
 export type LazyMount = ProjectServerState & { lazy: LazyConnections };
 type VisibleMounts = () => LazyMount[];

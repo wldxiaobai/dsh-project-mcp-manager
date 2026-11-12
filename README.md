@@ -62,6 +62,29 @@ instructions, or host policies targeting individual registered tools.
 Lazy handles MCP tool calls, with DSH's MCP result adapter for text and
 images. A failed connection can be retried on the next request.
 
+## Context cost in the header
+
+For the focused session, the MCP Manager header shows two estimates:
+
+- **MCP** — the MCP tool definitions the model can see (schemas and
+  descriptions), grouped by server; visible `mcp_search`, `mcp_describe`, and
+  `mcp_call` definitions count once as shared Lazy overhead.
+- **Results** — the MCP tool results still retained on the current surface,
+  including every result returned through Lazy `mcp_search`, `mcp_describe`,
+  and `mcp_call`. Results removed by the tool-result pruner or by compaction
+  no longer count.
+
+Both use the host's four-characters-per-token heuristic: they are estimates,
+not provider counts, and exclude server instructions and conversation history.
+A tag is absent when there is no session or nothing to price; clicking it opens
+the per-server breakdown and the context-window share. The **Results** bubble
+also shows definitions + results combined. The figure refreshes after request
+headers, tool results, and compaction replacements without polling. In code mode
+(PTC) the two tags merge into one `MCP n/a`, explicitly marked as not estimable
+on this basis rather than shown as zero. Details:
+[MCP Manager page](docs/guide/settings-ui.md#mcp-context-cost) and
+[query surface](docs/guide/service.md#tool-result-cost).
+
 ## Installation (mount into a profile)
 
 Install only `dsh-project-mcp-manager`; it brings the core loader and the MCP
@@ -207,8 +230,8 @@ Feature documentation lives in `docs/`, English and Chinese side by side:
 - [Configuration format](docs/guide/format.md) — native YAML managed
   block, JSON dialect, divergences from the cordis dialect.
 - [MCP Manager page](docs/guide/settings-ui.md) — use the bundled UI, read
-  the server list, add servers (with fill from clipboard), switch, remove, and
-  manage tools.
+  the server list, add servers (with fill from clipboard), switch, remove,
+  manage tools, and read the MCP / Results context-cost tags.
 - [Configuration sources and layers](docs/guide/layers.md) — the
   seven-layer source model, shadow priority, global vs project mounting, and the
   read-only legacy Claude Code layer.
@@ -216,10 +239,10 @@ Feature documentation lives in `docs/`, English and Chinese side by side:
   its diagnostics.
 - [CLI `dsh-mcp`](docs/guide/cli.md) — scopes, write formats, ownership contract.
 - [How it works](docs/guide/how-it-works.md) — project discovery, mounting,
-  hot reload, effective names, and session visibility.
-- [Query surface](docs/guide/service.md) — `ctx.projectMcp`, the
-  `projectMcp/updated` event, exported view types, and the semver contract for
-  the companion UI.
+  hot reload, effective names, session visibility, and context cost.
+- [Query surface](docs/guide/service.md) — `ctx.projectMcp`, `contextCost` /
+  `resultCost`, the `projectMcp/updated` event, exported view types, and the
+  semver contract for the companion UI.
 
 Design, release, code review, and testing records: [records](docs/records.md).
 

@@ -1,6 +1,6 @@
 /** MCP settings tab: layers, activation, delete, and per-tool switches. */
 
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useId, useRef, useState, type CSSProperties } from "react";
 import { Button, IconChevronDownOutlineRegular, IconFolderCloseRegular, IconInfoOutlineRegular, IconPlusOutlineRegular, IconTrashOutlineRegular, IconWarningOutlineRegular, Input, Menu, Modal, SegmentedControl, StateDot, Switch, Tag, Tooltip } from "@deepseek-ai/dsh-client-ui-primitives";
 import {
   MCP_UI_ADD_PATH,
@@ -10,7 +10,9 @@ import {
   MCP_UI_STATE_PATH,
   MCP_UI_TOOL_PATH,
   MCP_UI_TOOLS_PATH,
+  type McpUiContextCost,
   type McpUiResult,
+  type McpUiResultCost,
   type McpUiServer,
   type McpUiState,
   type McpUiTool,
@@ -21,7 +23,7 @@ import { collapseServers, partitionShadowed, type LogicalServer } from "./collap
 import { displayHomePath, profileNameFromFile, serverActionsOpen } from "./display.ts";
 import { parsePastedConfig, type PasteConfigFailure } from "./paste-config.ts";
 import { addPathForTarget, badgeTone, confirmationDisplay, emptyDraft, partitionRows, profileEnd, validateAddDraft, type AddDraft, type AddScope } from "./panel-helpers.ts";
-import { orderWorkspaceGroups, workspaceGroupMarker, workspaceHeader, type WorkspaceGroupMarker } from "./workspace.ts";
+import { contextCostView, formatTokenCount, orderWorkspaceGroups, resultCostView, workspaceGroupMarker, workspaceHeader, type ContextCostView, type ResultCostView, type WorkspaceGroupMarker } from "./workspace.ts";
 import { PANEL_CSS } from "./style.ts";
 
 export interface McpPanelProps {
@@ -408,6 +410,8 @@ export function McpPanel({ t }: McpPanelProps) {
   const servers = state?.servers ?? [];
   const activeProject = state?.activeProject ?? null;
   const activeProjectKey = state?.activeProjectKey ?? null;
+  const contextCost = state?.contextCost;
+  const resultCost = state?.resultCost;
   const { projectRows, userRows, profileBuckets } = partitionRows(servers);
   const projectGroups: DisplayGroup[] = orderWorkspaceGroups(groupProjectRows(projectRows), activeProjectKey).map(([key, group]) => {
     const marker = workspaceGroupMarker(key, activeProjectKey);
@@ -434,7 +438,7 @@ export function McpPanel({ t }: McpPanelProps) {
 
   return (
     <div className="dsh-mcp-ui">
-      <WorkspaceHeader activeProject={activeProject} activeProjectKey={activeProjectKey} servers={servers} t={t} />
+      <WorkspaceHeader activeProject={activeProject} activeProjectKey={activeProjectKey} servers={servers} contextCost={contextCost} resultCost={resultCost} t={t} />
       <div className="intro">
         <p>{t("intro")}</p>
         <Tooltip label={t("introHelp")} side="right" portal maxWidth={420} openOnClick>
@@ -645,7 +649,8 @@ function LoadingMode({ value, disabled, t, onChange }: {
   readonly t: McpPanelProps["t"];
   readonly onChange: (mode: "eager" | "lazy") => void;
 }) {
-  return <SegmentedControl label={t("loadingMode")} value={value ?? "eager"} disabled={disabled} onChange={onChange} options={[
+  const id = useId();
+  return <SegmentedControl id={id} label={t("loadingMode")} value={value ?? "eager"} disabled={disabled} onChange={onChange} options={[
     { value: "eager", label: t("loadingModeEager") },
     { value: "lazy", label: t("loadingModeLazy") }
   ]} />;
@@ -689,13 +694,18 @@ function ServerGroups({ title, groups, busy, t, homeDir, writeTargets, onToggle,
 }
 
 /** 「当前工作区」抬头：名称、路径、计数与范围说明。三个入口都渲染同一个面板，因此都带上这一块。 */
-function WorkspaceHeader({ activeProject, activeProjectKey, servers, t }: {
+function WorkspaceHeader({ activeProject, activeProjectKey, servers, contextCost, resultCost, t }: {
   readonly activeProject: string | null;
   readonly activeProjectKey: string | null;
   readonly servers: McpUiServer[];
+  readonly contextCost: McpUiContextCost | undefined;
+  readonly resultCost: McpUiResultCost | undefined;
   readonly t: McpPanelProps["t"];
 }) {
   const header = workspaceHeader(activeProject, activeProjectKey, servers);
+  const cost = contextCostView(contextCost);
+  const results = resultCostView(resultCost);
+  const codeMode = cost?.unsupported === true || results?.unsupported === true;
   return (
     <section className="workspace-head">
       <p className="workspace-label">{t("currentWorkspace")}</p>
@@ -703,6 +713,22 @@ function WorkspaceHeader({ activeProject, activeProjectKey, servers, t }: {
         <p className="workspace-name">{header.known ? header.name : t("workspaceUnknown")}</p>
         {header.path !== null && <p className="workspace-path" title={header.path}>{header.path}</p>}
       </div>
+      {(cost !== null || results !== null) && (
+        <div className="workspace-costs">
+          {codeMode ? (
+            <CodeModeCostTag t={t} />
+          ) : (
+            <>
+              {cost !== null && contextCost !== undefined && (
+                <ContextCostTag cost={cost} warnTokens={contextCost.warnTokens} alertTokens={contextCost.alertTokens} t={t} />
+              )}
+              {results !== null && (
+                <ResultCostTag cost={results} definitions={cost?.estTokens ?? 0} t={t} />
+              )}
+            </>
+          )}
+        </div>
+      )}
       {header.segments.length > 0 && (
         <p className="workspace-status">
           {header.segments.map((segment, index) => (
@@ -712,6 +738,122 @@ function WorkspaceHeader({ activeProject, activeProjectKey, servers, t }: {
       )}
       <p className="workspace-note">{header.known ? t("workspaceScopeNote") : t("workspaceUnknownHint")}</p>
     </section>
+  );
+}
+
+/** 阈值提醒行：达到提醒/警告阈值时才追加。 */
+function costThresholdLines(level: ContextCostView["level"], warnTokens: number, alertTokens: number, t: McpPanelProps["t"]): string[] {
+  if (level === "alert") return [t("contextCostAlert", { alert: formatTokenCount(alertTokens) })];
+  if (level === "warn") return [t("contextCostWarn", { warn: formatTokenCount(warnTokens) })];
+  return [];
+}
+
+/** 定义标签的色调：警告阈值用 danger，提醒阈值用 warning，否则 neutral。 */
+function costTagTone(level: ContextCostView["level"]): "danger" | "warning" | "neutral" {
+  if (level === "alert") return "danger";
+  if (level === "warn") return "warning";
+  return "neutral";
+}
+
+/** 结果分项的显示名：共享代理组、Lazy 服务器或普通服务器。 */
+function resultServerName(server: ResultCostView["top"][number], t: McpPanelProps["t"]): string {
+  if (server.kind === "lazy-proxy") return t("contextCostLazyProxies");
+  if (server.kind === "lazy") return t("contextResultLazyName", { name: server.name });
+  return server.name;
+}
+
+/**
+ * 上下文占用标签。文字只留一个短数值，阈值细节收进点击展开的气泡：
+ * 超过提醒阈值用 warning 色，超过警告阈值换 danger 色并加警告图标（不只靠颜色区分）。
+ */
+function ContextCostTag({ cost, warnTokens, alertTokens, t }: {
+  readonly cost: ContextCostView;
+  readonly warnTokens: number;
+  readonly alertTokens: number;
+  readonly t: McpPanelProps["t"];
+}) {
+  const share = cost.percent === null ? "" : t("contextCostWindowShare", { percent: String(cost.percent) });
+  const lines = [
+    share === ""
+      ? t("contextCostHelpNoWindow", { tokens: cost.tokens })
+      : t("contextCostHelp", { tokens: cost.tokens, share }),
+    ...cost.top.map((server) => t("contextCostServerLine", {
+      name: server.kind === "lazy-proxy" ? t("contextCostLazyProxies") : server.name,
+      count: server.tools,
+      tokens: server.tokens
+    })),
+    ...costThresholdLines(cost.level, warnTokens, alertTokens, t)
+  ];
+  const label = cost.level === "alert"
+    ? t("contextCostAriaAlert", { tokens: cost.tokens, alert: formatTokenCount(alertTokens) })
+    : t("contextCostAria", { tokens: cost.tokens });
+  return (
+    <p className={`workspace-cost cost-${cost.level}`}>
+      <Tooltip label={lines.join("\n")} side="bottom" portal maxWidth={360} openOnClick>
+        <button type="button" className="workspace-cost-anchor" aria-label={label}>
+          <Tag tone={costTagTone(cost.level)}>
+            {cost.level === "alert" && <IconWarningOutlineRegular size={12} />}
+            {t("contextCostTag", { tokens: cost.tokens })}
+          </Tag>
+        </button>
+      </Tooltip>
+    </p>
+  );
+}
+
+/**
+ * 工具调用结果标签。文字只留结果总量；说明气泡给出占窗口比例、与工具定义的
+ * 合计，以及结果最大的几台服务器。结果可能已被裁剪或压缩，气泡里写明口径。
+ */
+function ResultCostTag({ cost, definitions, t }: {
+  readonly cost: ResultCostView;
+  /** 工具定义的原始估算值；为 0 时不显示合计行。 */
+  readonly definitions: number;
+  readonly t: McpPanelProps["t"];
+}) {
+  const share = cost.percent === null ? "" : t("contextCostWindowShare", { percent: String(cost.percent) });
+  const lines = [
+    share === ""
+      ? t("contextResultHelpNoWindow", { tokens: cost.tokens })
+      : t("contextResultHelp", { tokens: cost.tokens, share }),
+    ...(definitions > 0
+      ? [t("contextResultCombined", {
+          definitions: formatTokenCount(definitions),
+          results: cost.tokens,
+          total: formatTokenCount(definitions + cost.estTokens)
+        })]
+      : []),
+    ...cost.top.map((server) => t("contextResultServerLine", {
+      name: resultServerName(server, t),
+      count: server.calls,
+      tokens: server.tokens
+    }))
+  ];
+  return (
+    <p className="workspace-cost cost-result">
+      <Tooltip label={lines.join("\n")} side="bottom" portal maxWidth={360} openOnClick>
+        <button type="button" className="workspace-cost-anchor" aria-label={t("contextResultAria", { tokens: cost.tokens })}>
+          <Tag tone="neutral">{t("contextResultTag", { tokens: cost.tokens })}</Tag>
+        </button>
+      </Tooltip>
+    </p>
+  );
+}
+
+/**
+ * 代码模式（PTC）标签：定义被渲染进系统提示词、结果嵌在 run_code 内部，
+ * 两份口径都无法按工具估算。显示一个「无法估算」并在气泡里说明原因，
+ * 不给出误导性的零，也不按原生口径硬算。
+ */
+function CodeModeCostTag({ t }: { readonly t: McpPanelProps["t"] }) {
+  return (
+    <p className="workspace-cost cost-ok">
+      <Tooltip label={t("contextCostCodeModeHelp")} side="bottom" portal maxWidth={360} openOnClick>
+        <button type="button" className="workspace-cost-anchor" aria-label={t("contextCostCodeModeAria")}>
+          <Tag tone="neutral">{t("contextCostCodeModeTag")}</Tag>
+        </button>
+      </Tooltip>
+    </p>
   );
 }
 

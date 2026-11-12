@@ -53,6 +53,24 @@ Lazy 支持 stdio 和 Streamable HTTP。使用 `mcp_search` 搜索工具，
 使用 Eager。Lazy 处理 MCP 工具调用，文本和图片走 DSH 的 MCP 结果转换。
 连接失败后，可在下一次请求时重试。
 
+## 抬头里的上下文占用
+
+MCP 管理页抬头按当前会话显示两个估算：
+
+- **MCP**：模型可见的 MCP 工具定义（schema 与描述）占用，按服务器分组；可见的
+  `mcp_search`、`mcp_describe`、`mcp_call` 定义作为 Lazy 共享开销只计一次。
+- **结果**：当前 surface 上仍保留的 MCP 工具调用结果，包括经 Lazy
+  `mcp_search`、`mcp_describe`、`mcp_call` 返回的全部结果；被工具结果裁剪器裁掉
+  或被压缩移除的不再计入。
+
+两者都按宿主的「4 字符约 1 token」口径估算，不是 provider 精确计数，也不含服务器
+`instructions` 与对话历史。没有会话或没有可计价内容时不显示标签；点开标签可看
+分服务器明细与占上下文窗口的比例，「结果」气泡还给定义与结果的合计。请求头、工具
+结果或压缩改写 surface 后数字会自动刷新，不需要轮询。当前会话走代码模式（PTC）时
+两个标签合并为一个 `MCP 无法估算`，明确标注无法按此口径估算而非给零。详见
+[MCP 管理页](guide/settings-ui.zh.md#mcp-上下文占用)与
+[查询面](guide/service.zh.md#工具调用结果占用)。
+
 ## 安装（挂载到 profile）
 
 只需安装 `dsh-project-mcp-manager`，它同时带上核心装载器和 MCP 管理页。bundle
@@ -179,14 +197,15 @@ GUI 的人，就能通过它添加并启动服务器。
 - [配置格式](guide/format.zh.md)——原生 YAML 受管块、JSON 方言、与
   cordis 方言的差异。
 - [MCP 管理页](guide/settings-ui.zh.md)——使用默认包含的 UI、看懂服务器列表、添加服务器
-  （含从剪贴板填入）、开关、删除与管理工具。
+  （含从剪贴板填入）、开关、删除与管理工具，以及抬头里的 MCP / 结果上下文标签。
 - [配置来源与分层](guide/layers.zh.md)——七层来源模型、影子优先序、
   全局装载 vs 项目装载，以及只读的遗留 Claude Code 层。
 - [`${VAR}` 展开](guide/env-expansion.zh.md)——装载时插值与对应诊断。
 - [CLI `dsh-mcp`](guide/cli.zh.md)——作用域、写入格式与独占契约。
-- [工作原理](guide/how-it-works.zh.md)——项目发现、装载、热重载、生效名与会话可见性。
-- [查询面](guide/service.zh.md)——`ctx.projectMcp`、`projectMcp/updated` 事件、
-  包入口导出的视图类型，以及对配套 UI 的语义化版本承诺。
+- [工作原理](guide/how-it-works.zh.md)——项目发现、装载、热重载、生效名、会话可见性与
+  上下文占用。
+- [查询面](guide/service.zh.md)——`ctx.projectMcp`、`contextCost` / `resultCost`、
+  `projectMcp/updated` 事件、包入口导出的视图类型，以及对配套 UI 的语义化版本承诺。
 
 设计、发布、代码审查与测试记录：[记录索引](records.zh.md)。
 

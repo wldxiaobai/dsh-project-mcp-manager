@@ -15,6 +15,8 @@
 | `snapshot()` | 上一轮对账的内存分区（项目文件与用户层）。进对账队列，不读盘，不发起对账。 |
 | `serverView(projectRoot, rawName)` | 一行的内存 view。排队规则与 `snapshot()` 相同。 |
 | `globalState(rawName)` | 该原名的全局层运行态；项目行返回 `undefined`。 |
+| `contextCost(sessionId?)` | 该会话可见的 MCP 工具定义占多少上下文。同步、只读内存；不传会话时优先取宿主当前选中的会话，其次是最近一次顶层用户回合的会话，都拿不到才退回焦点工作区里最后一个。 |
+| `resultCost(sessionId?)` | 该会话当前仍保留的 MCP 工具调用结果占多少上下文。同步、只读内存；会话选择与 `contextCost()` 相同。 |
 | `reload()` | 一次全量对账（`reconcileNow`）。 |
 | `writeTargets()` | 添加对话框当前能写的受管 yml：当前工作区、用户层、当前 profile。 |
 | `addServer(source, projectRoot, draft)` | 按表单追加一条受管 yml 行（没有文件就创建）并排一次对账。同名已在该文件里则拒绝，文件不动。 |
@@ -36,7 +38,76 @@
 尚未完成；要等对账结束再读结果，调用 `reload()`。路径查询、文件准备和打开接口不代表
 相同的修改权限检查，也不触发对账。JSON 文件与 `.mcp.json` 从不写。
 
-`snapshot()` / `serverView()` / `globalState()` 不发事件。
+`snapshot()` / `serverView()` / `globalState()` / `contextCost()` /
+`resultCost()` 不发事件。
+
+### 上下文占用
+
+`contextCost()` 读的是**会话作用域**已经暴露的那份工具 schema——也就是本插件
+`tools.restrict({ deny })` 与条目 `tools.allow` / `tools.deny` 过滤之后仍然可见的
+部分——把其中每个 `mcp__<生效名>__<工具>`，以及可见的 `mcp_search`、
+`mcp_describe`、`mcp_call` 定义计价：
+
+```text
+estTokens = ceil(JSON.stringify(tools).length / 4) + 4
+```
+
+这与 `@deepseek-ai/dsh-token-meter` 给工具 schema 计价的口径一致，所以数字能和
+宿主的上下文分解对上。它是**估算**，不是 provider 计数，也不含服务器
+`instructions`（那部分走系统提示，不在工具列表里）。标了 `deferLoading` 的工具
+不进本次请求，不计入。
+
+三个 Lazy 代理在 `servers` 里合成一个共享分项，保留名为 `[lazy proxies]`，并带可选
+`kind: "lazy-proxy"`；普通服务器不带 `kind`。按当前会话实际可见的定义只计一次，不随
+Lazy 服务器数量倍增，不连接服务器或计入内存中的远端目录。被 deny 的代理不计入；
+搜索、描述和调用结果属于消息历史，不在工具定义指标内（见[工具调用结果占用](#工具调用结果占用)）。会话作用域查询不可用时，
+全局回退至少排除本插件按项目隔离隐藏的代理，但无法重建其它宿主策略。
+
+还没有会话时 `sessionId` 为 `null`，调用方据此区分「没有会话」与「有会话但没有
+MCP 工具」。分项按各自那一组单独计价，与总数可能差几个 token。结果自带
+`level`（低于 `warnTokens` 为 `ok`、5000 起 `warn`、10000 起 `alert`），消费方
+不必自己再实现阈值。
+
+`request/header` 或 `request/context` 事件之后占用签名变化时，registry 会再发一次
+`projectMcp/updated`；`tool/result` 或压缩的 surface replace 改变仍保留的结果集时
+同样会发。页面在该事件上重读即可拿到新数字，不需要轮询。
+
+### 工具调用结果占用
+
+`resultCost()` 读会话当前的模型可见消息（`session.deriveMessages()`），对仍留在
+surface 上的每条 `tool/result` 消息按 `dsh-token-meter` 的逐条消息口径计价：
+
+```text
+消息 = 各块价格之和 + 4（角色开销）
+文本/推理块 = ceil(字符数 / 4) + 4
+```
+
+只有能对应到 MCP 工具调用的结果才计入。Eager 结果按
+`mcp__<生效名>__<工具>` 归属；Lazy 结果按 `mcp_call` / `mcp_describe`（以及
+指定了 `server` 的 `mcp_search`）参数里的服务器归属，跨服务器的搜索归入
+`[lazy proxies]` 共享组。`servers[].kind` 为 `"lazy"` 表示 Lazy 服务器，
+`"lazy-proxy"` 表示共享组；`calls` 是仍保留的结果消息条数，失败调用也计入。
+
+这是**当前仍占用**的上下文：被
+`dsh-compaction-tool-result-pruner` 裁剪或被压缩移除的结果已经不在 surface 上，
+不计。数字是**估算**，不是 provider 计数；图片结果按结构引用计价，不用路由的
+视觉 token 口径。
+
+### 代码模式（PTC）
+
+会话最近一次请求若走代码模式执行器（请求头工具列表里出现宿主保留名 `run_code`），
+两份口径都返回 `unsupported: "code-mode"`，其余数值字段为零：
+
+- 定义不再按工具 schema 计价——代码模式把 MCP 能力渲染进系统提示词的 `tools:sdk`
+  文本（含 `output.schema`），请求的工具列表里只有 `run_code`，按原生 schema 估算会失真。
+- 结果不再按服务器归属——MCP 调用嵌在 `run_code` 内部，surface 上可见的是外层
+  `run_code` 的结果，无法拆出每台 MCP 服务器的占用；把所有内部调用相加又会把
+  没有打印进上下文的中间结果也算进去。
+
+因此代码模式下明确报「无法估算」，而不是给出误导性的零或硬算的数字。判定只读
+会话请求头（`session.requestHeader().tools`），不触碰执行器私有接口；还没有请求头
+（刚恢复的会话）时按原生口径估算，首次请求后自我纠正。切回原生执行器即恢复估算。
+`unsupported` 进入占用签名，执行器切换时页面会收到 `projectMcp/updated` 重读。
 
 ## 加载模式
 
@@ -84,14 +155,20 @@ diff。派发是同步的，不会等待监听方返回的 Promise。监听方�
 import {
   PROJECT_MCP_SERVICE,
   PROJECT_MCP_UPDATED_EVENT,
+  type ContextCostLevel,
   type FiberPhaseView,
   type McpAddDraft,
+  type McpContextCost,
   type McpLoadingMode,
+  type McpResultCost,
+  type McpResultServerCost,
   type McpRowSource,
   type McpScopeInfo,
+  type McpServerContextCost,
   type McpServerRuntimeView,
   type McpServerView,
   type McpTransport,
+  type McpWriteTarget,
   type PatchRow,
   type ProjectFileState,
   type ProjectMcpService,
@@ -105,7 +182,11 @@ import {
 `snapshot()` 的元素类型是 `ProjectFileState`。每一行是 `McpServerRuntimeView`
 （`McpServerView` 再加 `source`、`fiberPhase`、`skipReason`、`toolCount`）。
 `globalState()` 返回 `ProjectServerState`。`McpServerView.mode` 可选；缺省表示 Eager。
-`McpAddDraft.mode` 同样可选，添加表单只在选 Lazy 时发送。
+`McpAddDraft.mode` 同样可选，添加表单只在选 Lazy 时发送。`contextCost()` 返回
+`McpContextCost`，分项是 `McpServerContextCost`，并带 `ContextCostLevel`；
+`resultCost()` 返回 `McpResultCost`，分项是 `McpResultServerCost`。两者在会话走
+代码模式时都带可选 `unsupported: "code-mode"`（见[代码模式（PTC）](#代码模式ptc)），
+此时数值字段为零。
 
 ## 对配套 UI 的语义化版本
 

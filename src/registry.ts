@@ -100,7 +100,8 @@ import {
 } from "./model.js";
 import { mcpToolBudgetStats, mcpToolCount, parseToolBudgetWarn, schemaToolId } from "./status.js";
 import { LazyConnections } from "./lazy/connection.js";
-import { LAZY_TOOL_NAMES, registerLazyTools, type LazyMount } from "./lazy/proxies.js";
+import { LAZY_TOOL_NAMES, isLazyToolName, registerLazyTools, type LazyMount } from "./lazy/proxies.js";
+import { contextCostSignature, isCodeModeTools, mcpContextCost, mcpResultCost, resultCostSignature, type McpContextCost, type McpResultCost } from "./context-cost.js";
 
 const EAGER_STARTUP_WAIT_MS = 20_000;
 const EAGER_STARTUP_POLL_MS = 100;
@@ -979,6 +980,12 @@ export class ProjectMcpRegistry {
   private readonly nameRelease = new Map<string, Promise<void>>();
   private disposeLazyTools?: () => void;
   private readonly closedLazySessions = new WeakSet<object>();
+  /** 上一次推送的 MCP 上下文占用签名（工具定义 + 调用结果）；只在真正变化时补发。 */
+  private lastContextUsageSignature = "";
+  /** 最近一次用户消息所在会话 id（仅顶层会话）；无参占用查询优先选它，而不是枚举最后一个。 */
+  private activeSessionId?: string;
+  /** 会话对象 → 该 seq 时算好的结果占用；只在日志长度变化后重算。 */
+  private readonly resultCostCache = new WeakMap<object, { seq: number; cost: McpResultCost }>();
 
   constructor(ctx: any, providers: ProjectMcpRegistryOptions) {
     this.ctx = ctx;
@@ -1038,6 +1045,7 @@ export class ProjectMcpRegistry {
         this.sessionRoots.delete(id);
         this.closedLazySessions.add(session);
         this.releaseLazySession(id);
+        if (this.activeSessionId === id) this.activeSessionId = undefined;
       }
       this.schedule(async () => {
         await this.reconcileAll();
@@ -1048,7 +1056,19 @@ export class ProjectMcpRegistry {
     // 否则刚进入的工作区会整段会话都装不上 MCP，直到那段后台任务结束。
     ctx.on("session/event", (session: any, event: any) => {
       if (event?.type !== "user/message") return;
-      this.onSessionActivity(session);
+      this.onSessionActivity(session, event);
+    }, watchOpts);
+    // 工具目录 / 上下文窗口在请求头变化时更新；工具结果在写入 surface 时更新，
+    // 压缩/裁剪改写结果时同样更新。变没变再按签名判一次，避免每一步都惊动页面。
+    ctx.on("session/event", (_session: any, event: any) => {
+      const type = event?.type;
+      // 压缩把旧结果替换成摘要时事件类型是 user/message（surfaceOp.replace）；
+      // 只按 tool/result 监听会漏掉这次结果集缩小，标签要等下一次请求才更新。
+      const replacing = event?.surfaceOp?.op === "replace";
+      if (type !== "request/header" && type !== "request/context"
+        && type !== "tool/result" && type !== "compaction/summary" && type !== "compaction/prune"
+        && !replacing) return;
+      this.emitContextUsageIfChanged();
     }, watchOpts);
     ctx.on("tools/change", () => this.sweepRestrictions(), watchOpts);
     ctx.on("system-prompt/assemble", async (
@@ -1306,9 +1326,13 @@ export class ProjectMcpRegistry {
   }
 
   /** 用户消息更新管理页焦点。首次见到的目录还需要发现配置。 */
-  private onSessionActivity(session: any): void {
+  private onSessionActivity(session: any, event?: any): void {
+    const activeChanged = this.recordActiveSession(session, this.sessionIdOf(session), event);
     const cwd = session?.header?.cwd;
-    if (typeof cwd !== "string" || cwd === "") return;
+    if (typeof cwd !== "string" || cwd === "") {
+      if (activeChanged) this.emitContextUsageIfChanged();
+      return;
+    }
     this.userChoseFocus = true;
     this.hostFocusSealed = true;
     const cached = this.cwdKey.get(projectKeyOf(resolve(cwd)));
@@ -1319,9 +1343,29 @@ export class ProjectMcpRegistry {
       });
       return;
     }
-    if (cached === this.foregroundKey) return;
+    if (cached === this.foregroundKey) {
+      // 同一工作区里切到另一个会话：焦点键没变，但占用标签要改读新活动会话。
+      if (activeChanged) this.emitContextUsageIfChanged();
+      return;
+    }
     this.foregroundKey = cached;
     this.emitUpdated();
+  }
+
+  /**
+   * 记录最近的顶层活动会话，供无参占用查询优先选用。只有真正的用户回合才挪：
+   * 子代理的活动、以及压缩注入的 surface-replace（同样是 user/message）都不能
+   * 把选择从真实会话上抢走。返回活动会话是否真的变了。
+   */
+  private recordActiveSession(session: any, id: string | undefined, event?: any): boolean {
+    if (id === undefined) return false;
+    if (event?.surfaceOp?.op === "replace") return false;
+    const header = session?.header;
+    if (header?.origin === "subagent") return false;
+    if (typeof header?.delegationDepth === "number" && header.delegationDepth > 0) return false;
+    if (this.activeSessionId === id) return false;
+    this.activeSessionId = id;
+    return true;
   }
 
   /** 把 fiber.dispose 串到该生效名的释放链上。后一次同名挂载会等到整条链结束。 */
@@ -2897,6 +2941,194 @@ export class ProjectMcpRegistry {
   /** 全局（用户层）某行的装载状态；未装载返回 undefined。 */
   globalState(rawName: string): ProjectServerState | undefined {
     return this.globalServers.get(rawName);
+  }
+
+  // ── 会话级 MCP 上下文占用 ───────────────────────────────────────────────
+
+  /**
+   * 某个会话可见的 MCP 工具定义占多少上下文（token 为 DSH token-meter 口径的估算）。
+   *
+   * 只读内存：取该会话可见的工具 schema 与最近一次请求的上下文窗口，
+   * 不读盘、不驱动对账。会话不存在（还没建、已销毁）时返回零值，
+   * 调用方用 `sessionId === null` 区分「没有会话」与「有会话但没有 MCP」。
+   * 代码模式（PTC）会话返回 `unsupported: "code-mode"`，不按 schema 硬算。
+   */
+  contextCost(sessionId?: string): McpContextCost {
+    const agent = this.contextCostAgent(sessionId);
+    if (agent === undefined) return mcpContextCost({ sessionId: sessionId ?? null, schemas: [] });
+    const contextWindow = this.contextWindowOf(agent);
+    const id = typeof agent.id === "string" && agent.id !== "" ? agent.id : null;
+    const window = contextWindow === undefined ? {} : { contextWindow };
+    // 代码模式下定义被渲染进系统提示词，按 schema 估算会失真：明确报无法估算。
+    if (this.isCodeModeAgent(agent)) return mcpContextCost({ sessionId: id, schemas: [], codeMode: true, ...window });
+    return mcpContextCost({
+      sessionId: id,
+      schemas: this.schemasForAgent(agent),
+      knownServers: this.knownEffectiveNames(),
+      ...window
+    });
+  }
+
+  /**
+   * 某个会话当前仍保留的 MCP 工具调用结果占多少上下文（token 为 DSH
+   * token-meter 口径的逐条消息估算）。
+   *
+   * 只读内存：读该会话当前的模型可见消息（`session.deriveMessages()`），
+   * 不读盘、不驱动对账。被裁剪或压缩掉的结果已不在 surface 上，不计。
+   * Eager 结果按 `mcp__<生效名>__` 归属；Lazy 结果按代理参数里的 `server`
+   * 归属，`mcp_search` 未指定服务器时归入共享代理组。
+   * 代码模式（PTC）会话返回 `unsupported: "code-mode"`，结果嵌在 run_code 内无法归属。
+   */
+  resultCost(sessionId?: string): McpResultCost {
+    const agent = this.contextCostAgent(sessionId);
+    if (agent === undefined) return mcpResultCost({ sessionId: sessionId ?? null, messages: [] });
+    const session = agent.session;
+    const id = typeof agent.id === "string" && agent.id !== "" ? agent.id : null;
+    const contextWindow = this.contextWindowOf(agent);
+    const window = contextWindow === undefined ? {} : { contextWindow };
+    // 代码模式下 MCP 调用嵌在 run_code 内部，surface 上无法归属：明确报无法估算，
+    // 也不写进按 seq 缓存的原生结果价里。
+    if (this.isCodeModeAgent(agent)) return mcpResultCost({ sessionId: id, messages: [], codeMode: true, ...window });
+    const seq = typeof session?.seq === "number" ? session.seq : undefined;
+    if (session !== undefined && seq !== undefined) {
+      const cached = this.resultCostCache.get(session);
+      if (cached !== undefined && cached.seq === seq && cached.cost.sessionId === id) return cached.cost;
+    }
+    const cost = mcpResultCost({
+      sessionId: id,
+      messages: this.messagesForAgent(agent),
+      knownServers: this.knownEffectiveNames(),
+      ...window
+    });
+    if (session !== undefined && seq !== undefined) this.resultCostCache.set(session, { seq, cost });
+    return cost;
+  }
+
+  /** 指定会话，或当前活动会话；都找不到时退回焦点工作区里最近的那个会话。 */
+  private contextCostAgent(sessionId?: string): any {
+    const agents = this.liveAgents();
+    const byId = (id: string | undefined): any => id === undefined || id === ""
+      ? undefined
+      : agents.find((agent: any) => agent?.id === id || agent?.session?.id === id);
+    if (sessionId !== undefined && sessionId !== "") return byId(sessionId);
+    // 优先宿主当前选中的会话，其次是最近一次顶层用户回合；都拿不到（刚启动、
+    // 宿主无会话服务）才退回「焦点工作区里最后一个」，避免枚举顺序冒充活动会话。
+    return byId(this.hostCurrentSessionId())
+      ?? byId(this.activeSessionId)
+      ?? this.focusedCostAgent(agents);
+  }
+
+  /** 焦点工作区里最近的会话；还没定焦点时取在线会话里最后一个。 */
+  private focusedCostAgent(agents: readonly any[]): any {
+    if (this.foregroundKey !== undefined) {
+      const focused = agents.filter((agent: any) => this.agentProjects.get(agent?.id) === this.foregroundKey);
+      if (focused.length > 0) return focused.at(-1);
+    }
+    return agents.at(-1);
+  }
+
+  /** 宿主当前选中的会话 id（`sessions.list()` 的 current 项）；不可用时 undefined。 */
+  private hostCurrentSessionId(): string | undefined {
+    try {
+      const list = this.hostSessionList();
+      if (list === undefined || Array.isArray(list)) return undefined;
+      const current = list.current;
+      if (typeof current === "string") return current !== "" ? current : undefined;
+      const id = current?.id ?? current?.header?.id;
+      return typeof id === "string" && id !== "" ? id : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * 该会话最近一次请求是否走代码模式（PTC）执行器。`run_code` 是宿主保留名，
+   * 请求头工具列表里出现它即判定为代码模式；还没有请求头时按原生口径估算，
+   * 首次请求后即自我纠正。只读请求头，不触碰执行器私有接口。
+   */
+  private isCodeModeAgent(agent: any): boolean {
+    try {
+      const header = agent?.session?.requestHeader?.();
+      return isCodeModeTools(header?.tools);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 该会话可见的工具 schema。优先用 agent 作用域：那里已经扣掉本插件的 deny
+   * 与条目 allow/deny；作用域取不到时退回全局工具层（Eager 可能偏大），
+   * 但仍扣除本项目不可见的 Lazy 代理，不按配置数量合成 schema。
+   */
+  private schemasForAgent(agent: any): unknown[] {
+    const scoped = agent?.ctx?.tools;
+    if (scoped !== undefined && typeof scoped.schemas === "function") {
+      try {
+        const list = scoped.schemas(agent);
+        if (Array.isArray(list)) return list;
+      } catch {
+        // 落到全局视图
+      }
+    }
+    try {
+      const list = this.ctx?.tools?.schemas?.();
+      if (!Array.isArray(list)) return [];
+      const project = this.agentProjects.get(agent?.id);
+      if (this.visibleLazyMounts(project).length > 0) return list;
+      return list.filter((schema) => !isLazyToolName(schemaToolId(schema)));
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * 该会话当前的模型可见消息。`deriveMessages()` 是 Session 的公开读法，
+   * 自带缓存、按 surface 顺序返回（压缩/裁剪后的内容已经生效）。
+   * 会话对象或读法不可用时返回空数组，不把异常抛给查询方。
+   */
+  private messagesForAgent(agent: any): readonly unknown[] {
+    const session = agent?.session;
+    if (session === undefined || typeof session.deriveMessages !== "function") return [];
+    try {
+      const messages = session.deriveMessages();
+      return Array.isArray(messages) ? messages : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private contextWindowOf(agent: any): number | undefined {
+    try {
+      const context = agent?.session?.requestContext?.();
+      const window = context?.contextWindow;
+      return typeof window === "number" && Number.isFinite(window) && window > 0 ? window : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** 已装载服务器的生效名：工具名归属按最长前缀匹配，生效名本身可能含 `__`。 */
+  private knownEffectiveNames(): string[] {
+    const names = new Set<string>();
+    for (const entry of this.projects.values()) {
+      for (const state of entry.servers.values()) names.add(state.effectiveName);
+    }
+    for (const state of this.globalServers.values()) names.add(state.effectiveName);
+    return [...names];
+  }
+
+  /** 定义或结果占用签名变了才补发一次 `projectMcp/updated`，让页面重读抬头标签。 */
+  private emitContextUsageIfChanged(): void {
+    if (this.disposed) return;
+    let signature: string;
+    try {
+      signature = JSON.stringify([contextCostSignature(this.contextCost()), resultCostSignature(this.resultCost())]);
+    } catch {
+      return;
+    }
+    if (signature === this.lastContextUsageSignature) return;
+    this.lastContextUsageSignature = signature;
+    this.emitUpdated();
   }
 
   /** 等待全局层某行的装载状态满足 predicate。 */

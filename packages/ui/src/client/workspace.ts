@@ -9,7 +9,7 @@
  * 工作区，只有一个已知工作区时也是它，多个工作区且无焦点时为空。
  */
 import type { McpUiLocaleKey } from "./locales.ts";
-import type { McpUiServer } from "../wire.ts";
+import type { McpUiContextCost, McpUiResultCost, McpUiServer } from "../wire.ts";
 
 export interface WorkspaceCounts {
   /** 该工作区里的全部行，含启动中、失败等不单列的状态。 */
@@ -137,4 +137,101 @@ export function orderWorkspaceGroups<T>(
     else rest.push(group);
   }
   return [...current, ...rest];
+}
+
+// ── 会话级 MCP 上下文占用抬头标签 ─────────────────────────────────────────
+
+export interface ContextCostView {
+  /** 紧凑数值：`820`、`3.4k`、`12k`。 */
+  readonly tokens: string;
+  /** 原始估算值，供「定义 + 结果」合计使用。 */
+  readonly estTokens: number;
+  /** 占上下文窗口的百分比（四舍五入、封顶 100）；窗口未知为 null。 */
+  readonly percent: number | null;
+  readonly level: McpUiContextCost["level"];
+  /** 定义最大的几台服务器，供说明气泡分项列出。 */
+  readonly top: readonly { name: string; kind?: "lazy-proxy"; tools: number; tokens: string }[];
+  /** 代码模式（PTC）：无法估算，标签显示「无法估算」而非数值。 */
+  readonly unsupported?: boolean;
+}
+
+/** 千位以上折成一位小数的 `k`；`3.0k` 写作 `3k`。 */
+export function formatTokenCount(tokens: number): string {
+  const rounded = Math.max(0, Math.round(tokens));
+  if (rounded < 1_000) return String(rounded);
+  if (rounded < 100_000) {
+    const tenths = Math.round(rounded / 100) / 10;
+    return `${Number.isInteger(tenths) ? String(tenths) : tenths.toFixed(1)}k`;
+  }
+  return `${String(Math.round(rounded / 1_000))}k`;
+}
+
+/**
+ * 抬头标签的显示模型。没有会话、或会话里没有任何 MCP 工具时不显示（返回 null），
+ * 免得每一页都挂一个恒为 0 的标签。代码模式（PTC）无法估算时返回 unsupported
+ * 视图，由面板显示「无法估算」而不是误导性的零。
+ */
+export function contextCostView(cost: McpUiContextCost | undefined, topCount = 3): ContextCostView | null {
+  if (cost === undefined || cost.sessionId === null) return null;
+  if (cost.unsupported === "code-mode") {
+    return { tokens: "", estTokens: 0, percent: null, level: "ok", top: [], unsupported: true };
+  }
+  if (cost.tools === 0) return null;
+  const percent = cost.contextWindow === undefined || cost.contextWindow <= 0
+    ? null
+    : Math.min(100, Math.round(cost.estTokens / cost.contextWindow * 100));
+  return {
+    tokens: formatTokenCount(cost.estTokens),
+    estTokens: cost.estTokens,
+    percent,
+    level: cost.level,
+    top: cost.servers.slice(0, topCount).map((server) => ({
+      name: server.name,
+      ...(server.kind === "lazy-proxy" ? { kind: server.kind } : {}),
+      tools: server.tools,
+      tokens: formatTokenCount(server.estTokens)
+    }))
+  };
+}
+
+// ── 会话级 MCP 工具调用结果标签 ──────────────────────────────────────────
+
+export interface ResultCostView {
+  /** 紧凑数值：`820`、`3.4k`、`12k`。 */
+  readonly tokens: string;
+  /** 原始估算值，供「定义 + 结果」合计使用。 */
+  readonly estTokens: number;
+  /** 占上下文窗口的百分比（四舍五入、封顶 100）；窗口未知为 null。 */
+  readonly percent: number | null;
+  /** 结果最大的几台服务器，供说明气泡分项列出。 */
+  readonly top: readonly { name: string; kind?: "lazy" | "lazy-proxy"; calls: number; tokens: string }[];
+  /** 代码模式（PTC）：无法估算，标签显示「无法估算」而非数值。 */
+  readonly unsupported?: boolean;
+}
+
+/**
+ * 「结果」标签的显示模型。没有会话、或当前 surface 上没有 MCP 结果时不显示；
+ * 结果已经全部被裁剪或压缩掉时也不显示，免得挂一个恒为 0 的标签。
+ * 代码模式（PTC）无法归属时返回 unsupported 视图。
+ */
+export function resultCostView(cost: McpUiResultCost | undefined, topCount = 3): ResultCostView | null {
+  if (cost === undefined || cost.sessionId === null) return null;
+  if (cost.unsupported === "code-mode") {
+    return { tokens: "", estTokens: 0, percent: null, top: [], unsupported: true };
+  }
+  if (cost.calls === 0) return null;
+  const percent = cost.contextWindow === undefined || cost.contextWindow <= 0
+    ? null
+    : Math.min(100, Math.round(cost.estTokens / cost.contextWindow * 100));
+  return {
+    tokens: formatTokenCount(cost.estTokens),
+    estTokens: cost.estTokens,
+    percent,
+    top: cost.servers.slice(0, topCount).map((server) => ({
+      name: server.name,
+      ...(server.kind === undefined ? {} : { kind: server.kind }),
+      calls: server.calls,
+      tokens: formatTokenCount(server.estTokens)
+    }))
+  };
 }

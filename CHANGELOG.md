@@ -18,7 +18,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Lazy lifecycle, two-project authorization, official naming parity and dependency
   compatibility regression tests. See the [Gate 1 review](docs/code-review/pr30-lazy-gate1.zh.md).
 
+- **Session-level MCP context cost.** `projectMcp.contextCost(sessionId?)` reads
+  the tool schemas a session actually exposes (after `tools.restrict` and the
+  row `tools.allow` / `tools.deny` filters) and prices every
+  `mcp__<effective>__<tool>` entry with the same
+  `ceil(characters / 4) + 4` heuristic `dsh-token-meter` uses. It is an estimate
+  — no provider count, and server `instructions` are not included — grouped per
+  server and tagged `ok` / `warn` (5,000) / `alert` (10,000). The registry
+  re-emits `projectMcp/updated` when the figure changes after a `request/header`
+  or `request/context` event, so the UI never polls.
+- **Context-cost tag in the workspace header.** The MCP page shows a compact
+  `MCP 3.4k` tag: neutral below 5,000, the reminder colour from 5,000, and the
+  warning colour plus a warning icon from 10,000. The detail (estimate basis,
+  share of the context window, largest servers, threshold hint) sits in a
+  click-to-open bubble, so the header stays quiet. Colour is never the only
+  signal: the number is always visible and the tag carries an `aria-label`.
+  The tag is hidden when there is no session or no MCP tool.
+
+- **Tool-result context cost and a second header tag.** `projectMcp.resultCost(sessionId?)`
+  reads the session's current `deriveMessages()` and prices every retained
+  `tool/result` message whose originating call is an MCP tool, using the same
+  per-message heuristic `dsh-token-meter` uses. Eager results are grouped by
+  server; Lazy results by the `server` argument of `mcp_call` / `mcp_describe`
+  (or a targeted `mcp_search`), with a cross-server search under
+  `[lazy proxies]`. The workspace header shows `Results 1.2k` next to
+  `MCP 3.4k`; its bubble gives the window share, the combined definitions +
+  results total, and the largest result groups. Results pruned or compacted
+  away are not counted. The registry re-emits `projectMcp/updated` after a
+  `tool/result` or compaction event when the figure changes. Additive API;
+  requires a synchronized manager/UI minor release.
+
 ### Fixed
+
+- **Context cost follows the active session.** Without an explicit `sessionId`,
+  `contextCost()` / `resultCost()` now prefer the host's currently selected
+  session, then the session of the latest top-level user turn, instead of the
+  last-enumerated agent in the focused workspace. Switching sessions within one
+  workspace re-emits `projectMcp/updated`; subagent turns and compaction surface
+  replacements never take the figure over, and disposing the active session
+  clears it.
+
+- **Code mode (PTC) reports "cannot estimate" instead of a wrong number.** When
+  the session's latest request ran through the code-mode executor (the reserved
+  `run_code` tool in the request-header tool list), both metrics return
+  `unsupported: "code-mode"` with zeroed numeric fields: definitions are rendered
+  into the system prompt's `tools:sdk` text and MCP calls nest inside `run_code`,
+  so neither the tool-schema basis nor per-server result attribution applies. The
+  workspace header merges its two tags into one neutral `MCP n/a` with an
+  explanatory bubble. Detection reads only the public session request header;
+  switching back to the native executor restores the estimate.
+
+- **Lazy proxy context cost.** The visible `mcp_search`, `mcp_describe`, and
+  `mcp_call` definitions now count in the MCP total once as a shared proxy group,
+  not once per Lazy server. Lazy-only sessions keep the header tag; the breakdown
+  labels the group “Lazy proxies (shared)”. No discovery or connection is started
+  to calculate it. Hidden/deferred proxies and remote catalogs are not counted.
 
 - A new session whose first tool restriction cannot be applied now fails
   closed: all registered MCP tools are temporarily denied until the next

@@ -116,6 +116,35 @@ export const PANEL_CSS = `
   line-height: 18px;
   color: var(--dsw-alias-label-tertiary);
 }
+/* 上下文占用标签：只留短数值，细节在点击展开的气泡里。定义与结果并排。 */
+.dsh-mcp-ui .workspace-costs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.dsh-mcp-ui .workspace-cost {
+  margin: 0;
+}
+.dsh-mcp-ui .workspace-cost-anchor {
+  display: inline-flex;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  border-radius: var(--dsw-radius-md);
+}
+.dsh-mcp-ui .workspace-cost-anchor:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 2px;
+}
+.dsh-mcp-ui .workspace-cost.cost-alert .workspace-cost-anchor > * {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
 .dsh-mcp-ui .dsh-mcp-group-tag {
   flex: none;
 }

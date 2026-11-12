@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import {
+  contextCostView,
+  formatTokenCount,
   orderWorkspaceGroups,
+  resultCostView,
   sameWorkspace,
   workspaceCountSegments,
   workspaceCounts,
@@ -9,6 +12,31 @@ import {
   workspaceNameOf
 } from "../packages/ui/src/client/workspace.ts";
 import { en, zh } from "../packages/ui/src/client/locales.ts";
+
+/** 一份完整的上下文占用载荷；只覆盖用例关心的字段。 */
+function cost(overrides) {
+  return {
+    sessionId: "session-a",
+    tools: 3,
+    estTokens: 0,
+    level: "ok",
+    servers: [],
+    warnTokens: 5000,
+    alertTokens: 10000,
+    ...overrides
+  };
+}
+
+/** 一份完整的结果占用载荷；只覆盖用例关心的字段。 */
+function resultCost(overrides) {
+  return {
+    sessionId: "session-a",
+    calls: 2,
+    estTokens: 0,
+    servers: [],
+    ...overrides
+  };
+}
 
 // Keep deterministic UTF-16 code-unit order, independent of the host locale.
 function byCodeUnit(a, b) {
@@ -198,6 +226,109 @@ test("the active workspace group moves to the top and the rest keep their order"
     [["/workspace/App", 2], ["/workspace/app", 1]]);
 });
 
+test("token counts fold to a compact label", () => {
+  assert.equal(formatTokenCount(0), "0");
+  assert.equal(formatTokenCount(820), "820");
+  assert.equal(formatTokenCount(999), "999");
+  assert.equal(formatTokenCount(1000), "1k", "a whole thousand drops the decimal");
+  assert.equal(formatTokenCount(3400), "3.4k");
+  assert.equal(formatTokenCount(9999), "10k", "rounding may reach the next thousand");
+  assert.equal(formatTokenCount(12345), "12.3k", "below 100k keeps one decimal");
+  assert.equal(formatTokenCount(123456), "123k", "from 100k on the label drops the decimal");
+  assert.equal(formatTokenCount(-5), "0", "never shows a negative count");
+});
+
+test("contextCostView hides itself when there is no session or no MCP tool", () => {
+  assert.equal(contextCostView(undefined), null);
+  assert.equal(contextCostView(cost({ sessionId: null, tools: 0 })), null, "no session means no label");
+  assert.equal(contextCostView(cost({ tools: 0, servers: [] })), null, "a session without MCP tools shows nothing");
+});
+
+test("contextCostView includes a Lazy-only session and keeps the shared proxy marker", () => {
+  const view = contextCostView(cost({
+    tools: 3,
+    estTokens: 400,
+    servers: [{ name: "[lazy proxies]", kind: "lazy-proxy", tools: 3, estTokens: 400 }]
+  }));
+  assert.ok(view !== null, "a Lazy-only session still has MCP tool definitions");
+  assert.equal(view.tokens, "400");
+  assert.deepEqual(view.top, [{ name: "[lazy proxies]", kind: "lazy-proxy", tools: 3, tokens: "400" }]);
+  assert.equal(zh.contextCostLazyProxies, "Lazy 代理（共享）");
+  assert.equal(en.contextCostLazyProxies, "Lazy proxies (shared)");
+});
+
+test("contextCostView keeps the value short and the breakdown capped", () => {
+  const view = contextCostView(cost({
+    estTokens: 3400,
+    contextWindow: 200000,
+    servers: [
+      { name: "alpha", tools: 12, estTokens: 2400 },
+      { name: "beta", tools: 4, estTokens: 800 },
+      { name: "gamma", tools: 2, estTokens: 200 },
+      { name: "delta", tools: 1, estTokens: 100 }
+    ]
+  }));
+  assert.equal(view.tokens, "3.4k");
+  assert.equal(view.percent, 2, "3400 / 200000 rounds to 2%");
+  assert.equal(view.level, "ok");
+  assert.deepEqual(view.top, [
+    { name: "alpha", tools: 12, tokens: "2.4k" },
+    { name: "beta", tools: 4, tokens: "800" },
+    { name: "gamma", tools: 2, tokens: "200" }
+  ], "the bubble lists the three largest servers");
+});
+
+test("contextCostView carries the level through and drops an unknown window", () => {
+  assert.equal(contextCostView(cost({ estTokens: 6000, level: "warn" })).percent, null, "no window means no percentage");
+  assert.equal(contextCostView(cost({ estTokens: 6000, level: "warn" })).level, "warn", "the level is the host's, not re-derived here");
+  const alert = contextCostView(cost({ estTokens: 12000, level: "alert", contextWindow: 64000 }));
+  assert.equal(alert.level, "alert");
+  assert.equal(alert.percent, 19, "12000 / 64000 rounds to 19%");
+  assert.equal(contextCostView(cost({ estTokens: 999999, contextWindow: 1000 })).percent, 100, "the share is capped at 100");
+});
+
+test("resultCostView hides itself when there is no session or no retained result", () => {
+  assert.equal(resultCostView(undefined), null);
+  assert.equal(resultCostView(resultCost({ sessionId: null, calls: 0 })), null, "no session means no label");
+  assert.equal(resultCostView(resultCost({ calls: 0, servers: [] })), null, "a session without retained results shows nothing");
+});
+
+test("resultCostView keeps Lazy attribution and the shared proxy marker", () => {
+  const view = resultCostView(resultCost({
+    calls: 3,
+    estTokens: 1200,
+    contextWindow: 200000,
+    servers: [
+      { name: "demo", kind: "lazy", calls: 2, estTokens: 900 },
+      { name: "[lazy proxies]", kind: "lazy-proxy", calls: 1, estTokens: 300 }
+    ]
+  }));
+  assert.ok(view !== null);
+  assert.equal(view.tokens, "1.2k");
+  assert.equal(view.estTokens, 1200);
+  assert.equal(view.percent, 1);
+  assert.deepEqual(view.top, [
+    { name: "demo", kind: "lazy", calls: 2, tokens: "900" },
+    { name: "[lazy proxies]", kind: "lazy-proxy", calls: 1, tokens: "300" }
+  ]);
+});
+
+test("resultCostView caps the breakdown and drops an unknown window", () => {
+  const view = resultCostView(resultCost({
+    calls: 4,
+    estTokens: 12000,
+    servers: [
+      { name: "a", calls: 1, estTokens: 9000 },
+      { name: "b", kind: "lazy", calls: 1, estTokens: 2000 },
+      { name: "c", calls: 1, estTokens: 700 },
+      { name: "d", calls: 1, estTokens: 300 }
+    ]
+  }));
+  assert.equal(view.percent, null, "no window means no percentage");
+  assert.deepEqual(view.top.map((server) => server.name), ["a", "b", "c"], "the bubble lists the three largest groups");
+  assert.equal(resultCostView(resultCost({ estTokens: 999999, contextWindow: 1000 })).percent, 100, "the share is capped at 100");
+});
+
 test("workspace copy exists in both languages", () => {
   assert.deepEqual(Object.keys(en).sort(byCodeUnit), Object.keys(zh).sort(byCodeUnit));
   assert.equal(zh.currentWorkspace, "当前工作区");
@@ -212,6 +343,35 @@ test("workspace copy exists in both languages", () => {
   assert.equal(zh.workspaceDisabledCount, "{count} 已禁用");
   assert.equal(en.workspaceServerCountOne, "1 server");
   assert.equal(en.workspaceServerCount, "{count} servers");
+  assert.equal(zh.contextResultTag, "结果 {tokens}");
+  assert.equal(en.contextResultTag, "Results {tokens}");
+  assert.equal(zh.contextResultServerLine, "{name} · {count} 次调用 · {tokens}");
+  assert.equal(en.contextResultServerLine, "{name} · {count} calls · {tokens}");
+});
+
+test("code mode shows an explicit unsupported view instead of hiding or pricing zero", () => {
+  const view = contextCostView(cost({ tools: 0, estTokens: 0, servers: [], unsupported: "code-mode" }));
+  assert.notEqual(view, null, "the label stays visible so the user knows why there is no number");
+  assert.equal(view.unsupported, true);
+  assert.equal(view.estTokens, 0);
+  assert.equal(view.percent, null);
+  assert.deepEqual(view.top, []);
+  const results = resultCostView(resultCost({ calls: 0, estTokens: 0, servers: [], unsupported: "code-mode" }));
+  assert.notEqual(results, null);
+  assert.equal(results.unsupported, true);
+  assert.deepEqual(results.top, []);
+  // 没有会话时仍然不显示，unsupported 不能凭空造出一个标签。
+  assert.equal(contextCostView(cost({ sessionId: null, unsupported: "code-mode" })), null);
+  assert.equal(resultCostView(resultCost({ sessionId: null, unsupported: "code-mode" })), null);
+});
+
+test("code-mode copy exists in both languages", () => {
+  assert.equal(zh.contextCostCodeModeTag, "MCP 无法估算");
+  assert.equal(en.contextCostCodeModeTag, "MCP n/a");
+  assert.ok(zh.contextCostCodeModeHelp.length > 0);
+  assert.ok(en.contextCostCodeModeHelp.length > 0);
+  assert.ok(zh.contextCostCodeModeAria.length > 0);
+  assert.ok(en.contextCostCodeModeAria.length > 0);
 });
 
 console.log(passed + " passed");

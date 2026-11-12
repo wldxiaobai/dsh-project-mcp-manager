@@ -2643,6 +2643,26 @@ for await (const line of createInterface({ input: process.stdin })) {
     assert.ok(outsider.denies.some((deny) => deny.includes("mcp_call")));
     await assert.rejects(() => execute("mcp_call", { server: "demo", tool: "echo" }, outsider), /unavailable in this session/);
     assert.equal(await pathExists(trace), false, "cross-project rejection must happen before connecting");
+
+    // Count the actual registered proxy definitions without discovery/spawn.
+    const proxyChars = JSON.stringify([...registered.values()].map(({ name, description, parameters }) =>
+      ({ name, description, parameters }))).length;
+    const proxyCost = registry.contextCost(agent.id);
+    assert.equal(proxyCost.tools, 3);
+    assert.equal(proxyCost.chars, proxyChars);
+    assert.equal(proxyCost.estTokens, Math.ceil(proxyChars / 4) + 4);
+    assert.equal(proxyCost.servers.length, 1);
+    assert.equal(proxyCost.servers[0].kind, "lazy-proxy");
+    assert.equal(registry.contextCost(outsider.id).tools, 0, "global fallback excludes another project's denied proxies");
+    outsider.ctx.tools.schemas = () => { throw new Error("scope unavailable"); };
+    assert.equal(registry.contextCost(outsider.id).tools, 0, "a failing scoped view must not leak proxy cost across projects");
+    agent.ctx.tools.schemas = () => [];
+    assert.equal(registry.contextCost(agent.id).tools, 0, "a valid empty scoped view wins over the global catalog");
+    agent.ctx.tools.schemas = () => [...registered.values()].filter(({ name }) => name !== "mcp_call");
+    assert.equal(registry.contextCost(agent.id).tools, 2, "count only proxies still visible under host restrictions");
+    delete agent.ctx.tools.schemas;
+    assert.equal(await pathExists(trace), false, "context-cost reads never connect or discover a Lazy server");
+
     const [search] = await Promise.all([
       execute("mcp_search", { query: "fixture" }),
       execute("mcp_search", { server: "demo" })
@@ -2793,6 +2813,10 @@ await withLazyProjects({
   await registry.reconcileNow();
   assert.deepEqual([...registered.keys()], ["mcp_search", "mcp_describe", "mcp_call"]);
   assert.equal(ctx.mounts.length, 0, "Lazy rows must not mount the official client");
+  const aProxyCost = registry.contextCost(agentA.id);
+  const bProxyCost = registry.contextCost(agentB.id);
+  assert.equal(aProxyCost.tools, 3, "multiple Lazy servers still share three proxy definitions");
+  assert.deepEqual(aProxyCost.servers, bProxyCost.servers, "two projects share the same proxy schema cost, not per-server copies");
   assert.equal(await pathExists(traceFor("a-demo")), false, "startup must not spawn a Lazy server");
 
   const aViews = await viewsOf(projA);
@@ -2925,6 +2949,9 @@ await withLazyProjects({
   await switchAndVerify(agentA, projA);
   await switchAndVerify(agentB, projB);
   await switchAndVerify(agentA, projA);
+  // 常驻挂载后焦点切换不再卸载代理：两个会话各自仍计一组共享代理定义。
+  assert.equal(registry.contextCost(agentA.id).tools, 3, "resident mounts keep one shared proxy group visible to A after switches");
+  assert.equal(registry.contextCost(agentB.id).tools, 3, "resident mounts keep one shared proxy group visible to B after switches");
   await Promise.all(["a-shared", "b-beta"].map(async (label) => {
     const lines = await readTraceLines(traceFor(label));
     assert.equal(lines.filter((line) => line === `method:${label}:initialize`).length, 1, "switches reuse the same Lazy connection");
@@ -3080,6 +3107,226 @@ await withLazyProjects({
     }
     process.chdir(savedCwdMode);
     await rmRetry(dirMode);
+  }
+}
+
+// ── contextCost：会话级 MCP 定义占用（只读、按会话可见性）────────────────────
+{
+  const dirCost = await mkdtemp(join(tmpdir(), "dsh-mcp-context-cost-"));
+  const homeCost = join(dirCost, "home");
+  const projCost = join(dirCost, "proj");
+  await mkdir(join(homeCost, ".dsh"), { recursive: true });
+  await mkdir(projCost, { recursive: true });
+  await writeManagedRows(projectMcpFile(projCost), [stdioRow("alpha")], { createIfMissing: true });
+  const savedCwdCost = process.cwd();
+  try {
+    process.chdir(dirCost);
+    const ctxCost = fakeCtx();
+    const registryCost = new ProjectMcpRegistry(ctxCost, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(homeCost, ".dsh", "mcp.yml"), mcpJson: join(homeCost, ".dsh", "mcp.json"), profilesDir: join(homeCost, ".dsh", "profiles") }
+    });
+    const costAgent = fakeAgent("session-cost", projCost);
+    // 会话作用域视图：本插件已经按 deny 过滤后的那一份；宿主工具不在统计里。
+    costAgent.ctx.tools.schemas = () => [
+      { name: "mcp__alpha__read_file", description: "Read a file", parameters: { type: "object", properties: { path: { type: "string" } } } },
+      { name: "mcp__alpha__write_file", description: "Write a file", parameters: { type: "object", properties: {} } },
+      { name: "bash", description: "Host shell", parameters: { type: "object", properties: {} } }
+    ];
+    costAgent.session.requestContext = () => ({ contextWindow: 200000 });
+    ctxCost.agentsList.push(costAgent);
+    await registryCost.reconcileNow();
+
+    const cost = registryCost.contextCost();
+    assert.equal(cost.sessionId, "session-cost", "the focused session is measured");
+    assert.equal(cost.tools, 2, "host tools are excluded from the MCP cost");
+    assert.equal(cost.contextWindow, 200000, "the window comes from the session route metadata");
+    assert.deepEqual(cost.servers.map((server) => [server.name, server.tools]), [["alpha", 2]]);
+    assert.ok(cost.estTokens > 0, "a real catalog prices above zero: " + JSON.stringify(cost));
+    assert.equal(cost.level, "ok", "a two-tool server stays below the reminder threshold");
+
+    // 指定别的会话：找不到就退回零值，不借用当前会话的数字。
+    const missing = registryCost.contextCost("no-such-session");
+    assert.deepEqual([missing.sessionId, missing.tools, missing.level], ["no-such-session", 0, "ok"]);
+
+    // deny 之后同一个会话的占用必须下降：统计口径跟随会话可见性。
+    costAgent.ctx.tools.schemas = () => [
+      { name: "mcp__alpha__read_file", description: "Read a file", parameters: { type: "object", properties: {} } }
+    ];
+    assert.equal(registryCost.contextCost().tools, 1, "the scoped view is read on every query");
+
+    // 超过阈值时 level 升级，页面据此换配色与图标。
+    costAgent.ctx.tools.schemas = () => [
+      { name: "mcp__alpha__big", description: "x".repeat(40000), parameters: { type: "object", properties: {} } }
+    ];
+    assert.equal(registryCost.contextCost().level, "alert", "40k characters is well past 10k estimated tokens");
+
+    // 工具调用结果：读会话当前的 deriveMessages()，Eager 与 Lazy 都按服务器归属。
+    const resultMessages = [
+      { role: "assistant", content: [{ type: "tool-call", id: "c1", name: "mcp__alpha__read_file", arguments: "{}" }] },
+      { role: "tool", toolCallId: "c1", content: [{ type: "text", text: "x".repeat(8) }] },
+      { role: "assistant", content: [{ type: "tool-call", id: "c2", name: "mcp_call", arguments: JSON.stringify({ server: "demo", tool: "ping" }) }] },
+      { role: "tool", toolCallId: "c2", content: [{ type: "text", text: "y".repeat(4) }] },
+      { role: "assistant", content: [{ type: "tool-call", id: "c3", name: "bash", arguments: "{}" }] },
+      { role: "tool", toolCallId: "c3", content: [{ type: "text", text: "host output" }] }
+    ];
+    costAgent.session.deriveMessages = () => resultMessages;
+    const resultCost = registryCost.resultCost();
+    assert.equal(resultCost.sessionId, "session-cost", "the focused session is measured");
+    assert.equal(resultCost.calls, 2, "host tool results are excluded");
+    assert.equal(resultCost.estTokens, 19, "10 for the Eager result + 9 for the Lazy result");
+    assert.equal(resultCost.contextWindow, 200000, "the window comes from the same session route metadata");
+    assert.deepEqual(resultCost.servers.map(({ name, kind, calls }) => ({ name, kind, calls })), [
+      { name: "alpha", kind: undefined, calls: 1 },
+      { name: "demo", kind: "lazy", calls: 1 }
+    ]);
+    assert.equal(registryCost.resultCost("no-such-session").calls, 0, "an unknown session gets zero, not the focused session's figure");
+    costAgent.session.deriveMessages = () => { throw new Error("surface unavailable"); };
+    assert.equal(registryCost.resultCost().calls, 0, "a failing deriveMessages() must not throw through the query face");
+
+    // tool/result 改变仍保留的结果集时补发一次 updated；签名没变则不重复发。
+    costAgent.session.deriveMessages = () => resultMessages;
+    const resultUpdates = [];
+    const unsubscribeResults = registryCost.subscribeUpdated(() => resultUpdates.push("updated"));
+    ctxCost.emit("session/event", costAgent.session, { type: "tool/result" });
+    assert.equal(resultUpdates.length, 1, "a new retained result emits projectMcp/updated");
+    ctxCost.emit("session/event", costAgent.session, { type: "tool/result" });
+    assert.equal(resultUpdates.length, 1, "an unchanged result signature does not re-emit");
+    const longerResults = [
+      ...resultMessages,
+      { role: "assistant", content: [{ type: "tool-call", id: "c4", name: "mcp_call", arguments: JSON.stringify({ server: "demo", tool: "echo" }) }] },
+      { role: "tool", toolCallId: "c4", content: [{ type: "text", text: "z".repeat(8) }] }
+    ];
+    costAgent.session.deriveMessages = () => longerResults;
+    ctxCost.emit("session/event", costAgent.session, { type: "tool/result" });
+    assert.equal(resultUpdates.length, 2, "a larger retained result emits again");
+    costAgent.session.deriveMessages = () => resultMessages;
+    ctxCost.emit("session/event", costAgent.session, { type: "assistant/message", surfaceOp: { op: "replace", startSeq: 0, endSeq: 0 } });
+    assert.equal(resultUpdates.length, 3, "a compaction replacement that drops results emits too");
+    unsubscribeResults();
+
+    // 上下文窗口未知时省略该字段，而不是写 0。
+    costAgent.session.requestContext = () => undefined;
+    assert.equal("contextWindow" in registryCost.contextCost(), false);
+
+    const serviceCost = bindProjectMcpService(registryCost);
+    assert.equal(serviceCost.contextCost().sessionId, "session-cost", "the service exposes the same read");
+    costAgent.session.deriveMessages = () => resultMessages;
+    assert.equal(serviceCost.resultCost().calls, 2, "the service exposes the same result read");
+
+    for (const disposer of ctxCost.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    pass("contextCost measures only the session's visible MCP schemas and reports the threshold level");
+  } finally {
+    process.chdir(savedCwdCost);
+    await rmRetry(dirCost);
+  }
+}
+
+// ── contextCost：活动会话选择 + 代码模式（PTC）无法估算 ──────────────────────
+{
+  const dirSel = await mkdtemp(join(tmpdir(), "dsh-mcp-cost-select-"));
+  const homeSel = join(dirSel, "home");
+  const projSel = join(dirSel, "proj");
+  await mkdir(join(homeSel, ".dsh"), { recursive: true });
+  await mkdir(projSel, { recursive: true });
+  await writeManagedRows(projectMcpFile(projSel), [stdioRow("alpha")], { createIfMissing: true });
+  const savedCwdSel = process.cwd();
+  try {
+    process.chdir(dirSel);
+    const ctxSel = fakeCtx();
+    const registrySel = new ProjectMcpRegistry(ctxSel, {
+      globalNames: async () => [],
+      userLayerPaths: { mcpYml: join(homeSel, ".dsh", "mcp.yml"), mcpJson: join(homeSel, ".dsh", "mcp.json"), profilesDir: join(homeSel, ".dsh", "profiles") }
+    });
+    const agentA = fakeAgent("sel-a", projSel);
+    const agentB = fakeAgent("sel-b", projSel);
+    agentA.session.id = "sel-a";
+    agentB.session.id = "sel-b";
+    agentA.ctx.tools.schemas = () => [{ name: "mcp__alpha__read", description: "Read", parameters: { type: "object", properties: {} } }];
+    agentB.ctx.tools.schemas = () => [
+      { name: "mcp__alpha__read", description: "Read", parameters: { type: "object", properties: {} } },
+      { name: "mcp__alpha__write", description: "Write", parameters: { type: "object", properties: {} } }
+    ];
+    // B 后枚举：旧实现会拿「最后一个」冒充活动会话。
+    ctxSel.agentsList.push(agentA, agentB);
+    await registrySel.reconcileNow();
+
+    // 没有宿主当前项、也没有用户回合时，才退回焦点工作区里最后一个。
+    assert.equal(registrySel.contextCost().sessionId, "sel-b", "fallback is the last focused agent");
+
+    // 宿主当前选中 A：即便 B 后枚举，也要读 A。
+    ctxSel.sessions = { list: () => ({ current: { id: "sel-a" } }) };
+    assert.equal(registrySel.contextCost().sessionId, "sel-a", "host current wins over enumeration order");
+    assert.equal(registrySel.contextCost().tools, 1);
+    assert.equal(registrySel.resultCost().sessionId, "sel-a", "result cost follows the same selection");
+    // current 也可能是字符串 id。
+    ctxSel.sessions = { list: () => ({ current: "sel-b" }) };
+    assert.equal(registrySel.contextCost().sessionId, "sel-b", "string current id is honoured");
+    assert.equal(registrySel.contextCost().tools, 2);
+
+    // 宿主没有当前项（数组形态）时，跟随最近一次顶层用户回合。
+    ctxSel.sessions = { list: () => [] };
+    ctxSel.emit("session/event", { id: "sel-a", header: agentA.session.header }, { type: "user/message" });
+    assert.equal(registrySel.contextCost().sessionId, "sel-a", "the latest top-level user turn selects the session");
+    ctxSel.emit("session/event", { id: "sel-b", header: agentB.session.header }, { type: "user/message" });
+    assert.equal(registrySel.contextCost().sessionId, "sel-b", "switching sessions in the same workspace re-selects");
+
+    // 子代理的 user/message 不能把选择从真实会话上抢走。
+    ctxSel.emit("session/event", { id: "sel-child", header: { cwd: projSel, origin: "subagent" } }, { type: "user/message" });
+    assert.equal(registrySel.contextCost().sessionId, "sel-b", "a subagent turn does not steal the selection");
+    ctxSel.emit("session/event", { id: "sel-deep", header: { cwd: projSel, delegationDepth: 2 } }, { type: "user/message" });
+    assert.equal(registrySel.contextCost().sessionId, "sel-b", "a delegated turn does not steal the selection");
+    // 压缩注入的 surface-replace（也是 user/message）同样不挪选择。
+    ctxSel.emit("session/event", { id: "sel-a", header: agentA.session.header }, { type: "user/message", surfaceOp: { op: "replace", startSeq: 0, endSeq: 0 } });
+    assert.equal(registrySel.contextCost().sessionId, "sel-b", "a compaction replace does not steal the selection");
+
+    // 活动会话被销毁后清掉记录，退回焦点兜底。
+    ctxSel.emit("session/disposed", { id: "sel-b" });
+    assert.equal(registrySel.contextCost().sessionId, "sel-b", "disposed id falls back to the last focused agent");
+
+    // 代码模式（PTC）：请求头里有保留名 run_code → 定义与结果都报无法估算。
+    const agentPtc = fakeAgent("sel-ptc", projSel);
+    agentPtc.session.id = "sel-ptc";
+    agentPtc.session.requestHeader = () => ({ tools: [{ name: "run_code" }, { name: "mcp__alpha__read" }] });
+    agentPtc.session.requestContext = () => ({ contextWindow: 200000 });
+    agentPtc.ctx.tools.schemas = () => [{ name: "mcp__alpha__read", description: "x".repeat(40000), parameters: { type: "object", properties: {} } }];
+    agentPtc.session.deriveMessages = () => [
+      { role: "assistant", content: [{ type: "tool-call", id: "c1", name: "mcp__alpha__read", arguments: "{}" }] },
+      { role: "tool", toolCallId: "c1", content: [{ type: "text", text: "x".repeat(40000) }] }
+    ];
+    ctxSel.agentsList.push(agentPtc);
+    ctxSel.sessions = { list: () => ({ current: { id: "sel-ptc" } }) };
+    const ptcCost = registrySel.contextCost();
+    assert.equal(ptcCost.unsupported, "code-mode", "PTC definitions are not priced from raw schemas");
+    assert.equal(ptcCost.sessionId, "sel-ptc");
+    assert.deepEqual([ptcCost.tools, ptcCost.estTokens, ptcCost.servers], [0, 0, []]);
+    assert.equal(ptcCost.contextWindow, 200000);
+    const ptcResult = registrySel.resultCost();
+    assert.equal(ptcResult.unsupported, "code-mode", "PTC results nested in run_code are not attributed");
+    assert.deepEqual([ptcResult.calls, ptcResult.estTokens], [0, 0]);
+
+    // 切回原生执行器（请求头没有 run_code）即恢复估算，不被 unsupported 缓存住。
+    agentPtc.session.seq = 1;
+    agentPtc.session.requestHeader = () => ({ tools: [{ name: "mcp__alpha__read" }] });
+    const nativeAgain = registrySel.contextCost();
+    assert.equal(nativeAgain.unsupported, undefined, "native executor is estimated again");
+    assert.equal(nativeAgain.tools, 1);
+    assert.equal(registrySel.resultCost().calls, 1, "native results are attributed again");
+    // 还没有请求头（刚恢复的会话）按原生口径估算，首次请求后自我纠正。
+    agentPtc.session.requestHeader = () => undefined;
+    assert.equal(registrySel.contextCost().unsupported, undefined, "no header yet falls back to native estimate");
+
+    for (const disposer of ctxSel.disposers) {
+      const cleanup = disposer();
+      if (typeof cleanup === "function") cleanup();
+    }
+    pass("contextCost follows the active session and reports code mode as unsupported");
+  } finally {
+    process.chdir(savedCwdSel);
+    await rmRetry(dirSel);
   }
 }
 

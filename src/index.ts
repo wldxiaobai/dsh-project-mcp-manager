@@ -21,6 +21,22 @@ export type { McpLoadingMode, McpScopeInfo, McpServerView, McpTransport, Reconne
 export { projectKeyOf, serviceIdentityKeyOf } from "./model.js";
 export type { PatchRow } from "./mcp-file.js";
 export type { McpRowSource } from "./json-file.js";
+export type { ContextCostLevel, McpContextCost, McpResultCost, McpResultServerCost, McpServerContextCost } from "./context-cost.js";
+export {
+  CODE_MODE_TOOL_NAME,
+  CONTEXT_COST_ALERT_TOKENS,
+  CONTEXT_COST_WARN_TOKENS,
+  contextCostLevel,
+  contextCostSignature,
+  estimateContentTokens,
+  estimateMessageTokens,
+  estimateSchemaTokens,
+  isCodeModeTools,
+  mcpContextCost,
+  mcpResultCost,
+  mcpServerOfTool,
+  resultCostSignature
+} from "./context-cost.js";
 
 export const name = "dsh-project-mcp-manager";
 /** agents 为硬依赖：宿主启动早期插件行先于 agents 服务装载时，等待其就绪后再 apply，

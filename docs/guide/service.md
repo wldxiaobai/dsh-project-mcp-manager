@@ -16,6 +16,8 @@ the SSE channel provided by the bundled companion UI.
 | `snapshot()` | In-memory partitions from the previous reconcile (project files and the user layer). Joins the reconcile queue, does not read disk, and does not start a reconcile. |
 | `serverView(projectRoot, rawName)` | One row's in-memory view. Same queue rules as `snapshot()`. |
 | `globalState(rawName)` | Live global-layer state for that raw name, or `undefined` for a project row. |
+| `contextCost(sessionId?)` | How much context that session's visible MCP tool definitions take. Synchronous, memory-only. Without `sessionId` it prefers the host's currently selected session, then the session of the latest top-level user turn, and only falls back to the last session in the focused workspace when neither is available. |
+| `resultCost(sessionId?)` | How much context that session's retained MCP tool results take. Synchronous, memory-only; same session selection as `contextCost()`. |
 | `reload()` | One full reconcile (`reconcileNow`). |
 | `writeTargets()` | Managed yml locations the add dialog can write: the current workspace, the user layer, and the active profile. |
 | `addServer(source, projectRoot, draft)` | Appends one managed yml row from the form (creating the file when it is missing) and schedules a reconcile. Rejects a name already in that file and leaves the file unchanged. |
@@ -41,7 +43,93 @@ necessarily finishes. Call `reload()` when the next read must see the settled
 result. Path lookup and file preparation/opening do not imply those mutation checks or
 trigger a reconcile. JSON files and `.mcp.json` are never written.
 
-`snapshot()` / `serverView()` / `globalState()` do not emit.
+`snapshot()` / `serverView()` / `globalState()` / `contextCost()` /
+`resultCost()` do not emit.
+
+### Context cost
+
+`contextCost()` reads the tool schemas the **session scope** already exposes — the
+ones its `tools.restrict({ deny })` and the row `tools.allow` / `tools.deny`
+filters leave visible — and prices every `mcp__<effective>__<tool>` entry plus
+any visible `mcp_search`, `mcp_describe`, and `mcp_call` definitions:
+
+```text
+estTokens = ceil(JSON.stringify(tools).length / 4) + 4
+```
+
+That is the same heuristic `@deepseek-ai/dsh-token-meter` uses for tool schemas,
+so the number lines up with the host's own context breakdown for the MCP share.
+It is an **estimate**, not a provider count, and it excludes server
+`instructions` (those ride the system prompt, not the tool list). Tools marked
+`deferLoading` are skipped because they are not in the next request.
+
+The three Lazy proxies form one shared item in `servers`, with the reserved name
+`[lazy proxies]` and optional `kind: "lazy-proxy"`; ordinary server items omit
+`kind`. The item counts the actual visible definitions once, regardless of the
+number of Lazy servers. It does not connect to a server or price its cached remote
+catalog. Denied proxies are not counted; search/describe/call results in message
+history are outside this tool-definition metric (see [Tool-result cost](#tool-result-cost)).
+If the scoped schema query is
+unavailable, the global fallback at least removes proxies hidden by this plugin's
+project visibility; other host restrictions cannot be reconstructed there.
+
+`sessionId` is `null` when no session exists yet, which is how a caller tells
+"no session" from "a session with no MCP tools". Per-server totals are priced
+independently, so they can differ from the session total by a few tokens. The
+result carries `level` (`ok` below `warnTokens`, `warn` from 5,000, `alert` from
+10,000) so a consumer does not re-implement the thresholds.
+
+The registry re-emits `projectMcp/updated` when the occupancy signature changes
+after a `request/header` or `request/context` event, after a `tool/result` event,
+or after a surface replacement (compaction) changes the retained result set. A
+page that re-reads on that event sees a fresh number without polling.
+
+### Tool-result cost
+
+`resultCost()` reads the session's current model-visible messages
+(`session.deriveMessages()`) and prices each retained `tool/result` message with
+the same per-message heuristic `dsh-token-meter` uses:
+
+```text
+message = 4 (role framing) + Σ priced blocks
+text/reasoning block = ceil(characters / 4) + 4
+```
+
+Only results whose originating tool call is an MCP call count. Eager results are
+attributed by `mcp__<effective>__<tool>`. Lazy results are attributed by the
+`server` argument of `mcp_call` / `mcp_describe` (and `mcp_search` when it names
+one); a search across servers goes to the shared `[lazy proxies]` group.
+`servers[].kind` is `"lazy"` for a Lazy server and `"lazy-proxy"` for the shared
+group. `calls` counts retained result messages, including failed calls.
+
+This is the context **currently occupied**: a result pruned by
+`dsh-compaction-tool-result-pruner` or removed by compaction is no longer in the
+surface and is not counted. It is an **estimate**, not a provider count; image
+results are priced by their structural reference, not by the route's visual
+tokens.
+
+### Code mode (PTC)
+
+When the session's latest request ran through the code-mode executor (the host's
+reserved `run_code` tool appears in the request-header tool list), both metrics
+return `unsupported: "code-mode"` with the numeric fields zeroed:
+
+- Definitions are no longer priced from tool schemas — code mode renders the MCP
+  capabilities into the system prompt's `tools:sdk` text (including
+  `output.schema`), and the request's tool list holds only `run_code`, so a
+  native-schema estimate would be wrong.
+- Results are no longer attributed per server — MCP calls happen inside
+  `run_code`, and the surface shows the outer `run_code` result, which cannot be
+  split into per-server MCP occupancy; summing every internal call would also
+  count intermediate results that were never printed into context.
+
+So code mode reports "cannot estimate" explicitly rather than a misleading zero
+or a hard-coded number. Detection only reads the session request header
+(`session.requestHeader().tools`) and never touches private executor interfaces;
+a session without a header yet (just restored) is estimated natively and
+self-corrects after its first request. Switching back to the native executor
+restores the estimate. `unsupported` is part of the occupancy signature, so an
+executor switch re-emits `projectMcp/updated` for the page to re-read.
 
 ## Loading mode
 
@@ -100,14 +188,20 @@ not allow a deep import of `lib/registry.js`.
 import {
   PROJECT_MCP_SERVICE,
   PROJECT_MCP_UPDATED_EVENT,
+  type ContextCostLevel,
   type FiberPhaseView,
   type McpAddDraft,
+  type McpContextCost,
   type McpLoadingMode,
+  type McpResultCost,
+  type McpResultServerCost,
   type McpRowSource,
   type McpScopeInfo,
+  type McpServerContextCost,
   type McpServerRuntimeView,
   type McpServerView,
   type McpTransport,
+  type McpWriteTarget,
   type PatchRow,
   type ProjectFileState,
   type ProjectMcpService,
@@ -122,7 +216,11 @@ import {
 `McpServerRuntimeView` (`McpServerView` plus `source`, `fiberPhase`,
 `skipReason`, and `toolCount`). `globalState()` returns `ProjectServerState`.
 `McpServerView.mode` is optional; absent means Eager. `McpAddDraft.mode` is also
-optional; the add form sends it only for Lazy.
+optional; the add form sends it only for Lazy. `contextCost()` returns
+`McpContextCost` with `McpServerContextCost` groups and a `ContextCostLevel`;
+`resultCost()` returns `McpResultCost` with `McpResultServerCost` groups. Both
+carry an optional `unsupported: "code-mode"` when the session runs in code mode
+(see [Code mode (PTC)](#code-mode-ptc)); the numeric fields are then zero.
 
 ## Semver for the companion UI
 

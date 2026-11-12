@@ -48,6 +48,22 @@ function mockProjectMcp(options = {}) {
       if (failMode !== undefined) throw new Error(failMode);
       return Promise.resolve(options.modePath ?? String.raw`D:\work\.dsh\mcp.yml`);
     },
+    contextCost: () => options.contextCost ?? {
+      sessionId: "mock-session",
+      tools: 2,
+      estTokens: 1200,
+      level: "ok",
+      servers: [{ name: "mock", tools: 2, estTokens: 1200 }],
+      warnTokens: 5000,
+      alertTokens: 10000
+    },
+    resultCost: () => options.resultCost ?? {
+      sessionId: "mock-session",
+      calls: 1,
+      estTokens: 800,
+      contextWindow: 200000,
+      servers: [{ name: "mock", calls: 1, estTokens: 800 }]
+    },
     toolStates: () => [{ name: "mock-tool", enabled: true }],
     subscribeUpdated(callback) {
       listeners.add(callback);
@@ -242,6 +258,9 @@ async function assertClosed(stream) {
     assert.equal(state.activeProject, null, "no focused workspace is reported as null");
     assert.equal(state.activeProjectKey, null, "no focused workspace has no identity key");
     assert.equal(typeof state.homeDir, "string");
+    assert.equal(state.contextCost.estTokens, 1200, "the state carries the definition cost");
+    assert.equal(state.resultCost.calls, 1, "the state carries the retained-result cost");
+    assert.equal(state.resultCost.servers[0].name, "mock");
     mcp.setWriteTargets([{ id: "project", source: "dsh-project", projectRoot: String.raw`D:\work`, path: String.raw`D:\work\.dsh\mcp.yml` }]);
     const focused = await readState(connection);
     assert.deepEqual(focused.writeTargets, [{ id: "project", source: "dsh-project", projectRoot: String.raw`D:\work`, path: String.raw`D:\work\.dsh\mcp.yml` }]);

@@ -119,6 +119,26 @@ export type McpUiLocaleKey =
   | "workspaceRunningCount"
   | "workspaceWaitingCount"
   | "workspaceDisabledCount"
+  | "contextCostTag"
+  | "contextCostWindowShare"
+  | "contextCostHelp"
+  | "contextCostHelpNoWindow"
+  | "contextCostServerLine"
+  | "contextCostLazyProxies"
+  | "contextCostWarn"
+  | "contextCostAlert"
+  | "contextCostAria"
+  | "contextCostAriaAlert"
+  | "contextResultTag"
+  | "contextResultHelp"
+  | "contextResultHelpNoWindow"
+  | "contextResultCombined"
+  | "contextResultServerLine"
+  | "contextResultLazyName"
+  | "contextResultAria"
+  | "contextCostCodeModeTag"
+  | "contextCostCodeModeHelp"
+  | "contextCostCodeModeAria"
   | "backToWorkspace"
   | "entriesTitle"
   | "entriesHint"
@@ -251,6 +271,26 @@ export const en: Record<McpUiLocaleKey, string> = {
   workspaceRunningCount: "{count} running",
   workspaceWaitingCount: "{count} on standby",
   workspaceDisabledCount: "{count} disabled",
+  contextCostTag: "MCP {tokens}",
+  contextCostWindowShare: "{percent}% of the window",
+  contextCostHelp: "Tool definitions this session sends on every request: about {tokens} tokens, {share}.\nEstimated at roughly 4 characters per token; server instructions and conversation history are not counted. Tool-call results are counted separately in the Results tag.",
+  contextCostHelpNoWindow: "Tool definitions this session sends on every request: about {tokens} tokens.\nEstimated at roughly 4 characters per token; server instructions and conversation history are not counted. Tool-call results are counted separately in the Results tag.",
+  contextCostServerLine: "{name} · {count} tools · {tokens}",
+  contextCostLazyProxies: "Lazy proxies (shared)",
+  contextCostWarn: "Past {warn}. Consider lazy loading for the largest servers.",
+  contextCostAlert: "Past {alert}. This is a large share of every request.",
+  contextCostAria: "MCP tool definitions use about {tokens} tokens",
+  contextCostAriaAlert: "MCP tool definitions use about {tokens} tokens, past the {alert} threshold",
+  contextResultTag: "Results {tokens}",
+  contextResultHelp: "MCP tool results still in this session: about {tokens} tokens, {share}.\nEstimated at roughly 4 characters per token; results pruned or compacted away are not counted.",
+  contextResultHelpNoWindow: "MCP tool results still in this session: about {tokens} tokens.\nEstimated at roughly 4 characters per token; results pruned or compacted away are not counted.",
+  contextResultCombined: "Tool definitions {definitions} + results {results} = {total}.",
+  contextResultServerLine: "{name} · {count} calls · {tokens}",
+  contextResultLazyName: "{name} (Lazy)",
+  contextResultAria: "MCP tool results use about {tokens} tokens",
+  contextCostCodeModeTag: "MCP n/a",
+  contextCostCodeModeHelp: "This session runs in code mode (PTC): MCP tool definitions are rendered into the system prompt and MCP calls happen inside run_code, so neither can be estimated per tool. Switch to the native tool executor to see estimates.",
+  contextCostCodeModeAria: "MCP context usage cannot be estimated in code mode",
   backToWorkspace: "Back to current workspace",
   entriesTitle: "MCP management page entries",
   entriesHint: "Choose where the MCP management page appears.",
@@ -384,6 +424,26 @@ export const zh: Record<McpUiLocaleKey, string> = {
   workspaceRunningCount: "{count} 运行中",
   workspaceWaitingCount: "{count} 待使用",
   workspaceDisabledCount: "{count} 已禁用",
+  contextCostTag: "MCP {tokens}",
+  contextCostWindowShare: "占窗口 {percent}%",
+  contextCostHelp: "这个会话每次请求都要带的工具定义：约 {tokens} token，{share}。\n按约 4 字符/token 估算，不含服务器 instructions 与对话历史；调用结果另见「结果」标签。",
+  contextCostHelpNoWindow: "这个会话每次请求都要带的工具定义：约 {tokens} token。\n按约 4 字符/token 估算，不含服务器 instructions 与对话历史；调用结果另见「结果」标签。",
+  contextCostServerLine: "{name} · {count} 个工具 · {tokens}",
+  contextCostLazyProxies: "Lazy 代理（共享）",
+  contextCostWarn: "已超过 {warn}，定义较大的服务器可以考虑改用懒加载。",
+  contextCostAlert: "已超过 {alert}，每次请求都要占很大一块。",
+  contextCostAria: "MCP 工具定义约占 {tokens} token",
+  contextCostAriaAlert: "MCP 工具定义约占 {tokens} token，已超过 {alert} 阈值",
+  contextResultTag: "结果 {tokens}",
+  contextResultHelp: "这个会话里仍保留的 MCP 工具调用结果：约 {tokens} token，{share}。\n按约 4 字符/token 估算；已裁剪或压缩掉的结果不计。",
+  contextResultHelpNoWindow: "这个会话里仍保留的 MCP 工具调用结果：约 {tokens} token。\n按约 4 字符/token 估算；已裁剪或压缩掉的结果不计。",
+  contextResultCombined: "工具定义 {definitions} + 调用结果 {results} = 合计 {total}。",
+  contextResultServerLine: "{name} · {count} 次调用 · {tokens}",
+  contextResultLazyName: "{name}（Lazy）",
+  contextResultAria: "MCP 工具调用结果约占 {tokens} token",
+  contextCostCodeModeTag: "MCP 无法估算",
+  contextCostCodeModeHelp: "这个会话运行在代码模式（PTC）：MCP 工具定义被渲染进系统提示词，MCP 调用又嵌在 run_code 内部，两份口径都无法按工具估算。切回原生工具执行器即可看到估算。",
+  contextCostCodeModeAria: "代码模式下无法估算 MCP 上下文占用",
   backToWorkspace: "回到当前工作区",
   entriesTitle: "MCP 管理页入口",
   entriesHint: "选择在哪些位置显示 MCP 管理页。",

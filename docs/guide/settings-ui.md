@@ -141,9 +141,59 @@ All three entries render the same panel, so all three open with the same
 - the **Current workspace** label;
 - the workspace name (the last path segment) and the full path on one line,
   with the path ellipsized when long and shown in full on hover;
+- the MCP context-cost tag (only with a session that has MCP tools; see below);
 - a status line — `N servers · M running · K on standby · J disabled`
   — with only the non-zero parts;
 - the note "Automatically loads the MCP servers of the workspace you are in."
+
+### MCP context cost
+
+The header also carries short tags such as `MCP 3.4k` and `Results 1.2k`: roughly
+how many tokens of MCP tool definitions the **current session** sends with every
+request, and how many tokens of MCP tool results it still keeps in context. The
+"current session" prefers the host's selected session, then the session of the
+latest top-level user turn — switching sessions within a workspace or running a
+subagent never moves the tags onto a different session. Each tag shows only its
+number; clicking it opens the detail:
+
+- the definition estimate is `ceil(characters / 4) + 4`, the same heuristic the
+  host uses for tool schemas — not a provider count, and it excludes server
+  `instructions` and conversation history;
+- the detail gives the share of the context window and the three largest
+  definition groups (servers or **Lazy proxies (shared)**);
+- visible `mcp_search`, `mcp_describe`, and `mcp_call` definitions count once as
+  shared Lazy overhead, not once per Lazy server. A Lazy-only session therefore
+  still shows the tag. Remote catalogs and search/describe/call results in message
+  history are not added to this tool-definition estimate (they belong to the
+  results tag);
+- at 5,000 the tag turns to the reminder colour and the detail suggests lazy
+  loading; at 10,000 it turns to the warning colour and gains a warning icon.
+  The number always stays visible, so colour is never the only signal, and the
+  tag's `aria-label` reads the threshold out too.
+
+The `Results` tag prices each retained `tool/result` message with the host's
+per-message heuristic. Eager results are grouped by server; Lazy results are
+grouped by the `server` argument of `mcp_call` / `mcp_describe` (and of a
+`mcp_search` that names one), with a cross-server search counted under
+**Lazy proxies (shared)**. The detail shows the share of the window that results
+occupy, the combined definition + result total, and the three largest result
+groups. Only results still in the current surface count: text pruned by the tool
+result pruner or removed by compaction is gone from context, so it is not
+counted.
+
+The tags are absent when there is no session, or when the session has no MCP
+tools / no retained MCP results. They refresh themselves: the host re-emits its
+update signal whenever the request header or route changes, and also when a
+tool result or a compaction changes the retained result set; the page re-reads
+on that event.
+
+When the current session runs in **code mode (PTC)**, the two tags merge into one
+neutral `MCP n/a`: code mode renders MCP capabilities into the system prompt and
+nests calls inside `run_code`, so neither the tool-schema basis nor per-server
+result attribution applies, and a hard number would be misleading — the panel
+says "cannot estimate" instead of showing zero. The detail explains why and notes
+that switching back to the native executor restores the estimate. The tag follows
+the update signal when the executor changes.
 
 When the host cannot tell yet (several workspaces and no session focus), the
 name reads **Current workspace not determined**, the path is hidden, and the

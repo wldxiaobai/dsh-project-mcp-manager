@@ -221,7 +221,9 @@ function applyConnected(ctx: Context) {
       activeProject,
       // 身份键由宿主按 projectKeyOf() 算，浏览器拿到的是可直接比较的值。
       activeProjectKey: activeProject === null ? null : projectKeyOf(activeProject),
-      homeDir: homedir()
+      homeDir: homedir(),
+      contextCost: mcp.contextCost(),
+      resultCost: mcp.resultCost()
     };
   };
 
