@@ -129,6 +129,13 @@ export type McpUiLocaleKey =
   | "contextCostAlert"
   | "contextCostAria"
   | "contextCostAriaAlert"
+  | "contextResultTag"
+  | "contextResultHelp"
+  | "contextResultHelpNoWindow"
+  | "contextResultCombined"
+  | "contextResultServerLine"
+  | "contextResultLazyName"
+  | "contextResultAria"
   | "backToWorkspace"
   | "entriesTitle"
   | "entriesHint"
@@ -263,14 +270,21 @@ export const en: Record<McpUiLocaleKey, string> = {
   workspaceDisabledCount: "{count} disabled",
   contextCostTag: "MCP {tokens}",
   contextCostWindowShare: "{percent}% of the window",
-  contextCostHelp: "Tool definitions this session sends on every request: about {tokens} tokens, {share}.\nEstimated at roughly 4 characters per token; server instructions and conversation history are not counted.",
-  contextCostHelpNoWindow: "Tool definitions this session sends on every request: about {tokens} tokens.\nEstimated at roughly 4 characters per token; server instructions and conversation history are not counted.",
+  contextCostHelp: "Tool definitions this session sends on every request: about {tokens} tokens, {share}.\nEstimated at roughly 4 characters per token; server instructions and conversation history are not counted. Tool-call results are counted separately in the Results tag.",
+  contextCostHelpNoWindow: "Tool definitions this session sends on every request: about {tokens} tokens.\nEstimated at roughly 4 characters per token; server instructions and conversation history are not counted. Tool-call results are counted separately in the Results tag.",
   contextCostServerLine: "{name} · {count} tools · {tokens}",
   contextCostLazyProxies: "Lazy proxies (shared)",
   contextCostWarn: "Past {warn}. Consider lazy loading for the largest servers.",
   contextCostAlert: "Past {alert}. This is a large share of every request.",
   contextCostAria: "MCP tool definitions use about {tokens} tokens",
   contextCostAriaAlert: "MCP tool definitions use about {tokens} tokens, past the {alert} threshold",
+  contextResultTag: "Results {tokens}",
+  contextResultHelp: "MCP tool results still in this session: about {tokens} tokens, {share}.\nEstimated at roughly 4 characters per token; results pruned or compacted away are not counted.",
+  contextResultHelpNoWindow: "MCP tool results still in this session: about {tokens} tokens.\nEstimated at roughly 4 characters per token; results pruned or compacted away are not counted.",
+  contextResultCombined: "Tool definitions {definitions} + results {results} = {total}.",
+  contextResultServerLine: "{name} · {count} calls · {tokens}",
+  contextResultLazyName: "{name} (Lazy)",
+  contextResultAria: "MCP tool results use about {tokens} tokens",
   backToWorkspace: "Back to current workspace",
   entriesTitle: "MCP management page entries",
   entriesHint: "Choose where the MCP management page appears.",
@@ -406,14 +420,21 @@ export const zh: Record<McpUiLocaleKey, string> = {
   workspaceDisabledCount: "{count} 已禁用",
   contextCostTag: "MCP {tokens}",
   contextCostWindowShare: "占窗口 {percent}%",
-  contextCostHelp: "这个会话每次请求都要带的工具定义：约 {tokens} token，{share}。\n按约 4 字符/token 估算，不含服务器 instructions 与对话历史。",
-  contextCostHelpNoWindow: "这个会话每次请求都要带的工具定义：约 {tokens} token。\n按约 4 字符/token 估算，不含服务器 instructions 与对话历史。",
+  contextCostHelp: "这个会话每次请求都要带的工具定义：约 {tokens} token，{share}。\n按约 4 字符/token 估算，不含服务器 instructions 与对话历史；调用结果另见「结果」标签。",
+  contextCostHelpNoWindow: "这个会话每次请求都要带的工具定义：约 {tokens} token。\n按约 4 字符/token 估算，不含服务器 instructions 与对话历史；调用结果另见「结果」标签。",
   contextCostServerLine: "{name} · {count} 个工具 · {tokens}",
   contextCostLazyProxies: "Lazy 代理（共享）",
   contextCostWarn: "已超过 {warn}，定义较大的服务器可以考虑改用懒加载。",
   contextCostAlert: "已超过 {alert}，每次请求都要占很大一块。",
   contextCostAria: "MCP 工具定义约占 {tokens} token",
   contextCostAriaAlert: "MCP 工具定义约占 {tokens} token，已超过 {alert} 阈值",
+  contextResultTag: "结果 {tokens}",
+  contextResultHelp: "这个会话里仍保留的 MCP 工具调用结果：约 {tokens} token，{share}。\n按约 4 字符/token 估算；已裁剪或压缩掉的结果不计。",
+  contextResultHelpNoWindow: "这个会话里仍保留的 MCP 工具调用结果：约 {tokens} token。\n按约 4 字符/token 估算；已裁剪或压缩掉的结果不计。",
+  contextResultCombined: "工具定义 {definitions} + 调用结果 {results} = 合计 {total}。",
+  contextResultServerLine: "{name} · {count} 次调用 · {tokens}",
+  contextResultLazyName: "{name}（Lazy）",
+  contextResultAria: "MCP 工具调用结果约占 {tokens} token",
   backToWorkspace: "回到当前工作区",
   entriesTitle: "MCP 管理页入口",
   entriesHint: "选择在哪些位置显示 MCP 管理页。",

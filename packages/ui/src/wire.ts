@@ -52,6 +52,19 @@ export interface McpUiContextCost {
   alertTokens: number;
 }
 
+/** 会话级 MCP 工具调用结果的上下文占用估算。token 是启发式估算，不是 provider 计数。 */
+export interface McpUiResultCost {
+  /** 被统计的会话；还没有会话时为 null，其余字段为零。 */
+  sessionId: string | null;
+  /** 仍保留在会话里的结果消息条数；被裁剪或压缩掉的不算。 */
+  calls: number;
+  estTokens: number;
+  /** 模型上下文窗口；宿主不知道时省略。 */
+  contextWindow?: number;
+  /** 按估算 token 从大到小。 */
+  servers: { name: string; kind?: "lazy" | "lazy-proxy"; calls: number; estTokens: number }[];
+}
+
 export interface McpUiOpenTarget {
   id: string;
   label: string;
@@ -81,6 +94,8 @@ export interface McpUiState {
   homeDir: string;
   /** 当前会话的 MCP 工具定义占用；抬头标签与阈值提醒的数据源。 */
   contextCost: McpUiContextCost;
+  /** 当前会话仍保留的 MCP 工具调用结果占用；抬头「结果」标签的数据源。 */
+  resultCost: McpUiResultCost;
 }
 
 export interface McpUiTool {

@@ -12,6 +12,7 @@ import {
   MCP_UI_TOOLS_PATH,
   type McpUiContextCost,
   type McpUiResult,
+  type McpUiResultCost,
   type McpUiServer,
   type McpUiState,
   type McpUiTool,
@@ -22,7 +23,7 @@ import { collapseServers, partitionShadowed, type LogicalServer } from "./collap
 import { displayHomePath, profileNameFromFile, serverActionsOpen } from "./display.ts";
 import { parsePastedConfig, type PasteConfigFailure } from "./paste-config.ts";
 import { addPathForTarget, badgeTone, confirmationDisplay, emptyDraft, partitionRows, profileEnd, validateAddDraft, type AddDraft, type AddScope } from "./panel-helpers.ts";
-import { contextCostView, formatTokenCount, orderWorkspaceGroups, workspaceGroupMarker, workspaceHeader, type ContextCostView, type WorkspaceGroupMarker } from "./workspace.ts";
+import { contextCostView, formatTokenCount, orderWorkspaceGroups, resultCostView, workspaceGroupMarker, workspaceHeader, type ContextCostView, type ResultCostView, type WorkspaceGroupMarker } from "./workspace.ts";
 import { PANEL_CSS } from "./style.ts";
 
 export interface McpPanelProps {
@@ -410,6 +411,7 @@ export function McpPanel({ t }: McpPanelProps) {
   const activeProject = state?.activeProject ?? null;
   const activeProjectKey = state?.activeProjectKey ?? null;
   const contextCost = state?.contextCost;
+  const resultCost = state?.resultCost;
   const { projectRows, userRows, profileBuckets } = partitionRows(servers);
   const projectGroups: DisplayGroup[] = orderWorkspaceGroups(groupProjectRows(projectRows), activeProjectKey).map(([key, group]) => {
     const marker = workspaceGroupMarker(key, activeProjectKey);
@@ -436,7 +438,7 @@ export function McpPanel({ t }: McpPanelProps) {
 
   return (
     <div className="dsh-mcp-ui">
-      <WorkspaceHeader activeProject={activeProject} activeProjectKey={activeProjectKey} servers={servers} contextCost={contextCost} t={t} />
+      <WorkspaceHeader activeProject={activeProject} activeProjectKey={activeProjectKey} servers={servers} contextCost={contextCost} resultCost={resultCost} t={t} />
       <div className="intro">
         <p>{t("intro")}</p>
         <Tooltip label={t("introHelp")} side="right" portal maxWidth={420} openOnClick>
@@ -692,15 +694,17 @@ function ServerGroups({ title, groups, busy, t, homeDir, writeTargets, onToggle,
 }
 
 /** 「当前工作区」抬头：名称、路径、计数与范围说明。三个入口都渲染同一个面板，因此都带上这一块。 */
-function WorkspaceHeader({ activeProject, activeProjectKey, servers, contextCost, t }: {
+function WorkspaceHeader({ activeProject, activeProjectKey, servers, contextCost, resultCost, t }: {
   readonly activeProject: string | null;
   readonly activeProjectKey: string | null;
   readonly servers: McpUiServer[];
   readonly contextCost: McpUiContextCost | undefined;
+  readonly resultCost: McpUiResultCost | undefined;
   readonly t: McpPanelProps["t"];
 }) {
   const header = workspaceHeader(activeProject, activeProjectKey, servers);
   const cost = contextCostView(contextCost);
+  const results = resultCostView(resultCost);
   return (
     <section className="workspace-head">
       <p className="workspace-label">{t("currentWorkspace")}</p>
@@ -708,8 +712,15 @@ function WorkspaceHeader({ activeProject, activeProjectKey, servers, contextCost
         <p className="workspace-name">{header.known ? header.name : t("workspaceUnknown")}</p>
         {header.path !== null && <p className="workspace-path" title={header.path}>{header.path}</p>}
       </div>
-      {cost !== null && contextCost !== undefined && (
-        <ContextCostTag cost={cost} warnTokens={contextCost.warnTokens} alertTokens={contextCost.alertTokens} t={t} />
+      {(cost !== null || results !== null) && (
+        <div className="workspace-costs">
+          {cost !== null && contextCost !== undefined && (
+            <ContextCostTag cost={cost} warnTokens={contextCost.warnTokens} alertTokens={contextCost.alertTokens} t={t} />
+          )}
+          {results !== null && (
+            <ResultCostTag cost={results} definitions={cost?.estTokens ?? 0} t={t} />
+          )}
+        </div>
       )}
       {header.segments.length > 0 && (
         <p className="workspace-status">
@@ -758,6 +769,47 @@ function ContextCostTag({ cost, warnTokens, alertTokens, t }: {
             {cost.level === "alert" && <IconWarningOutlineRegular size={12} />}
             {t("contextCostTag", { tokens: cost.tokens })}
           </Tag>
+        </button>
+      </Tooltip>
+    </p>
+  );
+}
+
+/**
+ * 工具调用结果标签。文字只留结果总量；说明气泡给出占窗口比例、与工具定义的
+ * 合计，以及结果最大的几台服务器。结果可能已被裁剪或压缩，气泡里写明口径。
+ */
+function ResultCostTag({ cost, definitions, t }: {
+  readonly cost: ResultCostView;
+  /** 工具定义的原始估算值；为 0 时不显示合计行。 */
+  readonly definitions: number;
+  readonly t: McpPanelProps["t"];
+}) {
+  const share = cost.percent === null ? "" : t("contextCostWindowShare", { percent: String(cost.percent) });
+  const lines = [
+    share === ""
+      ? t("contextResultHelpNoWindow", { tokens: cost.tokens })
+      : t("contextResultHelp", { tokens: cost.tokens, share }),
+    ...(definitions > 0
+      ? [t("contextResultCombined", {
+          definitions: formatTokenCount(definitions),
+          results: cost.tokens,
+          total: formatTokenCount(definitions + cost.estTokens)
+        })]
+      : []),
+    ...cost.top.map((server) => t("contextResultServerLine", {
+      name: server.kind === "lazy-proxy"
+        ? t("contextCostLazyProxies")
+        : server.kind === "lazy" ? t("contextResultLazyName", { name: server.name }) : server.name,
+      count: server.calls,
+      tokens: server.tokens
+    }))
+  ];
+  return (
+    <p className="workspace-cost cost-result">
+      <Tooltip label={lines.join("\n")} side="bottom" portal maxWidth={360} openOnClick>
+        <button type="button" className="workspace-cost-anchor" aria-label={t("contextResultAria", { tokens: cost.tokens })}>
+          <Tag tone="neutral">{t("contextResultTag", { tokens: cost.tokens })}</Tag>
         </button>
       </Tooltip>
     </p>

@@ -3,6 +3,7 @@ import {
   contextCostView,
   formatTokenCount,
   orderWorkspaceGroups,
+  resultCostView,
   sameWorkspace,
   workspaceCountSegments,
   workspaceCounts,
@@ -22,6 +23,17 @@ function cost(overrides) {
     servers: [],
     warnTokens: 5000,
     alertTokens: 10000,
+    ...overrides
+  };
+}
+
+/** 一份完整的结果占用载荷；只覆盖用例关心的字段。 */
+function resultCost(overrides) {
+  return {
+    sessionId: "session-a",
+    calls: 2,
+    estTokens: 0,
+    servers: [],
     ...overrides
   };
 }
@@ -275,6 +287,48 @@ test("contextCostView carries the level through and drops an unknown window", ()
   assert.equal(contextCostView(cost({ estTokens: 999999, contextWindow: 1000 })).percent, 100, "the share is capped at 100");
 });
 
+test("resultCostView hides itself when there is no session or no retained result", () => {
+  assert.equal(resultCostView(undefined), null);
+  assert.equal(resultCostView(resultCost({ sessionId: null, calls: 0 })), null, "no session means no label");
+  assert.equal(resultCostView(resultCost({ calls: 0, servers: [] })), null, "a session without retained results shows nothing");
+});
+
+test("resultCostView keeps Lazy attribution and the shared proxy marker", () => {
+  const view = resultCostView(resultCost({
+    calls: 3,
+    estTokens: 1200,
+    contextWindow: 200000,
+    servers: [
+      { name: "demo", kind: "lazy", calls: 2, estTokens: 900 },
+      { name: "[lazy proxies]", kind: "lazy-proxy", calls: 1, estTokens: 300 }
+    ]
+  }));
+  assert.ok(view !== null);
+  assert.equal(view.tokens, "1.2k");
+  assert.equal(view.estTokens, 1200);
+  assert.equal(view.percent, 1);
+  assert.deepEqual(view.top, [
+    { name: "demo", kind: "lazy", calls: 2, tokens: "900" },
+    { name: "[lazy proxies]", kind: "lazy-proxy", calls: 1, tokens: "300" }
+  ]);
+});
+
+test("resultCostView caps the breakdown and drops an unknown window", () => {
+  const view = resultCostView(resultCost({
+    calls: 4,
+    estTokens: 12000,
+    servers: [
+      { name: "a", calls: 1, estTokens: 9000 },
+      { name: "b", kind: "lazy", calls: 1, estTokens: 2000 },
+      { name: "c", calls: 1, estTokens: 700 },
+      { name: "d", calls: 1, estTokens: 300 }
+    ]
+  }));
+  assert.equal(view.percent, null, "no window means no percentage");
+  assert.deepEqual(view.top.map((server) => server.name), ["a", "b", "c"], "the bubble lists the three largest groups");
+  assert.equal(resultCostView(resultCost({ estTokens: 999999, contextWindow: 1000 })).percent, 100, "the share is capped at 100");
+});
+
 test("workspace copy exists in both languages", () => {
   assert.deepEqual(Object.keys(en).sort(byCodeUnit), Object.keys(zh).sort(byCodeUnit));
   assert.equal(zh.currentWorkspace, "当前工作区");
@@ -289,6 +343,10 @@ test("workspace copy exists in both languages", () => {
   assert.equal(zh.workspaceDisabledCount, "{count} 已禁用");
   assert.equal(en.workspaceServerCountOne, "1 server");
   assert.equal(en.workspaceServerCount, "{count} servers");
+  assert.equal(zh.contextResultTag, "结果 {tokens}");
+  assert.equal(en.contextResultTag, "Results {tokens}");
+  assert.equal(zh.contextResultServerLine, "{name} · {count} 次调用 · {tokens}");
+  assert.equal(en.contextResultServerLine, "{name} · {count} calls · {tokens}");
 });
 
 console.log(passed + " passed");

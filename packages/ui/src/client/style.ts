@@ -116,9 +116,16 @@ export const PANEL_CSS = `
   line-height: 18px;
   color: var(--dsw-alias-label-tertiary);
 }
-/* 上下文占用标签：只留一个短数值，细节在点击展开的气泡里。 */
+/* 上下文占用标签：只留短数值，细节在点击展开的气泡里。定义与结果并排。 */
+.dsh-mcp-ui .workspace-costs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
 .dsh-mcp-ui .workspace-cost {
-  margin: 4px 0 0;
+  margin: 0;
 }
 .dsh-mcp-ui .workspace-cost-anchor {
   display: inline-flex;
