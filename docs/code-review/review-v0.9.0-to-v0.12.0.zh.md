@@ -158,7 +158,7 @@ console.log(orderWorkspaceGroups([
 
 本工作区总数应为 **0**，因为唯一一行属于全局 user 层。若全局行 active 或 disabled，对应子计数也会受影响。该问题目前限于抬头展示，不影响全局常驻或项目装载策略，因此列 P3。
 
-**建议修复**：在路径比较前先过滤 `row.layer === 'project'`，不要依赖全局行路径为空这一假设。设计提案 [§5.2](<../design/proposal-ui-entries-and-workspace.md#L165-L176>) 中关于全局行路径为空的描述，也应随修复改为正确的数据契约。
+**建议修复**：在路径比较前先过滤 `row.layer === 'project'`，不要依赖全局行路径为空这一假设。设计提案 [§5.2](<../design/proposal-ui-entries-and-workspace.md#52-数据来源>) 中关于全局行路径为空的描述，也应随修复改为正确的数据契约。
 
 **验收测试**：构造 user/profile 行的 `projectRoot` 都与 `activeProject` 相同，断言它们不计入 total/running/waiting/disabled；同时保留真正项目行的统计。
 
