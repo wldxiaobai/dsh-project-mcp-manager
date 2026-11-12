@@ -13,7 +13,8 @@ import { DIAG_FILE } from "../lib/dsh-paths.js";
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Windows 上 chokidar 关闭后目录句柄可能仍短暂占用：rm 带退避重试。 */
+/** Windows 上 chokidar 关闭后目录句柄可能仍短暂占用：rm 带退避重试。
+ *  有界串行重试（Sonar javascript:S9382）：下一轮必须等上一轮失败与退避之后。 */
 async function rmRetry(path) {
   for (let attempt = 0; attempt < 20; attempt++) {
     try {
@@ -74,24 +75,22 @@ function fakeCtx() {
     holdDispose: false,
     releaseDispose: [],
     plugin(_plugin, config) {
-      let resolved = false;
-      const fiber = {
+      // cordis fiber 本就是 thenable：用真 Promise 承载 settle，不手写 then
+      // （Sonar javascript:S7739）。trackMount 对每个 fiber 只调一次
+      // .then(onActive, onFailed)，真 Promise 语义完全覆盖；holdFibers 时
+      // 把 resolve 挂起，释放后才 settle。
+      let resolveReady;
+      const fiber = Object.assign(new Promise((resolve) => { resolveReady = resolve; }), {
         config,
         dispose: async () => {
           disposals.push(config.serverName);
           if (ctx.holdDispose) {
             await new Promise((resolveDispose) => { ctx.releaseDispose.push(resolveDispose); });
           }
-        },
-        then(onFulfilled) {
-          if (!resolved) {
-            resolved = true;
-            if (ctx.holdFibers) ctx.held.push(() => onFulfilled?.());
-            else queueMicrotask(() => onFulfilled?.());
-          }
-          return Promise.resolve();
         }
-      };
+      });
+      if (ctx.holdFibers) ctx.held.push(() => resolveReady());
+      else queueMicrotask(() => resolveReady());
       mounts.push(config);
       return fiber;
     },
@@ -184,7 +183,8 @@ async function teardown(s) {
   await rmRetry(s.dir);
 }
 
-/** 轮询直到谓词成立（对账链异步推进，不能用固定 sleep）。 */
+/** 轮询直到谓词成立（对账链异步推进，不能用固定 sleep）。
+ *  有界串行轮询（Sonar javascript:S9382）：逐轮检查 + 退避，不能并行化。 */
 async function until(predicate, timeoutMs = 5000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
@@ -296,6 +296,7 @@ await scenario("T3 prompt filter and resource gate fail closed for unknown scope
     const next = async () => ({ sections });
     const ghost = fakeAgent("ghost", s.projB); // 从未创建 → 不在 agentProjects
 
+    // 两个未知 scope 顺序断言（Sonar javascript:S9382）：纯内存过滤，无 I/O 可并发。
     for (const scope of [ghost, undefined]) {
       const prompt = await assemble({ sections }, { scope }, next);
       assert.deepEqual(prompt.sections.map(({ name }) => name), ["harness:identity"],
@@ -307,6 +308,7 @@ await scenario("T3 prompt filter and resource gate fail closed for unknown scope
     assert.equal(promptA.sections.at(-1).text.endsWith('["alpha"].'), true, "resource list filtered to own servers");
 
     const resourceTools = ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"];
+    // 逐工具顺序断言（Sonar javascript:S9382）：纯内存门检，失败信息按工具名定位。
     for (const name of resourceTools) {
       const allow = async () => ({ kind: "allow" });
       const decide = (agent, server) => preExecute({ name, agent, arguments: { server } }, allow);
@@ -474,6 +476,7 @@ await scenario("T6 protection notice, off-chain retry, cap and manual recovery",
     s.ctx.agentsList.push(stubborn);
     await s.created({ agent: stubborn, source: "startup" });
     // 轮询通知文本直到重试用尽（10+20+30ms 退避，毫秒级到达）。
+    // 有界串行轮询（Sonar javascript:S9382）：逐轮读取 + 退避。
     const deadline = Date.now() + 3000;
     let text = "";
     while (Date.now() < deadline) {
@@ -494,6 +497,7 @@ await scenario("T6 protection notice, off-chain retry, cap and manual recovery",
     assert.equal(await noticeOf(stubborn), undefined, "notice cleared after manual recovery");
 
     // 全局诊断留有 restrict-fallback 事件（含成因与 agent）；落盘走锁，异步轮询。
+    // 有界串行轮询（Sonar javascript:S9382）：逐轮读盘 + 退避。
     const diagPath = join(s.home, ".dsh", DIAG_FILE);
     const diagDeadline = Date.now() + 3000;
     let recorded = false;
@@ -521,7 +525,7 @@ await scenario("T6 protection notice, off-chain retry, cap and manual recovery",
 await delay(200);
 if (unhandled.length > 0) {
   failures.push({ name: "unhandledRejection", error: unhandled[0] });
-  console.log("FAIL  unhandled rejections: " + unhandled.map((e) => String(e)).join(" | "));
+  console.log("FAIL  unhandled rejections: " + unhandled.map(String).join(" | "));
 }
 if (failures.length > 0) {
   console.log(`\nISOLATION RACE RESULTS: ${failures.length} failed`);
