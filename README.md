@@ -54,7 +54,7 @@ Lazy supports stdio and Streamable HTTP. Use `mcp_search` to find a tool,
 `mcp_describe` for its schemas, and `mcp_call` to run it. Search connects
 to the visible Lazy servers to discover their tools. Pass `server` to
 limit discovery to one. Each connection caches its tool list and closes
-after five idle minutes or when the row is unloaded. Tool allow and deny
+when the session ends or the row is unloaded. Tool allow and deny
 rules apply to all three proxies.
 
 Use Eager for servers that need DSH resource integration, server
@@ -235,3 +235,7 @@ Thanks to everyone who has contributed code to this project:
 - [@yangjh0127](https://github.com/yangjh0127): per-server Lazy loading mode
   and its MCP Manager switch
   ([#30](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/30)).
+- [@yangjh0127](https://github.com/yangjh0127): persistent workspace MCP
+  mounts with per-session tool, instruction, and resource isolation, plus
+  per-session Lazy activation
+  ([#32](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/32)).

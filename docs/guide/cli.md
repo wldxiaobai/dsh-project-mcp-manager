@@ -43,14 +43,17 @@ show those filters (pattern text only).
 (per-project `$DSH_HOME/mcp-diag/<hash>.json`, global `$DSH_HOME/.mcp-diag.json`;
 neither is written into a workspace). It
 prints each layer's row count and names, then the latest `summary`
-(mounted / skipped / unhealthy / idle-not-mounted / tool-budget hits). It does not inspect host memory: if the
+(mounted / skipped / unhealthy / tool-budget hits). A diagnostic file written by
+an older on-demand version may also print `idle-not-mounted` names; current
+versions keep every discovered workspace mounted and no longer produce them. It
+does not inspect host memory: if the
 host has never reconciled, the files are absent and the command reports
 that. `--scope project|user|profile` filters which layers are listed and which
 diagnostic file is printed (the project file vs
 `$DSH_HOME/.mcp-diag.json`). `--scope profile` lists only profile layers
 (add `--profile <name>` to keep one); `--scope user` still lists every
-user-layer file, including all profiles. Idle catalog rows print as
-not-mounted (no session), not as unhealthy.
+user-layer file, including all profiles. Legacy idle rows from an older
+diagnostic file still print as not-mounted (no session), not as unhealthy.
 
 **`import`** copies `{"mcpServers":{...}}` into a native yml or JSON file
 (`--scope` / `--format` / `--profile` match `add`; default scope is

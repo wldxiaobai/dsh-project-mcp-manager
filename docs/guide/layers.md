@@ -44,18 +44,10 @@ managed yml of the same scope and leaves the original file unchanged.
   line, the user-layer row is **skipped** and recorded as
   `skipReason: "name-taken"` in the snapshot (no renaming, to avoid
   `serverName` reservation conflicts).
-- **On-demand project mounts** (v0.6.0): the catalog and effective names are
-  still computed for every known project. Before any workspace is focused,
-  project-layer fibers are created only for projects with a live session or
-  the process cwd, and they unmount after a 5 minute grace once the last
-  session leaves. After the user focuses a workspace (opening its session,
-  or continuing to work in it), only that project stays mounted; every other
-  workspace unmounts immediately. Desktop does not dispose the previous
-  session on switch, so leaving those servers up would leak their tools into
-  the global tool list. The project entry and file watcher remain, and the
-  row is listed in `summary.idle` with `skipReason: "idle"` (more specific
-  skips such as `env-missing` are preserved). Idle is not `unhealthy`.
-  User-layer globals stay resident.
+- **Project mounts**: all discovered workspaces with MCP configuration stay
+  mounted for the lifetime of the plugin. Session focus controls the settings
+  target. Each session can discover its own workspace tools and the applicable
+  user-layer tools. Lazy servers still connect on demand.
 
 A server that registers more than `DSH_MCP_TOOL_BUDGET_WARN` tools or
 description/schema bytes (default 200 / 256KiB) is warned once per crossing

@@ -156,10 +156,7 @@ and header do not project connection state, so the standby count is not proof
 that no connection exists.
 
 Workspace groups follow the same focus. The current group moves to the top and
-gets a **Current** tag; other groups that still have a row waiting for a
-session get an **Idle** tag and the sentence "Loads when you switch to this
-workspace." A row skipped for a more specific reason (a missing environment
-variable, a taken name, and so on) does not add the Idle tag.
+gets a **Current** tag; no other group carries a tag.
 
 ## What the list shows
 
@@ -194,7 +191,7 @@ through a confirmation (see below).
 |---|---|
 | Running · N tools | Connected, tools registered. Green switch. |
 | Available on demand | Enabled Lazy row. Its on-demand connection is not projected and may already be open from a recent call; the next `mcp_search` / `mcp_describe` / `mcp_call` uses it, reconnecting if it was closed. |
-| Enabled · waiting for a session | Switched on but not mounted, e.g. no session in that workspace yet, or unmounted after the idle grace. White switch. |
+| Enabled · waiting to load | Switched on but not mounted yet, e.g. the host has yet to load its configuration. White switch. |
 | Starting | Mount in progress. The page keeps refreshing until it settles. |
 | Failed to start | The connection failed. |
 | Not started · name in use / missing environment variable / invalid after variable expansion / invalid config / retries stopped | The loader skipped the row. The full reason is on the next line. |
@@ -246,13 +243,10 @@ Every server card has a **Loading mode** control: **Eager** (default) or
   each tool is registered in DSH. Use it for server instructions, DSH
   Resources, host policies that target individual registered tool names, or the
   **Manage tools** switches.
-- **Lazy** does not connect at mount. The first `mcp_search`, `mcp_describe`,
-  or `mcp_call` connects it; a `mcp_search` without `server` connects every
-  visible Lazy server in the session, which can be slow and can start several
-  processes at once. The connection caches the tool list and closes after five
-  idle minutes, when the row is unloaded, or when the mode changes. Cancelling
-  one proxy call does not cancel other callers sharing the connection; the last
-  cancelled waiter starts closing it. Lazy rows
+- **Lazy** connects separately for each session on its first `mcp_search`.
+  Without `server`, the search can start several processes at once. An
+  activated connection stays open until the session ends or the configuration
+  is unloaded or replaced. Lazy rows
   show **Available on demand**; the **Manage tools** button is hidden because
   no per-tool tools are registered. The page does not probe a Lazy server; a
   failure surfaces only on the first search or call. Edit `tools.allow` /

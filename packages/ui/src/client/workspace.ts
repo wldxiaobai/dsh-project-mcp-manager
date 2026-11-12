@@ -15,7 +15,7 @@ export interface WorkspaceCounts {
   /** 该工作区里的全部行，含启动中、失败等不单列的状态。 */
   readonly total: number;
   readonly running: number;
-  /** 已启用待使用：active Lazy（可按需连接）或 idle（等会话）。 */
+  /** 已启用待使用：仅 active 的按需加载（Lazy）行可按需连接。 */
   readonly waiting: number;
   readonly disabled: number;
 }
@@ -25,7 +25,7 @@ export interface WorkspaceCountSegment {
   readonly count: number;
 }
 
-export type WorkspaceGroupMarker = "current" | "idle";
+export type WorkspaceGroupMarker = "current";
 
 export interface WorkspaceHeaderModel extends WorkspaceCounts {
   /** 是否已经知道当前工作区。 */
@@ -75,7 +75,7 @@ export function workspaceCounts(servers: readonly McpUiServer[], activeProjectKe
       disabled += 1;
     } else if (row.active && row.mode !== "lazy") {
       running += 1;
-    } else if (row.active || row.skipReason === "idle") {
+    } else if (row.active) {
       waiting += 1;
     }
   }
@@ -114,16 +114,14 @@ export function workspaceHeader(
 }
 
 /**
- * 工作区分组标记：当前工作区标「当前」；其它工作区只要还有行在等会话就标「空闲」。
- * 已有更具体的跳过原因（env-missing、env-invalid、name-taken 等）不覆盖这个判断。
+ * 工作区分组标记：只给当前工作区标「当前」，其它分组不标记。
+ * 常驻挂载后不再有「空闲」分组（旧版按需挂载的 skipReason `idle`）。
  */
 export function workspaceGroupMarker(
   projectKey: string,
-  rows: readonly Pick<McpUiServer, "skipReason">[],
   activeProjectKey: string | null
 ): WorkspaceGroupMarker | null {
-  if (sameWorkspace(projectKey, activeProjectKey)) return "current";
-  return rows.some((row) => row.skipReason === "idle") ? "idle" : null;
+  return sameWorkspace(projectKey, activeProjectKey) ? "current" : null;
 }
 
 /** 当前工作区那一组置顶，其余保持原有顺序。分组以宿主给的工作区键为键。 */

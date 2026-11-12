@@ -11,12 +11,13 @@ English | [中文](how-it-works.zh.md)
 - **Mounting**: each `(project, serverName)` pair in the project layers mounts
   one `@deepseek-ai/dsh-mcp-client` instance (`ctx.plugin`) on the host ctx and
   registers it into the global tool layer; multiple sessions inside the same
-  project share a single connection. Before a workspace is focused,
-  project-layer fibers are created only for projects with a live session or
-  the process cwd, and they unmount after a 5 minute grace. Once the user
-  focuses a workspace, only that project stays mounted and the others
-  unmount immediately, so a desktop workspace switch cannot leave another
-  project's tools in the global list. The catalog entry and watcher remain.
+  project share a single connection. At startup, restored sessions and the
+  process start directory supply the initial workspaces. Workspaces with MCP
+  configuration stay mounted once discovered. Session focus updates the settings
+  target. Creating a session waits up to 20 seconds for its visible Eager
+  servers to finish mounting, so the first model request sees them; sessions
+  restored at startup skip the wait. Newly discovered workspace collisions
+  preserve existing Eager names and connections. Lazy still connects on demand.
   **Every user-layer row mounts exactly one instance** (global, independent of
   the number of projects) — see
   [configuration sources and layers](layers.md).
@@ -43,11 +44,17 @@ English | [中文](how-it-works.zh.md)
 - **Effective names**: when the original `serverName` is unique across the
   whole catalog (host global rows + all project rows) it keeps its name; on a
   conflict **project rows** are renamed to `p<first 6 hex chars of
-  sha256(project root)>_<original name>` (truncated to 32 characters,
-  deterministic and independent of mount order) to avoid the serverName
-  reservation conflicts that `dsh-mcp-client` makes per process root. Global
-  rows (profile patch lines and user-layer rows) participate in occupancy
-  determination but are never renamed. Model-visible tool names are built from
+  sha256(project root)>_<original name>` (truncated to 32 characters) to avoid
+  the serverName reservation conflicts that `dsh-mcp-client` makes per process
+  root. Already-mounted Eager names are retained first (unless a host global
+  name takes them), so a newly discovered workspace collision renames only the
+  newcomer and never remounts the online instance; effective names therefore
+  depend on mount history, and a retained prefixed name persists until unmount
+  even after the collision disappears. If a generated name collides with a
+  literal or truncated name, a deterministic hash suffix
+  (`<first 23 chars>_<8 hex>`) is appended. Global rows (profile patch lines and
+  user-layer rows) participate in occupancy determination but are never
+  renamed. Model-visible tool names are built from
   the **effective** server name and the MCP tool's own name
   (`mcp__<effectiveServerName>__<toolName>`), which may differ from the
   `serverName` written in the file.
@@ -56,4 +63,6 @@ English | [中文](how-it-works.zh.md)
   every project server except those of the session's own project, plus the
   global servers suppressed by the project's own rows; a session without a cwd
   falls back to the owner project (subagents), then to the project containing
-  the dsh process cwd. Released when the session is destroyed.
+  the dsh process cwd. The same scope filters server instructions and resource
+  discovery, and resource calls are checked per session. Tool restrictions are
+  released when the session is destroyed.

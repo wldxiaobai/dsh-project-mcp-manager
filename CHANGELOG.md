@@ -20,6 +20,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A new session whose first tool restriction cannot be applied now fails
+  closed: all registered MCP tools are temporarily denied until the next
+  successful sweep, instead of leaving the session able to see every
+  workspace's tools. While the fallback is active, the session's prompt
+  carries an MCP protection notice (cause summary and recovery path, without
+  raw error text), off-chain backoff retries restore precise visibility
+  automatically even if reconciliation is stuck, and the event is logged to
+  the global diagnostics. Covered by the isolation race suite (T1–T6).
+
+- Creating a session applies tool isolation immediately and waits up to 20
+  seconds for its visible Eager servers to finish mounting, so the first model
+  request sees them; sessions restored at startup skip the wait. Newly
+  discovered workspace collisions preserve existing Eager connections.
+  Contributed by [@yangjh0127](https://github.com/yangjh0127) in
+  [#32](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/32).
+
+- Lazy connections activate independently on each session's first search and
+  stay open across idle periods and workspace switches. Contributed by
+  [@yangjh0127](https://github.com/yangjh0127) in
+  [#32](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/32).
+
+- Keep MCP servers mounted for every discovered workspace when users switch
+  sessions. Each session sees its own workspace and shared MCP tools, server
+  instructions, and resources. Contributed by
+  [@yangjh0127](https://github.com/yangjh0127) in
+  [#32](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/32).
+
 - Lazy cancellation now releases the final waiter's pending connection without
   cancelling other callers. Generation shutdown is serialized with reconnects,
   including SDK stdio negotiation, idle close, mode changes and repeated disposal.
@@ -27,6 +54,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   package version instead of a stale literal.
 - Invalid disabled placeholders cannot be turned into incomplete mode-only rows;
   Lazy standby rows are not counted as running in the workspace header.
+- The leftover idle workspace tag and its hint are removed from the management
+  page, and the enabled-but-not-started status now reads "waiting to load".
 
 ### Architecture
 

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   MAX_TIMER_DELAY_MS,
   MCP_TRANSPORT_ALIASES,
@@ -143,6 +144,40 @@ assert.match(ns, SERVER_NAME_RE);
 assert.ok(ns.length <= 32, "namespaced name stays within serverName limit");
 assert.equal(namespacedServerName(projA, "dup"), namespacedServerName(projA, "dup"));
 pass("namespacedServerName produces valid, deterministic names");
+
+// 9b. effectiveServerNames：retained 优先保留已挂载 Eager 名；宿主全局名优先于 retained
+const keyOf = (root, name) => projectKeyOf(root) + "\u0000" + name;
+const retainedDup = new Map([[keyOf(projA, "dup"), "dup"]]);
+const effRetained = effectiveServerNames(
+  [{ projectRoot: projA, names: ["dup"] }, { projectRoot: projB, names: ["dup"] }],
+  [],
+  retainedDup
+);
+assert.equal(effRetained.get(keyOf(projA, "dup")), "dup", "a mounted Eager name survives a new collision");
+assert.equal(effRetained.get(keyOf(projB, "dup")), namespacedServerName(projB, "dup"), "the newcomer takes the prefixed name");
+const effHostTaken = effectiveServerNames([{ projectRoot: projA, names: ["dup"] }], ["dup"], retainedDup);
+assert.equal(effHostTaken.get(keyOf(projA, "dup")), namespacedServerName(projA, "dup"), "host global names beat retained");
+pass("effectiveServerNames retains mounted Eager names unless host globals take them");
+
+// 9c. 生成名撞字面名时走哈希后缀兜底：合法、≤32 字符、按 (项目, 名, 尝试序号) 确定性
+const projC = "/srv/projects/gamma";
+const generated = namespacedServerName(projB, "dup");
+const collisionCatalog = [
+  { projectRoot: projA, names: [generated] },
+  { projectRoot: projB, names: ["dup"] },
+  { projectRoot: projC, names: ["dup"] }
+];
+const effCollision = effectiveServerNames(collisionCatalog);
+const fallback = effCollision.get(keyOf(projB, "dup"));
+assert.equal(effCollision.get(keyOf(projA, generated)), generated, "the literal name keeps its place");
+assert.notEqual(fallback, generated, "the generated name must not collide with the literal name");
+assert.match(fallback, SERVER_NAME_RE);
+assert.ok(fallback.length <= 32, "fallback name stays within serverName limit");
+const fallbackHash = createHash("sha256").update(keyOf(projB, "dup") + "\u0000" + 0).digest("hex").slice(0, 8);
+assert.equal(fallback, `${generated.slice(0, 23)}_${fallbackHash}`, "fallback is deterministic per (project, name, attempt)");
+assert.equal(effCollision.get(keyOf(projC, "dup")), namespacedServerName(projC, "dup"), "other owners keep their own prefixed names");
+assert.deepEqual(effectiveServerNames(collisionCatalog), effCollision, "assignment is repeatable");
+pass("effectiveServerNames falls back to a hash suffix when a generated name collides");
 
 // 10. denySetFor：own 项目不 deny，无项目 deny 全部
 const mounted = [{ projectRoot: projA, effectiveNames: ["a1", "a2"] }, { projectRoot: projB, effectiveNames: ["b1"] }];

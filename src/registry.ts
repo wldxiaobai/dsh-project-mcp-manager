@@ -8,14 +8,15 @@
  * 装载模型：
  *   - 每个 (项目, serverName) 在宿主 ctx 上装载一个 @deepseek-ai/dsh-mcp-client
  *     实例（ctx.plugin），注册进全局工具层——同一项目内多会话共享同一连接；
- *     扫描与生效名按全量已知项目计算。尚未聚焦时，项目层只给「有活跃会话 ∪
- *     进程 cwd」的项目装载，离开后宽限 5 分钟再卸载。一旦用户聚焦某个工作区
- *     （agent/created、session/created、session/event），项目层只保留这一处，
- *     其它工作区立刻卸载，避免全局工具层把它们泄漏给当前会话；条目与 watcher
- *     保留。用户层仍宿主级常驻一条；
+ *     已知项目的 MCP 在插件运行期间保持装载，切换焦点只影响界面。
  *   - 生效名：原始 serverName 在整个目录（全局行 + 全部项目行）中唯一时保持
- *     原名；否则按 model.effectiveServerNames 规则改名（确定性、与装载顺序
- *     无关），避免 dsh-mcp-client 按进程根的 serverName 预留冲突；
+ *     原名；否则按 model.effectiveServerNames 规则改名，避免 dsh-mcp-client
+ *     按进程根的 serverName 预留冲突。已挂载 Eager 的生效名经 retained 优先
+ *     保留（宿主全局名占用除外），新冲突行才改名，因此生效名依赖挂载历史、
+ *     不重挂在线实例；
+ *   - 会话就绪：新建会话在 agent/created 串行返回前等待其可见 Eager 就绪
+ *     （≤20s），首条模型请求即可见工具；启动恢复 replay 不等待。等待不能放
+ *     agent/pre-step——宿主在那之前已冻结本步工具/提示词快照；
  *   - 会话可见性：agent 创建时按其会话原始项目（`session.header.cwd`）解析
  *     项目，对该 agent 层应用 tools.restrict({ deny })，deny 掉「除本会话项目外
  *     的全部项目服务器」；目录变化（项目文件增删改、新 agent、装载 settle）都会
@@ -41,6 +42,7 @@
  * 缺失即跳过该条目。
  */
 import chokidar from "chokidar";
+import { setTimeout as wait } from "node:timers/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { access, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -97,8 +99,11 @@ import {
   type McpServerView
 } from "./model.js";
 import { mcpToolBudgetStats, mcpToolCount, parseToolBudgetWarn, schemaToolId } from "./status.js";
-import { LazyServer } from "./lazy/connection.js";
+import { LazyConnections } from "./lazy/connection.js";
 import { LAZY_TOOL_NAMES, registerLazyTools, type LazyMount } from "./lazy/proxies.js";
+
+const EAGER_STARTUP_WAIT_MS = 20_000;
+const EAGER_STARTUP_POLL_MS = 100;
 
 const delay = (ms: number) => new Promise<void>((resolvePromise) => setTimeout(resolvePromise, ms));
 
@@ -160,6 +165,53 @@ function expandToToolNames(serverNames: Iterable<string>, toolIds: string[]): st
   return out;
 }
 
+const MCP_RESOURCE_TOOLS = new Set(["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]);
+
+interface McpPromptPresentation {
+  sections: { name: string; text: string; interpolate?: boolean }[];
+}
+
+// 镜像宿主提示词形态（升级宿主时须对拍）：instructions 小节名 `mcp:<生效名>` 来自
+// @deepseek-ai/dsh-mcp-client；`mcp-resource-servers` 小节文案来自
+// @deepseek-ai/dsh-mcp-resources，形如 “…server argument: [\"a\",\"b\"].”。
+// 正则失配时整段丢弃（fail-closed）：宁可少展示，不泄漏别的工作区的服务器。
+function filterMcpPrompt<T extends McpPromptPresentation>(prompt: T, hidden: Set<string>): T {
+  if (hidden.size === 0) return prompt;
+  const sections = prompt.sections.flatMap((section) => {
+    if (section.name.startsWith("mcp:") && hidden.has(section.name.slice(4))) return [];
+    if (section.name !== "mcp-resource-servers") return [section];
+
+    // The host resource section ends with a JSON array of effective server names.
+    const match = /^(.*: )(\[.*\])\.$/s.exec(section.text);
+    if (match === null) return [];
+    let names: string[];
+    try {
+      names = JSON.parse(match[2]);
+      if (!Array.isArray(names) || names.some((name) => typeof name !== "string")) return [];
+    } catch {
+      return [];
+    }
+    const visible = names.filter((name) => !hidden.has(name));
+    if (visible.length === 0) return [];
+    return [{ ...section, text: match[1] + JSON.stringify(visible) + "." }];
+  });
+  return { ...prompt, sections };
+}
+
+/** fail-closed 兜底期间的模型告知：成因简述 + 恢复路径。不含原始错误文本，避免泄漏别的工作区的工具名。 */
+function protectionNoticeText(attempts: number, retryLimit: number): string {
+  const recovery = attempts <= retryLimit
+    ? "A background retry restores precise visibility automatically within seconds."
+    : "Automatic retries are exhausted. Ask the user to edit any MCP configuration file or open a new session to trigger a refresh.";
+  return [
+    "## MCP protection state",
+    "",
+    "Applying this session's MCP tool-visibility filter failed (the host rejected the restriction, e.g. a tool-name registration race), so all mcp__* tools are temporarily denied for this session to prevent cross-workspace access. Lazy proxies (mcp_search / mcp_describe / mcp_call), if present, keep their own per-session checks.",
+    recovery,
+    "Do not call mcp__* tools while this notice is present, and tell the user about this state if MCP tools are needed."
+  ].join("\n");
+}
+
 /** 一个已装载（或装载中）的 MCP 服务器的运行时状态。 */
 export interface ProjectServerState {
   /** 项目根；全局层行为空串（scope="global"）。 */
@@ -172,7 +224,7 @@ export interface ProjectServerState {
   /** 行来源（遮蔽优先序见模块注释）；旧调用方可缺省。 */
   source?: McpRowSource;
   fiber?: any;
-  lazy?: LazyServer;
+  lazy?: LazyConnections;
   phase: ProjectServerPhase;
   error?: string;
 }
@@ -214,12 +266,12 @@ export interface ProjectMcpRegistryOptions {
   healthRemountBackoffMs?: number;
   /** 健康重挂次数上限；缺省 `HEALTH_REMOUNT_LIMIT`。 */
   healthRemountLimit?: number;
+  /** fail-closed 兜底的链外重试退避（测试注入）；缺省 `FALLBACK_RETRY_DELAYS_MS`。 */
+  fallbackRetryDelaysMs?: number[];
   /** 配置文件指纹（测试注入）；缺省 `fs.stat`。返回 `null` 视为缺失。 */
   statFile?: (path: string) => Promise<{ mtimeMs: number; size: number } | null>;
   /** 工具预算告警阈值（测试注入）；缺省读 `DSH_MCP_TOOL_BUDGET_WARN`。 */
   toolBudget?: { maxTools: number; maxBytes: number };
-  /** 无会话后卸载宽限（毫秒）；缺省 `UNMOUNT_GRACE_MS`（5 分钟）。测试注入。 */
-  unmountGraceMs?: number;
   /** 打开配置文件的宿主动作（配套 UI 的「打开配置文件」按钮）；缺省时该按钮不可用。 */
   openPath?: (path: string) => void | Promise<void>;
   /**
@@ -437,8 +489,8 @@ export const GLOBAL_SCOPE_KEY = "\u0000global";
 export const HEALTH_REMOUNT_LIMIT = 3;
 /** 0 工具去抖与两次重挂之间的缺省退避（毫秒）。测试可经 options 注入 0。 */
 export const HEALTH_REMOUNT_BACKOFF_MS = 5_000;
-/** 项目无活跃会话且不是进程 cwd 之后，再卸载其服务器的缺省宽限。 */
-export const UNMOUNT_GRACE_MS = 5 * 60 * 1000;
+/** fail-closed 兜底的链外重试退避；用尽后保留保护通知，等手动触发恢复。 */
+export const FALLBACK_RETRY_DELAYS_MS = [500, 2_000, 5_000];
 
 /** 服务身份键。口径在 `serviceIdentityKeyOf`，设置页用同一函数，避免异名同命令只在装载器折叠。 */
 function serviceIdentityKey(item: SourcedRow): string | undefined {
@@ -659,7 +711,10 @@ export interface DiagSummary {
   mounted: number;
   skippedByReason: Record<string, number>;
   unhealthy: DiagUnhealthy[];
-  /** 宽限卸载的行（不是故障；`status` 打成「未装载（无会话）」）。 */
+  /**
+   * 只读兼容：仅旧版诊断文件（按需挂载时代的宽限卸载）可能带这一项，当前实现
+   * 不再产生；`dsh-mcp status` 仍会为旧文件打印。不要新增写入方。
+   */
   idle?: string[];
   toolBudget?: { name: string; tools: number; bytes: number }[];
 }
@@ -695,6 +750,7 @@ function parseUnhealthyList(raw: unknown): DiagUnhealthy[] {
   return unhealthy;
 }
 
+/** 只服务旧版诊断文件：当前摘要不再写 `idle`，读到就原样带出给 `status`。 */
 function parseIdleNames(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   const idle: string[] = [];
@@ -818,8 +874,11 @@ export class ProjectMcpRegistry {
   private effective = new Map<string, string>();
   /** agent id → 其会话项目 key（undefined 表示无项目）。 */
   private readonly agentProjects = new Map<string, string | undefined>();
+  private applyingRestrictions = false;
   /** agent id → 当前 restrict 的 disposer。 */
   private readonly restrictions = new Map<string, () => void>();
+  /** 处于 fail-closed 兜底的会话：agent id → 成因与链外重试状态。成功 sweep 或释放 agent 时清除。 */
+  private readonly restrictionFallbacks = new Map<string, { cause: string; attempts: number; timer?: ReturnType<typeof setTimeout> }>();
 
   private watcher?: ReturnType<typeof chokidar.watch>;
   private watchedFiles: string[] = [];
@@ -874,8 +933,6 @@ export class ProjectMcpRegistry {
    */
   private readonly warnGates = new Map<string, string>();
   private timer: ReturnType<typeof setTimeout> | undefined;
-  /** 无会话宽限期到期后补一次对账（注入 `now` 时由测试自行 reconcileNow）。 */
-  private graceTimer: ReturnType<typeof setTimeout> | undefined;
   private chain: Promise<void> = Promise.resolve();
   private disposed = false;
   /** 配置文件读取次数（scan / 用户层；测试用指纹跳过断言）。 */
@@ -894,26 +951,19 @@ export class ProjectMcpRegistry {
   private readonly lastScanFiles = new Map<string, ProjectScanFiles>();
   /** 上一轮用户层合并后的全局期望行（摘要按目录计，不按当前装载 Map）。 */
   private lastGlobalDesired: DesiredProjectRow[] = [];
+  private globalCatalogScanned = false;
   /** 装载行的健康巡检内存（unmount 会删掉 ProjectServerState，不能只挂在 state 上）。 */
   private readonly healthByMount = new Map<string, MountHealth>();
   /** 作用域键 → 超预算的生效名（写入 diag summary；每轮重算）。 */
   private readonly toolBudgetHits = new Map<string, { name: string; tools: number; bytes: number }[]>();
-  /** 项目离开活跃挂载集的时刻（宽限内仍保持装载）。 */
-  private readonly idleSince = new Map<string, number>();
   /** session id → 该会话 cwd 解析出的项目根。session/created 先于 agent 入列时也要能装载。 */
   private readonly sessionRoots = new Map<string, string>();
-  /**
-   * 用户当前聚焦的项目（agent/created、session/created、session/event）。
-   * 桌面端切换工作区不会 dispose 上一个会话，若继续按「全部在线会话」挂载，
-   * 全局工具层会把别的工作区的 MCP 暴露给当前会话。有焦点后只挂这一处。
-   */
+  /** 当前工作区仅用于管理页展示和写入目标。 */
   private foregroundKey: string | undefined;
   /** 已解析过的 cwd / 项目根 → projectKey。session/event 上同步切焦点，不等再次走盘。 */
   private readonly cwdKey = new Map<string, string>();
   /** projectKey → 解析时的项目根。焦点可以落在还没有配置文件的工作区上。 */
   private readonly projectRoots = new Map<string, string>();
-  /** 上一轮 sweep 见到的工具 id。切焦点时先按这份名单补 deny，再卸掉其它项目。 */
-  private lastToolIds: string[] = [];
   /** 上一轮对账结束时的在线目录签名；补扫发现变化才再对账。 */
   private liveWatchSig = "";
   private liveWatchTimer: ReturnType<typeof setInterval> | undefined;
@@ -928,6 +978,7 @@ export class ProjectMcpRegistry {
   /** 生效名 → 尚未结束的 fiber.dispose。同名重挂必须等它落地，避免预留被晚到的 dispose 清掉。 */
   private readonly nameRelease = new Map<string, Promise<void>>();
   private disposeLazyTools?: () => void;
+  private readonly closedLazySessions = new WeakSet<object>();
 
   constructor(ctx: any, providers: ProjectMcpRegistryOptions) {
     this.ctx = ctx;
@@ -946,24 +997,30 @@ export class ProjectMcpRegistry {
       if (agent?.session === undefined && agent?.id === undefined) return;
       const id = typeof agent?.id === "string" ? agent.id : undefined;
       const replay = id !== undefined && this.startupAgentIds.delete(id);
-      // serial 的 agent/created 会等这个 Promise：对账和 deny 落定后再开始这一回合，
-      // 避免模型先看到上一个工作区的工具。
-      return this.enqueue(async () => {
-        if (replay) {
-          await this.rememberAgent(agent, false);
-        } else {
-          await this.rememberAgent(agent, true);
-          this.hostFocusSealed = true;
-        }
-        await this.reconcileAll();
-      }).catch((error) => {
-        this.ctx.logger.warn(`项目 MCP 后台任务失败：${error instanceof Error ? error.message : String(error)}`);
+      // DSH waits for agent/created. Apply isolation before returning, while
+      // mount replacement and diagnostics continue on the reconciliation queue.
+      if (!replay) this.hostFocusSealed = true;
+      const ready = this.prepareAgent(agent, !replay).catch((error) => {
+        this.ctx.logger.warn(`会话 MCP 隔离准备失败：${error instanceof Error ? error.message : String(error)}`);
       });
+      this.schedule(async () => {
+        await ready;
+        await this.reconcileAll();
+      });
+      // 宿主在 agent/pre-step 之前就已冻结本步的工具与提示词快照，在那里等待
+      // 无法让首条请求看到等待期间挂载的工具。等待放在这里：新建会话的首条模型
+      // 请求即可见其 Eager 工具；启动恢复（replay）不等待，避免拖慢冷启动。
+      if (replay) return ready;
+      return ready.then(() => this.waitForVisibleEager(agent, payload?.signal));
     }, watchOpts);
     ctx.on("agent/disposed", (payload: any) => {
       const agent = payload?.agent ?? payload;
       if (agent === undefined) return;
       this.releaseAgent(agent);
+      // Session-backed agents may be replaced while their session stays open.
+      if (this.sessionIdOf(agent.session) === undefined && typeof agent.id === "string") {
+        this.releaseLazySession(agent.id);
+      }
       this.schedule(async () => {
         await this.reconcileAll();
       });
@@ -977,7 +1034,11 @@ export class ProjectMcpRegistry {
     }, watchOpts);
     ctx.on("session/disposed", (session: any) => {
       const id = this.sessionIdOf(session);
-      if (id !== undefined) this.sessionRoots.delete(id);
+      if (id !== undefined) {
+        this.sessionRoots.delete(id);
+        this.closedLazySessions.add(session);
+        this.releaseLazySession(id);
+      }
       this.schedule(async () => {
         await this.reconcileAll();
       });
@@ -989,13 +1050,35 @@ export class ProjectMcpRegistry {
       if (event?.type !== "user/message") return;
       this.onSessionActivity(session);
     }, watchOpts);
+    ctx.on("tools/change", () => this.sweepRestrictions(), watchOpts);
+    ctx.on("system-prompt/assemble", async (
+      _assembly: McpPromptPresentation,
+      context: { scope?: { id?: string } },
+      next: () => Promise<McpPromptPresentation>
+    ) => {
+      const hidden = this.hiddenServersFor(this.projectOf(context.scope));
+      const filtered = filterMcpPrompt(await next(), hidden);
+      const scopeId = context.scope?.id;
+      const fallback = scopeId === undefined ? undefined : this.restrictionFallbacks.get(scopeId);
+      if (fallback === undefined) return filtered;
+      // 兜底期间告知模型成因与恢复路径；不含原始错误文本（可能带别的工作区的工具名）。
+      return { ...filtered, sections: [...filtered.sections, { name: "mcp-protection-notice", text: protectionNoticeText(fallback.attempts, this.fallbackRetryDelays().length) }] };
+    }, watchOpts);
+    ctx.on("tools/pre-execute", (
+      exec: { name: string; arguments?: { server?: string }; agent?: { id?: string } },
+      next: () => Promise<unknown>
+    ) => {
+      const server = exec.arguments?.server;
+      if (MCP_RESOURCE_TOOLS.has(exec.name) && typeof server === "string"
+          && this.hiddenServersFor(this.projectOf(exec.agent)).has(server)) {
+        return Promise.resolve({ kind: "deny", reason: "MCP resource server is unavailable in this session" });
+      }
+      return next();
+    }, watchOpts);
     this.armLiveWatch();
 
     // 插件热更重载时已存在的会话也要覆盖。
     this.schedule(async () => {
-      for (const agent of this.liveAgents()) {
-        this.agentProjects.set(agent.id, await this.resolveProject(agent));
-      }
       if (!this.hostFocusSealed) await this.alignForegroundToHost();
       this.hostFocusSealed = true;
       await this.reconcileAll();
@@ -1006,9 +1089,10 @@ export class ProjectMcpRegistry {
 
   private disposeRuntime(): void {
     this.disposed = true;
+    // Map 迭代允许删除当前键：直接遍历即可逐个清掉定时器与状态，无需数组快照。
+    for (const id of this.restrictionFallbacks.keys()) this.clearRestrictionFallback(id);
     if (this.timer !== undefined) clearTimeout(this.timer);
     if (this.liveWatchTimer !== undefined) clearInterval(this.liveWatchTimer);
-    if (this.graceTimer !== undefined) clearTimeout(this.graceTimer);
     if (this.watcher !== undefined) void this.watcher.close().catch(() => {});
     if (this.userWatcher !== undefined) void this.userWatcher.close().catch(() => {});
     this.disposeRestrictions();
@@ -1119,6 +1203,13 @@ export class ProjectMcpRegistry {
     return typeof id === "string" && id !== "" ? id : undefined;
   }
 
+  private releaseLazySession(id: string): void {
+    for (const state of this.globalServers.values()) state.lazy?.release(id);
+    for (const project of this.projects.values()) {
+      for (const state of project.servers.values()) state.lazy?.release(id);
+    }
+  }
+
   private async rememberSession(session: any, focus = true): Promise<void> {
     const id = this.sessionIdOf(session);
     const cwd = session?.header?.cwd;
@@ -1131,6 +1222,52 @@ export class ProjectMcpRegistry {
     } catch {
       // 目录不可解析：不占挂载集
     }
+  }
+
+  private async waitForVisibleEager(agent: { id?: string }, signal?: AbortSignal): Promise<void> {
+    const deadline = performance.now() + EAGER_STARTUP_WAIT_MS;
+    while (!this.disposed && this.liveAgents().includes(agent) && this.hasPendingVisibleEager(this.projectOf(agent))) {
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) break;
+      // 有意的串行轮询（Sonar typescript:S9382）：等待必须逐步推进，不能并行化。
+      await wait(Math.min(remaining, EAGER_STARTUP_POLL_MS), undefined, { signal });
+    }
+    signal?.throwIfAborted();
+  }
+
+  private hasPendingVisibleEager(project: string | undefined): boolean {
+    if (!this.globalCatalogScanned) return true;
+    const suppressed = project === undefined ? undefined : this.suppressedGlobals.get(project);
+    const shared = this.lastGlobalDesired.filter(({ rawName }) => !suppressed?.has(rawName));
+    if (this.hasPendingEager(GLOBAL_SCOPE_KEY, shared, this.globalServers)) return true;
+    if (project === undefined) return false;
+    const local = this.lastScanDesired.get(project);
+    return local === undefined || this.hasPendingEager(project, local.rows, this.projects.get(project)?.servers);
+  }
+
+  private hasPendingEager(
+    key: string,
+    rows: readonly DesiredProjectRow[],
+    mounted?: ReadonlyMap<string, ProjectServerState>
+  ): boolean {
+    return rows.some(({ rawName, row }) => {
+      if (row.disabled === true || row.config?.mode === "lazy") return false;
+      const state = mounted?.get(rawName);
+      if (state === undefined) return !this.skipReasons.has(key + "\0" + rawName);
+      return state.phase === "mounting" || state.phase === "unloading" || state.lazy !== undefined;
+    });
+  }
+
+  private async prepareAgent(agent: any, focus: boolean): Promise<void> {
+    await this.rememberAgent(agent, focus);
+    if (typeof agent.id !== "string" || !this.liveAgents().includes(agent)) return;
+    if (!this.agentProjects.has(agent.id)) {
+      const project = await this.resolveProject(agent);
+      if (!this.liveAgents().includes(agent)) return;
+      if (project !== undefined) this.agentProjects.set(agent.id, project);
+    }
+    this.sweepRestrictions([agent]);
+    if (focus) this.emitUpdated();
   }
 
   private async rememberAgent(agent: any, focus = false): Promise<void> {
@@ -1168,10 +1305,7 @@ export class ProjectMcpRegistry {
     return undefined;
   }
 
-  /**
-   * 用户刚在这个会话里写下一条消息。cwd 已经解析过就当场把其它项目的服务器拆掉，
-   * 不等对账链；第一次见到的目录仍走异步解析。调用方必须先确认这是 user/message。
-   */
+  /** 用户消息更新管理页焦点。首次见到的目录还需要发现配置。 */
   private onSessionActivity(session: any): void {
     const cwd = session?.header?.cwd;
     if (typeof cwd !== "string" || cwd === "") return;
@@ -1187,44 +1321,7 @@ export class ProjectMcpRegistry {
     }
     if (cached === this.foregroundKey) return;
     this.foregroundKey = cached;
-    this.sweepCached();
-    this.detachProjectsExcept(cached);
-    this.schedule(async () => {
-      await this.reconcileAll();
-    });
-  }
-
-  /** 用上一轮工具名单给每个在线 agent 补上 deny。切焦点时服务器还在，必须先挡住再拆。 */
-  private sweepCached(): void {
-    const groups = this.activeMountGroups();
-    for (const agent of this.liveAgents()) {
-      const project = this.agentProjects.get(agent.id);
-      const hidden = [...denySetFor(project, groups)];
-      if (project !== undefined) {
-        for (const rawName of this.suppressedGlobals.get(project) ?? []) {
-          if (this.globalServers.has(rawName)) hidden.push(rawName);
-        }
-      }
-      const deny = expandToToolNames(hidden, this.lastToolIds);
-      this.appendLazyProxyDenies(project, this.lastToolIds, deny);
-      this.applyRestriction(agent, deny);
-    }
-  }
-
-  /**
-   * 立刻从装载表拿掉非当前工作区的服务器（全局工具层不再看见这些名字）。
-   * dispose 记在生效名上，同名重挂要等它结束；不能在这里裸调且不等待。
-   */
-  private detachProjectsExcept(keep: string): void {
-    for (const [key, entry] of this.projects) {
-      if (key === keep) continue;
-      for (const state of entry.servers.values()) {
-        entry.servers.delete(state.rawName);
-        state.phase = "unloading";
-        this.releaseFiber(state);
-      }
-      this.idleSince.delete(key);
-    }
+    this.emitUpdated();
   }
 
   /** 把 fiber.dispose 串到该生效名的释放链上。后一次同名挂载会等到整条链结束。 */
@@ -1260,14 +1357,23 @@ export class ProjectMcpRegistry {
    * `sessions.current()` 在恢复过程中指向正在恢复的会话，不能拿来校正焦点。
    */
   private hostVisibleCwd(): string | undefined {
+    const listed = this.hostSessionList();
+    return cwdOfListedSession(listed?.current, listed);
+  }
+
+  private hostSessionList(): any {
     try {
-      const sessions = this.ctx.sessions;
-      if (sessions == null || typeof sessions !== "object") return undefined;
-      const listed = typeof sessions.list === "function" ? sessions.list() : sessions.list;
-      return cwdOfListedSession(listed?.current, listed);
+      const sessions = typeof this.ctx.get === "function" ? this.ctx.get("sessions") : this.ctx.sessions;
+      return typeof sessions?.list === "function" ? sessions.list() : sessions?.list;
     } catch {
       return undefined;
     }
+  }
+
+  private liveSessionCwds(): string[] {
+    const listed = this.hostSessionList();
+    if (!Array.isArray(listed)) return [];
+    return listed.map(cwdOfSessionRecord).filter((cwd): cwd is string => cwd !== undefined);
   }
 
   /** 多个会话同时恢复时，可见工作区不一定是最后一条 agent/created。只在冷启动那一轮调用。 */
@@ -1286,7 +1392,7 @@ export class ProjectMcpRegistry {
 
   /** 在线 agent cwd、session/created 记下的根、进程 cwd。排序后比较，发现新工作区。 */
   private async liveDirectorySignature(): Promise<string> {
-    const parts: string[] = [];
+    const parts = this.liveSessionCwds();
     for (const agent of this.liveAgents()) {
       const cwd = agent?.session?.header?.cwd;
       if (typeof cwd === "string" && cwd !== "") parts.push(cwd);
@@ -1305,25 +1411,20 @@ export class ProjectMcpRegistry {
 
   private async knownProjects(): Promise<string[]> {
     const map = new Map<string, string>();
-    const add = async (raw: string) => {
-      if (typeof raw !== "string" || raw === "") return;
-      try {
-        const project = await findProjectRoot(raw);
-        map.set(projectKeyOf(project), project);
-      } catch {
-        // 目录不可解析：忽略
-      }
-    };
-    // 项目发现：在线会话 cwd + 进程 cwd（dsh 启动目录）+ 已装载项目。
-    for (const agent of this.liveAgents()) {
-      const cwd = agent?.session?.header?.cwd;
-      if (typeof cwd === "string" && cwd !== "") await add(cwd);
-    }
-    for (const root of this.sessionRoots.values()) await add(root);
+    const directories = new Set([
+      ...this.liveAgents().map((agent) => agent?.session?.header?.cwd),
+      ...this.liveSessionCwds(),
+      ...this.sessionRoots.values()
+    ]);
     try {
-      await add(process.cwd());
+      directories.add(process.cwd());
     } catch {
       // 启动目录不可解析：忽略
+    }
+    const roots = await Promise.all([...directories].filter((cwd): cwd is string =>
+      typeof cwd === "string" && cwd !== "").map((cwd) => findProjectRoot(cwd).catch(() => undefined)));
+    for (const root of roots) {
+      if (root !== undefined) map.set(projectKeyOf(root), root);
     }
     for (const [key, entry] of this.projects) map.set(key, entry.projectRoot);
     return [...map.values()];
@@ -1581,85 +1682,6 @@ export class ProjectMcpRegistry {
     return this.providers.healthRemountLimit ?? HEALTH_REMOUNT_LIMIT;
   }
 
-  private unmountGraceMs(): number {
-    return this.providers.unmountGraceMs ?? UNMOUNT_GRACE_MS;
-  }
-
-  /**
-   * 尚未聚焦：有活跃会话的项目 ∪ 进程 cwd。
-   * 已聚焦：只挂当前工作区。焦点指向的项目已经不在线（会话销毁）时清掉焦点，
-   * 退回「全部在线会话」以免把一个死项目钉住。
-   */
-  private async liveMountKeys(): Promise<Set<string>> {
-    const keys = new Set<string>();
-    for (const agent of this.liveAgents()) {
-      await this.rememberAgent(agent);
-      const project = this.agentProjects.get(agent.id) ?? await this.resolveProject(agent);
-      if (project !== undefined) {
-        this.agentProjects.set(agent.id, project);
-        keys.add(project);
-      }
-    }
-    for (const root of this.sessionRoots.values()) keys.add(projectKeyOf(root));
-    try {
-      keys.add(projectKeyOf(await findProjectRoot(process.cwd())));
-    } catch {
-      // 启动目录不可解析：不强制挂载
-    }
-    if (this.foregroundKey !== undefined && !keys.has(this.foregroundKey)) this.foregroundKey = undefined;
-    if (this.foregroundKey !== undefined) return new Set([this.foregroundKey]);
-    return keys;
-  }
-
-  /**
-   * 刚离开活跃集且当前仍有装载的项目记下 idle 起点；已在宽限中的保持原时间戳。
-   */
-  private touchIdleSince(live: Set<string>): void {
-    const now = this.nowMs();
-    for (const [key, entry] of this.projects) {
-      if (live.has(key)) {
-        this.idleSince.delete(key);
-        continue;
-      }
-      if (entry.servers.size > 0 && !this.idleSince.has(key)) this.idleSince.set(key, now);
-    }
-  }
-
-  private shouldKeepMounts(key: string, live: Set<string>): boolean {
-    if (live.has(key)) return true;
-    // 用户已经聚焦别的工作区：不要再宽限 5 分钟，全局工具层会在这期间继续泄漏。
-    if (this.foregroundKey !== undefined) return false;
-    const since = this.idleSince.get(key);
-    if (since === undefined) return false;
-    return this.nowMs() - since < this.unmountGraceMs();
-  }
-
-  private scheduleGraceUnmount(): void {
-    if (this.graceTimer !== undefined) {
-      clearTimeout(this.graceTimer);
-      this.graceTimer = undefined;
-    }
-    if (this.providers.now !== undefined) return;
-    const grace = this.unmountGraceMs();
-    if (grace <= 0) return;
-    const now = Date.now();
-    let delayMs: number | undefined;
-    for (const since of this.idleSince.values()) {
-      const remaining = since + grace - now;
-      if (remaining <= 0) continue;
-      if (delayMs === undefined || remaining < delayMs) delayMs = remaining;
-    }
-    if (delayMs === undefined) return;
-    this.graceTimer = setTimeout(() => {
-      this.graceTimer = undefined;
-      this.schedule(async () => {
-        await this.reconcileAll();
-      });
-    }, delayMs);
-    // 宽限 timer 同样不挡住退出（与 kick 的 150ms 防抖同口径）。
-    this.graceTimer.unref();
-  }
-
   private async statConfigFile(path: string): Promise<{ mtimeMs: number; size: number } | "missing"> {
     try {
       if (this.providers.statFile !== undefined) {
@@ -1754,6 +1776,7 @@ export class ProjectMcpRegistry {
 
     const globalMerged = mergeSourcedRows([this.userLayer.profileYmlRows, this.userLayer.profileRows, this.userLayer.ymlRows, this.userLayer.jsonRows]);
     this.lastGlobalDesired = globalMerged.rows;
+    this.globalCatalogScanned = true;
     const hostTaken = new Set(hostGlobalNames);
     const globalMountable = new Set(globalMerged.rows.map((row) => row.rawName).filter((rawName) => !hostTaken.has(rawName)));
 
@@ -1765,23 +1788,37 @@ export class ProjectMcpRegistry {
       names: entry.rows.map((row) => row.rawName)
     }));
     const globalNames = [...hostGlobalNames, ...globalMerged.rows.map((row) => row.rawName)];
-    this.effective = effectiveServerNames(catalogProjects, globalNames);
+    this.effective = effectiveServerNames(catalogProjects, globalNames, this.mountedEagerNames(desiredByProject));
 
-    const live = await this.liveMountKeys();
-    this.touchIdleSince(live);
-    for (const [key, entry] of desiredByProject) {
-      await this.reconcileProject(key, entry, this.shouldKeepMounts(key, live));
-    }
+    await this.refreshAgentProjects();
+    await this.clearClosedWorkspaceFocus();
+    // Mount and release operations share the host's effective server names.
+    await [...desiredByProject].reduce(
+      (pending, [key, entry]) => pending.then(() => this.reconcileProject(key, entry)),
+      Promise.resolve()
+    );
     await this.reconcileGlobals(globalMerged.rows, hostGlobalNames);
     this.prunePerProjectState(new Set(desiredByProject.keys()));
     this.syncLazyProxies();
     await this.remountUnhealthy();
-    await this.sweepRestrictions();
+    this.sweepRestrictions();
     this.inspectToolBudgets();
     await this.writeSummaries();
-    this.scheduleGraceUnmount();
     await this.refreshWatchersAfterReconcile();
     this.emitUpdated();
+  }
+
+  private mountedEagerNames(desired: ReadonlyMap<string, { rows: DesiredProjectRow[] }>): Map<string, string> {
+    const retained = new Map<string, string>();
+    for (const [key, entry] of desired) {
+      const mounted = this.projects.get(key)?.servers;
+      for (const { rawName, row } of entry.rows) {
+        const state = mounted?.get(rawName);
+        if (state?.fiber === undefined || row.disabled === true || row.config?.mode === "lazy") continue;
+        retained.set(key + "\0" + rawName, state.effectiveName);
+      }
+    }
+    return retained;
   }
 
   /** 项目扫描和缓存提交保持原有顺序；跳过重读时不提交新的指纹。 */
@@ -1970,9 +2007,6 @@ export class ProjectMcpRegistry {
     for (const key of this.identityShadowSigs.keys()) {
       if (!knownKeys.has(key)) this.identityShadowSigs.delete(key);
     }
-    for (const key of this.idleSince.keys()) {
-      if (!knownKeys.has(key)) this.idleSince.delete(key);
-    }
     for (const key of this.lastScanDesired.keys()) {
       if (!knownKeys.has(key)) this.lastScanDesired.delete(key);
     }
@@ -2011,7 +2045,7 @@ export class ProjectMcpRegistry {
     }
   }
 
-  private async reconcileProject(key: string, entry: { projectRoot: string; rows: DesiredProjectRow[] }, keepMounts: boolean) {
+  private async reconcileProject(key: string, entry: { projectRoot: string; rows: DesiredProjectRow[] }) {
     let project = this.projects.get(key);
     if (project === undefined) {
       // 只为「确实有行要装载」的项目建条目：否则会话/进程访问过的每个目录都会
@@ -2020,21 +2054,10 @@ export class ProjectMcpRegistry {
       if (entry.rows.length === 0) return;
       project = { projectRoot: entry.projectRoot, servers: new Map() };
       this.projects.set(key, project);
-      if (keepMounts) {
-        const names = entry.rows.map((row) => row.rawName).join("、");
-        this.ctx.logger.info?.(`项目 MCP：开始装载 ${entry.projectRoot}（${names}）`);
-      }
+      const names = entry.rows.map((row) => row.rawName).join("、");
+      this.ctx.logger.info?.(`项目 MCP：开始装载 ${entry.projectRoot}（${names}）`);
     }
-    const catalog = entry.rows;
-    const desired = keepMounts ? catalog : [];
-    await this.reconcileContainer(this.projectContainer(key, project), desired, new Set(), catalog);
-    if (!keepMounts) {
-      for (const item of catalog) {
-        if (project.servers.has(item.rawName)) continue;
-        const markKey = key + "\u0000" + item.rawName;
-        if (!this.skipReasons.has(markKey)) this.skipReasons.set(markKey, "idle");
-      }
-    }
+    await this.reconcileContainer(this.projectContainer(key, project), entry.rows);
   }
 
   /** 全局（用户层）对账：与项目数量无关，宿主级只挂一条连接。 */
@@ -2100,7 +2123,7 @@ export class ProjectMcpRegistry {
     const plan = planProjectChanges(current, desired, effectiveMap, container.key);
     // 清理死键：从未挂上（被跳过）的行若从文件里删掉，既不在 toMount 也不在
     // toUnmount，其 skipReasons 标记没人再触碰——按配置目录剪掉，不能按本轮
-    // 装载集（idle 卸载 desired=[] 时否则会把 env-missing 一并抹掉）。
+    // 装载集。
     // blocked（撞名被拒）的行保留其标记，供快照展示 skipReason。
     const catalogNames = new Set([...catalog.map((item) => item.rawName), ...blocked]);
     const markPrefix = container.key + "\u0000";
@@ -2189,30 +2212,20 @@ export class ProjectMcpRegistry {
     }
   }
 
+  /** 跳过标记全部按故障/跳过原因计入摘要；`idle` 已不再产生（见 `DiagSummary.idle`）。 */
   private collectSkipMarks(
     key: string,
-    skippedByReason: Record<string, number>,
-    idle: string[],
     addUnhealthy: (name: string, reason: string) => void
   ): void {
     const prefix = key + "\u0000";
     for (const [mark, reason] of this.skipReasons) {
-      if (!mark.startsWith(prefix)) continue;
-      const name = mark.slice(prefix.length);
-      if (reason !== "idle") {
-        addUnhealthy(name, reason);
-        continue;
-      }
-      if (idle.includes(name)) continue;
-      idle.push(name);
-      skippedByReason.idle = (skippedByReason.idle ?? 0) + 1;
+      if (mark.startsWith(prefix)) addUnhealthy(mark.slice(prefix.length), reason);
     }
   }
 
   private summarizeScope(key: string, servers: Map<string, ProjectServerState>, catalog: DesiredProjectRow[], at: string, projects?: number): DiagSummary {
     const skippedByReason: Record<string, number> = {};
     const unhealthy: DiagUnhealthy[] = [];
-    const idle: string[] = [];
     const seenUnhealthy = new Set<string>();
     const addUnhealthy = (name: string, reason: string) => {
       if (seenUnhealthy.has(name)) return;
@@ -2230,7 +2243,7 @@ export class ProjectMcpRegistry {
       if (state.phase === "active" || state.phase === "mounting") mounted += 1;
       if (state.phase === "failed") addUnhealthy(state.rawName, state.error ?? "failed");
     }
-    this.collectSkipMarks(key, skippedByReason, idle, addUnhealthy);
+    this.collectSkipMarks(key, addUnhealthy);
     return {
       at,
       ...(projects === undefined ? {} : { projects }),
@@ -2238,7 +2251,6 @@ export class ProjectMcpRegistry {
       mounted,
       skippedByReason,
       unhealthy,
-      ...(idle.length > 0 ? { idle } : {}),
       ...(this.toolBudgetHits.get(key)?.length ? { toolBudget: this.toolBudgetHits.get(key) } : {})
     };
   }
@@ -2250,7 +2262,7 @@ export class ProjectMcpRegistry {
       const summary = this.summarizeScope(key, entry.servers, catalog, at);
       const path = projectDiagFile(this.diagHome(), entry.projectRoot);
       await this.removeLegacyProjectDiag(entry.projectRoot);
-      if (summary.rows === 0 && summary.unhealthy.length === 0 && (summary.idle?.length ?? 0) === 0) {
+      if (summary.rows === 0 && summary.unhealthy.length === 0) {
         try {
           await readFile(path);
         } catch {
@@ -2266,7 +2278,7 @@ export class ProjectMcpRegistry {
       || this.userLayer.profileYmlError !== null
       || this.userLayer.profileError !== null;
     const globalPath = join(dirname(this.resolveUserLayerPaths().mcpYml), DIAG_FILE);
-    if (globalSummary.rows === 0 && globalSummary.unhealthy.length === 0 && (globalSummary.idle?.length ?? 0) === 0 && !userHasContent) {
+    if (globalSummary.rows === 0 && globalSummary.unhealthy.length === 0 && !userHasContent) {
       try {
         await readFile(globalPath);
       } catch {
@@ -2303,7 +2315,7 @@ export class ProjectMcpRegistry {
         row: item.row,
         source: item.source,
         phase: "active",
-        lazy: new LazyServer(built.config)
+        lazy: new LazyConnections(built.config)
       });
       return undefined;
     }
@@ -2415,10 +2427,10 @@ export class ProjectMcpRegistry {
     }
     const state = container.servers.get(rawName);
     if (state === undefined) return;
-    container.servers.delete(rawName);
     state.phase = "unloading";
     this.releaseFiber(state);
     await this.waitForNameRelease(state.effectiveName);
+    container.servers.delete(rawName);
   }
 
   private healthKey(containerKey: string, rawName: string): string {
@@ -2547,7 +2559,7 @@ export class ProjectMcpRegistry {
   private kickSweep() {
     if (this.disposed) return;
     this.schedule(async () => {
-      await this.sweepRestrictions();
+      this.sweepRestrictions();
     });
   }
 
@@ -2573,10 +2585,17 @@ export class ProjectMcpRegistry {
     if (this.disposeLazyTools !== undefined) return;
     try {
       this.disposeLazyTools = registerLazyTools(this.ctx, async (agent: any) => {
-        const isLive = () => typeof agent?.id === "string" && this.liveAgents().some((live) => live.id === agent.id);
+        // 同一性比较依赖宿主 agents.list() 返回稳定对象：dsh 的 agents.announce()
+        // 要求 agent 先入注册表才派发 agent/created，注册表持有同一实例。若宿主
+        // 将来改为返回投影/包装对象，这里会 fail-closed（Lazy 工具报「需要活跃会话」）。
+        const isLive = () => typeof agent?.id === "string" && this.liveAgents().includes(agent)
+          && !this.closedLazySessions.has(agent.session);
         if (!isLive()) throw new Error("An active DSH session is required to use Lazy MCP tools");
         const project = this.agentProjects.get(agent.id) ?? await this.resolveProject(agent);
-        return () => isLive() ? this.visibleLazyMounts(project) : [];
+        return {
+          id: this.sessionIdOf(agent.session) ?? agent.id,
+          visible: () => isLive() ? this.visibleLazyMounts(project) : []
+        };
       });
       this.warnGates.delete("lazy-proxies");
     } catch (error) {
@@ -2590,29 +2609,65 @@ export class ProjectMcpRegistry {
     deny.push(...LAZY_TOOL_NAMES.filter((name) => toolIds.includes(name)));
   }
 
-  private async sweepRestrictions() {
-    if (this.disposed) return;
-    const groups = this.activeMountGroups();
-    const toolIds = this.registeredToolIds();
-    this.lastToolIds = toolIds;
-    for (const agent of this.liveAgents()) {
-      const project = this.agentProjects.get(agent.id) ?? await this.resolveProject(agent);
+  private async refreshAgentProjects(): Promise<void> {
+    const agents = this.liveAgents();
+    await Promise.all(agents.map((agent) => this.rememberAgent(agent)));
+    const unresolved = agents.filter((agent) => !this.agentProjects.has(agent.id));
+    const projects = await Promise.all(unresolved.map((agent) => this.resolveProject(agent)));
+    for (const [index, agent] of unresolved.entries()) {
+      const project = projects[index];
       if (project !== undefined) this.agentProjects.set(agent.id, project);
-      const hidden = [...denySetFor(project, groups)];
-      // 项目侧压制：本项目自身行遮蔽过的全局服务器，在本会话 deny 其工具
-      // （全局实例仍只挂一条，只有该项目的会话看不见）。
-      // 守卫 globalServers.has：没有全局实例的名字一律不 deny——`mcp__<name>__*`
-      // 前缀会命中项目自己（生效名未改名时）或宿主 patch 行的工具，等于自杀式 deny。
-      if (project !== undefined) {
-        for (const rawName of this.suppressedGlobals.get(project) ?? []) {
-          if (this.globalServers.has(rawName)) hidden.push(rawName);
-        }
-      }
-      const deny = expandToToolNames(hidden, toolIds);
-      deny.push(...this.toolFilterDeniesForSession(project, toolIds));
-      this.appendLazyProxyDenies(project, toolIds, deny);
-      this.applyRestriction(agent, deny);
     }
+  }
+
+  private async clearClosedWorkspaceFocus(): Promise<void> {
+    const focus = this.foregroundKey;
+    if (focus === undefined) return;
+    if (this.liveAgents().some((agent) => this.agentProjects.get(agent.id) === focus)) return;
+    if ([...this.sessionRoots.values()].some((root) => projectKeyOf(root) === focus)) return;
+    // 已恢复但尚未创建 agent 的会话也算在线：焦点只影响管理页，别误清。
+    const restored = await Promise.all(this.liveSessionCwds().map((cwd) => findProjectRoot(cwd).catch(() => undefined)));
+    if (restored.some((root) => root !== undefined && projectKeyOf(root) === focus)) return;
+    try {
+      if (projectKeyOf(await findProjectRoot(process.cwd())) === focus) return;
+    } catch {
+      // An unavailable process cwd cannot keep the workspace focused.
+    }
+    if (this.foregroundKey === focus) this.foregroundKey = undefined;
+  }
+
+  private sweepRestrictions(agents = this.liveAgents()): void {
+    // 宿主注册工具和应用限制都会同步发 tools/change。
+    if (this.disposed || this.applyingRestrictions) return;
+    this.applyingRestrictions = true;
+    try {
+      const groups = this.projectMountGroups();
+      const toolIds = this.registeredToolIds();
+      for (const agent of agents) {
+        const project = this.agentProjects.get(agent.id);
+        const deny = expandToToolNames(this.hiddenServersFor(project, groups), toolIds);
+        deny.push(...this.toolFilterDeniesForSession(project, toolIds));
+        this.appendLazyProxyDenies(project, toolIds, deny);
+        this.applyRestriction(agent, deny);
+      }
+    } finally {
+      this.applyingRestrictions = false;
+    }
+  }
+
+  private projectOf(agent: { id?: string } | undefined): string | undefined {
+    return agent?.id === undefined ? undefined : this.agentProjects.get(agent.id);
+  }
+
+  private hiddenServersFor(project: string | undefined, groups = this.projectMountGroups()): Set<string> {
+    const hidden = new Set(denySetFor(project, groups));
+    if (project !== undefined) {
+      for (const rawName of this.suppressedGlobals.get(project) ?? []) {
+        // Host-owned profile patch names are outside the managed global layer.
+        if (this.globalServers.has(rawName)) hidden.add(rawName);
+      }
+    }
+    return hidden;
   }
 
   /** 本会话可见的服务器上，条目 tools.allow/deny 展开成已注册工具名。 */
@@ -2623,7 +2678,6 @@ export class ProjectMcpRegistry {
     skip?: (state: ProjectServerState) => boolean
   ): void {
     for (const state of servers.values()) {
-      if (state.phase !== "active") continue;
       if (skip?.(state) === true) continue;
       deny.push(...deniedToolsForFilter(state.effectiveName, toolFilterFromConfig(state.row.config), toolIds));
     }
@@ -2638,13 +2692,13 @@ export class ProjectMcpRegistry {
     return deny;
   }
 
-  /** 各装载容器里已 active 的生效名，按项目根分组（deny 计算的输入）。 */
-  private activeMountGroups(): { projectRoot: string; effectiveNames: string[] }[] {
+  /** 装载中的工具可能已注册，卸载中的工具可能尚未注销。两者都参与隔离。 */
+  private projectMountGroups(): { projectRoot: string; effectiveNames: string[] }[] {
     const groups: { projectRoot: string; effectiveNames: string[] }[] = [];
     for (const entry of this.projects.values()) {
       const names: string[] = [];
       for (const state of entry.servers.values()) {
-        if (state.phase === "active") names.push(state.effectiveName);
+        names.push(state.effectiveName);
       }
       if (names.length > 0) groups.push({ projectRoot: entry.projectRoot, effectiveNames: names });
     }
@@ -2665,32 +2719,100 @@ export class ProjectMcpRegistry {
     if (deny.length === 0) {
       if (previous === undefined) return;
       this.restrictions.delete(agent.id);
-      try {
-        previous();
-      } catch {
-        // agent 层已销毁
-      }
+      this.disposeRestriction(previous);
+      this.clearRestrictionFallback(agent.id);
       return;
     }
     try {
-      const disposer = agent.ctx.tools.restrict({ deny });
+      const disposer = this.agentTools(agent).restrict({ deny });
       if (previous !== undefined) {
         this.restrictions.delete(agent.id);
-        try {
-          previous();
-        } catch {
-          // agent 层已销毁
-        }
+        this.disposeRestriction(previous);
       }
       this.restrictions.set(agent.id, disposer);
+      this.clearRestrictionFallback(agent.id);
     } catch (error) {
       // 未知名（装载未 settle）竞态：保留上一份限制，下一次 sweep 会补上。
       this.ctx.logger.warn(`会话 ${agent.id} 的项目 MCP 过滤暂未应用：${error instanceof Error ? error.message : String(error)}`);
+      // 新会话没有「上一份」可保留：fail-open 会让它在下次成功 sweep 前看见全部
+      // 工作区的 MCP（对账链卡在慢 dispose 且无 tools/change 时窗口可任意长）。
+      // 改为 fail-closed：临时 deny 全部已注册 MCP 工具（精确名，不会再触发
+      // unknown-name），下一次成功 sweep 恢复精确可见性。已处于兜底的会话重试
+      // 再失败时同样走这里，续上退避链。兜底自身同步发的 tools/change 由
+      // applyingRestrictions 守卫挡住，不会递归。
+      if (previous === undefined || this.restrictionFallbacks.has(agent.id)) {
+        this.applyFailClosedRestriction(agent, previous, error);
+      }
     }
+  }
+
+  /** Agent scope 可能未声明 tools 依赖，优先经 ctx.get 取。 */
+  private agentTools(agent: any): any {
+    return typeof agent.ctx.get === "function" ? agent.ctx.get("tools") : agent.ctx.tools;
+  }
+
+  /** 释放旧限制；agent 层已销毁时 disposer 可能失效，吞错。 */
+  private disposeRestriction(disposer: () => void): void {
+    try {
+      disposer();
+    } catch {
+      // agent 层已销毁
+    }
+  }
+
+  /** fail-closed 兜底：临时 deny 全部已注册 MCP 工具；兜底也失败只能等下一次 sweep。 */
+  private applyFailClosedRestriction(agent: any, previous: (() => void) | undefined, error: unknown): void {
+    try {
+      const fallback = this.registeredToolIds().filter((id) => id.startsWith("mcp__"));
+      if (fallback.length === 0) return;
+      const disposer = this.agentTools(agent).restrict({ deny: fallback });
+      if (previous !== undefined) this.disposeRestriction(previous);
+      this.restrictions.set(agent.id, disposer);
+      this.enterRestrictionFallback(agent, error);
+    } catch {
+      // 兜底也失败只能等下一次 sweep；applyRestriction 的 warn 已留痕。
+    }
+  }
+
+  private fallbackRetryDelays(): number[] {
+    return this.providers.fallbackRetryDelaysMs ?? FALLBACK_RETRY_DELAYS_MS;
+  }
+
+  /** 记录兜底状态：升级日志、写全局诊断、链外退避重试。对账链可能正卡在慢 dispose，重试不能排队等它。 */
+  private enterRestrictionFallback(agent: any, error: unknown): void {
+    const id = agent.id;
+    const cause = error instanceof Error ? error.message : String(error);
+    const existing = this.restrictionFallbacks.get(id);
+    if (existing?.timer !== undefined) clearTimeout(existing.timer);
+    const attempts = (existing?.attempts ?? 0) + 1;
+    const entry: { cause: string; attempts: number; timer?: ReturnType<typeof setTimeout> } = { cause, attempts };
+    this.restrictionFallbacks.set(id, entry);
+    this.ctx.logger.warn(`会话 ${id} 的 MCP 工具已临时全部禁用（fail-closed）：${cause}。将自动重试恢复；修改 MCP 配置或新开会话也可触发恢复。`);
+    void this.writeGlobalDiag({ type: "restrict-fallback", agent: id, cause, attempts }).catch(() => {});
+    const delays = this.fallbackRetryDelays();
+    if (attempts > delays.length) return; // 重试用尽：保留保护通知，等手动触发
+    entry.timer = setTimeout(() => {
+      entry.timer = undefined;
+      if (this.disposed || !this.restrictionFallbacks.has(id)) return;
+      if (!this.liveAgents().includes(agent)) {
+        this.clearRestrictionFallback(id);
+        return;
+      }
+      this.sweepRestrictions([agent]);
+    }, delays[attempts - 1]);
+    entry.timer.unref?.();
+  }
+
+  private clearRestrictionFallback(id: string): void {
+    const entry = this.restrictionFallbacks.get(id);
+    if (entry === undefined) return;
+    if (entry.timer !== undefined) clearTimeout(entry.timer);
+    this.restrictionFallbacks.delete(id);
   }
 
   private releaseAgent(agent: any) {
     this.agentProjects.delete(agent.id);
+    this.clearRestrictionFallback(agent.id);
     const previous = this.restrictions.get(agent.id);
     if (previous !== undefined) {
       this.restrictions.delete(agent.id);
@@ -3320,7 +3442,7 @@ export class ProjectMcpRegistry {
         source,
         ...(effectiveName === undefined ? {} : { effectiveServerName: effectiveName }),
         fiberPhase: fiberPhaseFor(state, row, owned),
-        skipReason: skipReasonFor(this.skipReasons, key, rawName, state, row) ?? null, // env-missing / env-invalid / config-invalid / plugin-throw / idle / give-up
+        skipReason: skipReasonFor(this.skipReasons, key, rawName, state, row) ?? null, // env-missing / env-invalid / config-invalid / plugin-throw / name-taken / give-up
         toolCount: owned && state?.phase === "active" ? mcpToolCount(this.ctx, state.effectiveName) : 0
       });
     }

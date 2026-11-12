@@ -49,21 +49,19 @@ unchanged.
 | `reconnect` / `failOnStartupError` | official policy | not used; the next request retries |
 | `maxInstructionBytes` | enforced by the official client | ignored (instructions are not read) |
 | `toolCallTimeoutMs` | per tool call | per tool call; connection and listing use a fixed 30s discovery timeout, independent of this value |
-| Idle | connection stays | closes five minutes after the last request; a cancelled last waiter starts closing, and new opens wait for that barrier |
+| Idle | connection stays | connection stays for the activated session |
 
-A Lazy row makes no connection at mount. The first `mcp_search`,
-`mcp_describe`, or `mcp_call` connects it. A `mcp_search` without `server`
-connects every visible Lazy server in the session, so the first search can be
-slow and can start several processes at once; pass `server` to limit it to one.
-Concurrent requests share one connection; cancel affects only the caller that
-aborted, and other in-flight callers keep it. The last waiter's cancellation
-closes that generation, and closing/opening is serialized so it cannot race the
-next request. The tool list is cached per connection and invalidated on
-`list_changed`. The connection closes after five idle minutes, when the row is
-unloaded, when the mode changes, or when the plugin is disposed; the next
-request reconnects. A failed connection is retried on the next request and is
-reported as a generic `Unable to connect to the MCP server`, without transport
-details. The `server` argument of `mcp_search` is the **effective
+Each session first opens its own Lazy connection with `mcp_search`. Run a search
+before using `mcp_describe` or `mcp_call` on that server. Searching without a
+`server` connects all visible Lazy servers in that session, potentially
+starting several processes. Requests in the same session share the connection
+and cached tool list, which is invalidated on `list_changed`. An activated
+connection survives idle periods and workspace switches. It is released when
+the session ends, the row is unloaded or replaced, or the plugin stops. A
+connection lost to a transport failure can reconnect on the next request.
+Cancelling the last waiter during initial discovery closes the unfinished
+connection before another one can open.
+The `server` argument of `mcp_search` is the **effective
 name** (the `server` field in results); a renamed project row may be
 `p<hash>_<original>`, not the `serverName` written in the file.
 

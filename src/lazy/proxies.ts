@@ -4,12 +4,13 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { matchToolGlob, toolFilterFromConfig } from "../model.js";
 import type { ProjectServerState } from "../registry.js";
-import type { LazyServer, LazyTool } from "./connection.js";
+import type { LazyConnections, LazyServer, LazyTool } from "./connection.js";
 
 export const LAZY_TOOL_NAMES = ["mcp_search", "mcp_describe", "mcp_call"] as const;
 
-export type LazyMount = ProjectServerState & { lazy: LazyServer };
+export type LazyMount = ProjectServerState & { lazy: LazyConnections };
 type VisibleMounts = () => LazyMount[];
+type LazySession = { id: string; visible: VisibleMounts };
 type ToolCall = McpToolDefinitionOptions["call"];
 
 const server = z.string().min(1).max(32);
@@ -57,12 +58,14 @@ export function eagerToolName(server: string, tool: string, raw: string): string
   return `${normalized.slice(0, 51)}_${hash}`;
 }
 
-async function searchTools(args: z.infer<typeof search>, visible: VisibleMounts, signal: AbortSignal) {
+async function searchTools(args: z.infer<typeof search>, { id, visible }: LazySession, signal: AbortSignal) {
   const terms = (args.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
   const states = visible().filter((state) => args.server === undefined || state.effectiveName === args.server);
   const results = await Promise.all(states.map(async (state) => {
     try {
-      return await state.lazy.withClient(signal, (connection) => state.lazy.listTools(connection));
+      signal.throwIfAborted();
+      const server = state.lazy.forSession(id, true);
+      return await server?.withClient(signal, (connection) => server.listTools(connection));
     } catch {
       return undefined;
     }
@@ -89,21 +92,23 @@ async function searchTools(args: z.infer<typeof search>, visible: VisibleMounts,
   return textResult({ tools: matches.slice(0, args.limit ?? 10), total: matches.length, unavailable });
 }
 
-async function withTool<T>(args: z.infer<typeof target>, visible: VisibleMounts, signal: AbortSignal,
+async function withTool<T>(args: z.infer<typeof target>, { id, visible }: LazySession, signal: AbortSignal,
   use: (tool: LazyTool, invoke: (args: Record<string, unknown>) => ReturnType<LazyServer["callTool"]>) => T) {
   const state = visible().find((item) => item.effectiveName === args.server);
   if (state === undefined) throw new Error("MCP server is unavailable in this session");
-  return state.lazy.withClient(signal, async (connection) => {
-    const tools = await state.lazy.listTools(connection);
+  const server = state.lazy.forSession(id, false);
+  if (server === undefined) throw new Error("Run mcp_search for this MCP server in the current session first");
+  return server.withClient(signal, async (connection) => {
+    const tools = await server.listTools(connection);
     signal.throwIfAborted();
     if (!visible().includes(state)) throw new Error("MCP server is unavailable in this session");
     const tool = allowedTools(state, tools).find((item) => item.name === args.tool);
     if (tool === undefined) throw new Error("MCP tool is unavailable in this session");
-    return use(tool, (args) => state.lazy.callTool(connection, tool, args, signal));
+    return use(tool, (args) => server.callTool(connection, tool, args, signal));
   });
 }
 
-export function registerLazyTools(ctx: Context, resolve: (agent: unknown) => Promise<VisibleMounts>): () => void {
+export function registerLazyTools(ctx: Context, resolve: (agent: unknown) => Promise<LazySession>): () => void {
   const disposers: (() => void)[] = [];
   const dispose = () => {
     for (const release of disposers.splice(0).reverse()) release();
