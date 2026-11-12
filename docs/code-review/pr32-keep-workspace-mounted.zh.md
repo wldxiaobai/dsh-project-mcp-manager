@@ -176,3 +176,28 @@
 | `b5e75a9` | docs(mcp): 记录会话启动与重名挂载优化 |
 
 参考：[PR #32](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/32)、[作者场景说明](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/32#issuecomment-6789178661)、[作者追加改动说明](https://github.com/wldxiaobai/dsh-project-mcp-manager/pull/32#issuecomment-6791036333)、[Sonar issues API](https://sonarcloud.io/api/issues/search?componentKeys=wldxiaobai_dsh-project-mcp-manager&pullRequest=32&sinceLeakPeriod=true&issueStatuses=OPEN,CONFIRMED)。
+
+## 2026-11-12：隔离时序缝隙探测（T1–T5）与 T1 修复
+
+### 探测结果（对 `fc10f63`，即 R32-01 等修复之后）
+
+实现 `test/test-isolation-race.mjs`（假宿主 + holdDispose/失败注入，不依赖真实 stdio，秒级跑完）：
+
+| 场景 | 首跑结果 | 结论 |
+| --- | --- | --- |
+| T1 首次 restrict 失败 + 卡住的对账 | **失败** | 新会话无任何限制，别工作区的 `mcp__alpha__read` 可见 |
+| T2 创建时 agent 未入注册表 | 通过 | 创建不挂起；入册后下一次对账补上 deny |
+| T3 未知 scope 的提示词/资源门 | 通过 | fail-closed：项目小节全隐藏、跨工作区资源调用被 deny |
+| T4 retained 同名交换窗口 | 通过 | deny 连续；挂载等 nameRelease；交换后无越权 |
+| T5 tools/change 重入风暴 | 通过 | 守卫有效；终态一致；无 disposer 泄漏 |
+
+### T1 根因与修复（`0e8a334`）
+
+`applyRestriction` 的 catch 回退是「保留上一份限制」，但新会话没有上一份 → fail-open；叠加对账链卡在慢 dispose、期间无 `tools/change`，窗口可任意长。修复：首次失败且无上一份限制时，临时 deny 全部已注册 `mcp__` 工具（精确名，不会再触发 unknown-name），下一次成功 sweep 恢复精确可见性；兜底自身同步发的 `tools/change` 由 `applyingRestrictions` 守卫挡住。修复后 T1–T5 全过；套件纳入 `npm test` 链，全量通过（registry 64 passed）。
+
+### 保留备注
+
+- 触发条件是 `tools.restrict` 抛错（历史「未知名」竞态）；`tools/change` 普及后概率低，但回退语义现已 fail-closed。
+- 兜底代价：极罕见失败后该会话短暂失去全部 MCP（含自己的），直到下一次成功 sweep。
+- R32-01 的宿主快照时序已由作者在 `0f165b6` 修复（等待移回 `agent/created` 串行路径，replay 不等待）；本轮探测未再涉及。
+- 本地 `pr-32` 现领先远端 PR head 两个提交（本报告回填 + T1 修复），推送待维护者指示。
