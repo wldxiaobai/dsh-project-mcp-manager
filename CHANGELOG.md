@@ -35,6 +35,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   signal: the number is always visible and the tag carries an `aria-label`.
   The tag is hidden when there is no session or no MCP tool.
 
+- **Tool-result context cost and a second header tag.** `projectMcp.resultCost(sessionId?)`
+  reads the session's current `deriveMessages()` and prices every retained
+  `tool/result` message whose originating call is an MCP tool, using the same
+  per-message heuristic `dsh-token-meter` uses. Eager results are grouped by
+  server; Lazy results by the `server` argument of `mcp_call` / `mcp_describe`
+  (or a targeted `mcp_search`), with a cross-server search under
+  `[lazy proxies]`. The workspace header shows `Results 1.2k` next to
+  `MCP 3.4k`; its bubble gives the window share, the combined definitions +
+  results total, and the largest result groups. Results pruned or compacted
+  away are not counted. The registry re-emits `projectMcp/updated` after a
+  `tool/result` or compaction event when the figure changes. Additive API;
+  requires a synchronized manager/UI minor release.
+
 ### Fixed
 
 - **Lazy proxy context cost.** The visible `mcp_search`, `mcp_describe`, and

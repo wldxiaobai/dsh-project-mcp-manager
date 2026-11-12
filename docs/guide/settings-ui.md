@@ -148,27 +148,41 @@ All three entries render the same panel, so all three open with the same
 
 ### MCP context cost
 
-The header also carries a short tag such as `MCP 3.4k`: roughly how many tokens
-of MCP tool definitions the **current session** sends with every request. It
-shows only the number; clicking it opens the detail:
+The header also carries short tags such as `MCP 3.4k` and `Results 1.2k`: roughly
+how many tokens of MCP tool definitions the **current session** sends with every
+request, and how many tokens of MCP tool results it still keeps in context. Each
+tag shows only its number; clicking it opens the detail:
 
-- the estimate is `ceil(characters / 4) + 4`, the same heuristic the host uses
-  for tool schemas — not a provider count, and it excludes server
+- the definition estimate is `ceil(characters / 4) + 4`, the same heuristic the
+  host uses for tool schemas — not a provider count, and it excludes server
   `instructions` and conversation history;
 - the detail gives the share of the context window and the three largest
   definition groups (servers or **Lazy proxies (shared)**);
 - visible `mcp_search`, `mcp_describe`, and `mcp_call` definitions count once as
   shared Lazy overhead, not once per Lazy server. A Lazy-only session therefore
   still shows the tag. Remote catalogs and search/describe/call results in message
-  history are not added to this tool-definition estimate;
+  history are not added to this tool-definition estimate (they belong to the
+  results tag);
 - at 5,000 the tag turns to the reminder colour and the detail suggests lazy
   loading; at 10,000 it turns to the warning colour and gains a warning icon.
   The number always stays visible, so colour is never the only signal, and the
   tag's `aria-label` reads the threshold out too.
 
-The tag is absent when there is no session, or when the session has no MCP
-tools. It refreshes itself: the host re-emits its update signal whenever the
-request header or route changes, and the page re-reads on that event.
+The `Results` tag prices each retained `tool/result` message with the host's
+per-message heuristic. Eager results are grouped by server; Lazy results are
+grouped by the `server` argument of `mcp_call` / `mcp_describe` (and of a
+`mcp_search` that names one), with a cross-server search counted under
+**Lazy proxies (shared)**. The detail shows the share of the window that results
+occupy, the combined definition + result total, and the three largest result
+groups. Only results still in the current surface count: text pruned by the tool
+result pruner or removed by compaction is gone from context, so it is not
+counted.
+
+The tags are absent when there is no session, or when the session has no MCP
+tools / no retained MCP results. They refresh themselves: the host re-emits its
+update signal whenever the request header or route changes, and also when a
+tool result or a compaction changes the retained result set; the page re-reads
+on that event.
 
 When the host cannot tell yet (several workspaces and no session focus), the
 name reads **Current workspace not determined**, the path is hidden, and the

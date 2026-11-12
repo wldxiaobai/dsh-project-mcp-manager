@@ -16,6 +16,7 @@
 | `serverView(projectRoot, rawName)` | 一行的内存 view。排队规则与 `snapshot()` 相同。 |
 | `globalState(rawName)` | 该原名的全局层运行态；项目行返回 `undefined`。 |
 | `contextCost(sessionId?)` | 该会话可见的 MCP 工具定义占多少上下文。同步、只读内存；不传会话时取焦点工作区里的会话。 |
+| `resultCost(sessionId?)` | 该会话当前仍保留的 MCP 工具调用结果占多少上下文。同步、只读内存；会话选择与 `contextCost()` 相同。 |
 | `reload()` | 一次全量对账（`reconcileNow`）。 |
 | `writeTargets()` | 添加对话框当前能写的受管 yml：当前工作区、用户层、当前 profile。 |
 | `addServer(source, projectRoot, draft)` | 按表单追加一条受管 yml 行（没有文件就创建）并排一次对账。同名已在该文件里则拒绝，文件不动。 |
@@ -37,7 +38,8 @@
 尚未完成；要等对账结束再读结果，调用 `reload()`。路径查询、文件准备和打开接口不代表
 相同的修改权限检查，也不触发对账。JSON 文件与 `.mcp.json` 从不写。
 
-`snapshot()` / `serverView()` / `globalState()` / `contextCost()` 不发事件。
+`snapshot()` / `serverView()` / `globalState()` / `contextCost()` /
+`resultCost()` 不发事件。
 
 ### 上下文占用
 
@@ -58,7 +60,7 @@ estTokens = ceil(JSON.stringify(tools).length / 4) + 4
 三个 Lazy 代理在 `servers` 里合成一个共享分项，保留名为 `[lazy proxies]`，并带可选
 `kind: "lazy-proxy"`；普通服务器不带 `kind`。按当前会话实际可见的定义只计一次，不随
 Lazy 服务器数量倍增，不连接服务器或计入内存中的远端目录。被 deny 的代理不计入；
-搜索、描述和调用结果属于消息历史，不在工具定义指标内。会话作用域查询不可用时，
+搜索、描述和调用结果属于消息历史，不在工具定义指标内（见[工具调用结果占用](#工具调用结果占用)）。会话作用域查询不可用时，
 全局回退至少排除本插件按项目隔离隐藏的代理，但无法重建其它宿主策略。
 
 还没有会话时 `sessionId` 为 `null`，调用方据此区分「没有会话」与「有会话但没有
@@ -67,7 +69,29 @@ MCP 工具」。分项按各自那一组单独计价，与总数可能差几个 
 不必自己再实现阈值。
 
 `request/header` 或 `request/context` 事件之后占用签名变化时，registry 会再发一次
-`projectMcp/updated`；页面在该事件上重读即可拿到新数字，不需要轮询。
+`projectMcp/updated`；`tool/result`、`compaction/summary` 或 `compaction/prune`
+改变仍保留的结果集时同样会发。页面在该事件上重读即可拿到新数字，不需要轮询。
+
+### 工具调用结果占用
+
+`resultCost()` 读会话当前的模型可见消息（`session.deriveMessages()`），对仍留在
+surface 上的每条 `tool/result` 消息按 `dsh-token-meter` 的逐条消息口径计价：
+
+```text
+消息 = 各块价格之和 + 4（角色开销）
+文本/推理块 = ceil(字符数 / 4) + 4
+```
+
+只有能对应到 MCP 工具调用的结果才计入。Eager 结果按
+`mcp__<生效名>__<工具>` 归属；Lazy 结果按 `mcp_call` / `mcp_describe`（以及
+指定了 `server` 的 `mcp_search`）参数里的服务器归属，跨服务器的搜索归入
+`[lazy proxies]` 共享组。`servers[].kind` 为 `"lazy"` 表示 Lazy 服务器，
+`"lazy-proxy"` 表示共享组；`calls` 是仍保留的结果消息条数，失败调用也计入。
+
+这是**当前仍占用**的上下文：被
+`dsh-compaction-tool-result-pruner` 裁剪或被压缩移除的结果已经不在 surface 上，
+不计。数字是**估算**，不是 provider 计数；图片结果按结构引用计价，不用路由的
+视觉 token 口径。
 
 ## 加载模式
 

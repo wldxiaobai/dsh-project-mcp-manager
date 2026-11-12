@@ -17,6 +17,7 @@ the SSE channel provided by the bundled companion UI.
 | `serverView(projectRoot, rawName)` | One row's in-memory view. Same queue rules as `snapshot()`. |
 | `globalState(rawName)` | Live global-layer state for that raw name, or `undefined` for a project row. |
 | `contextCost(sessionId?)` | How much context that session's visible MCP tool definitions take. Synchronous, memory-only. Without `sessionId` it picks the session in the focused workspace. |
+| `resultCost(sessionId?)` | How much context that session's retained MCP tool results take. Synchronous, memory-only; same session selection as `contextCost()`. |
 | `reload()` | One full reconcile (`reconcileNow`). |
 | `writeTargets()` | Managed yml locations the add dialog can write: the current workspace, the user layer, and the active profile. |
 | `addServer(source, projectRoot, draft)` | Appends one managed yml row from the form (creating the file when it is missing) and schedules a reconcile. Rejects a name already in that file and leaves the file unchanged. |
@@ -42,7 +43,8 @@ necessarily finishes. Call `reload()` when the next read must see the settled
 result. Path lookup and file preparation/opening do not imply those mutation checks or
 trigger a reconcile. JSON files and `.mcp.json` are never written.
 
-`snapshot()` / `serverView()` / `globalState()` / `contextCost()` do not emit.
+`snapshot()` / `serverView()` / `globalState()` / `contextCost()` /
+`resultCost()` do not emit.
 
 ### Context cost
 
@@ -66,7 +68,8 @@ The three Lazy proxies form one shared item in `servers`, with the reserved name
 `kind`. The item counts the actual visible definitions once, regardless of the
 number of Lazy servers. It does not connect to a server or price its cached remote
 catalog. Denied proxies are not counted; search/describe/call results in message
-history are outside this tool-definition metric. If the scoped schema query is
+history are outside this tool-definition metric (see [Tool-result cost](#tool-result-cost)).
+If the scoped schema query is
 unavailable, the global fallback at least removes proxies hidden by this plugin's
 project visibility; other host restrictions cannot be reconstructed there.
 
@@ -77,8 +80,33 @@ result carries `level` (`ok` below `warnTokens`, `warn` from 5,000, `alert` from
 10,000) so a consumer does not re-implement the thresholds.
 
 The registry re-emits `projectMcp/updated` when the occupancy signature changes
-after a `request/header` or `request/context` event, so a page that re-reads on
-that event sees a fresh number without polling.
+after a `request/header` or `request/context` event, or when a `tool/result`,
+`compaction/summary`, or `compaction/prune` event changes the retained result
+set. A page that re-reads on that event sees a fresh number without polling.
+
+### Tool-result cost
+
+`resultCost()` reads the session's current model-visible messages
+(`session.deriveMessages()`) and prices each retained `tool/result` message with
+the same per-message heuristic `dsh-token-meter` uses:
+
+```text
+message = 4 (role framing) + Σ priced blocks
+text/reasoning block = ceil(characters / 4) + 4
+```
+
+Only results whose originating tool call is an MCP call count. Eager results are
+attributed by `mcp__<effective>__<tool>`. Lazy results are attributed by the
+`server` argument of `mcp_call` / `mcp_describe` (and `mcp_search` when it names
+one); a search across servers goes to the shared `[lazy proxies]` group.
+`servers[].kind` is `"lazy"` for a Lazy server and `"lazy-proxy"` for the shared
+group. `calls` counts retained result messages, including failed calls.
+
+This is the context **currently occupied**: a result pruned by
+`dsh-compaction-tool-result-pruner` or removed by compaction is no longer in the
+surface and is not counted. It is an **estimate**, not a provider count; image
+results are priced by their structural reference, not by the route's visual
+tokens.
 
 ## Loading mode
 
