@@ -35,8 +35,8 @@ Use a separate profile or temporary `DSH_HOME` for testing.
 - Branch from `dev` and target `dev`. `main` is the stable branch and only
   receives releases from the maintainer.
 - `pnpm run build` and `pnpm test` pass.
-- Behavior changes and bug fixes come with tests under `test/` (plus
-  `packages/ui/test/` for UI helpers; plain `node` scripts, no test framework).
+- Behavior changes and bug fixes come with tests under `test/` (plain `node`
+  scripts, no test framework).
 - User-visible changes update the docs in both languages: `README.md` and
   `docs/README.zh.md`, and the matching `docs/guide/*.md` / `*.zh.md` pair.
 - Add an entry under `[Unreleased]` in [CHANGELOG.md](CHANGELOG.md).

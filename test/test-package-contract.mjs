@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { parse } from "yaml";
 
 const root = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
@@ -38,20 +40,13 @@ await Promise.all([["en", "README.md"], ["zh", "docs/README.zh.md"]].map(async (
 // Build the loader first: UI consumes its declarations and root-level npm
 // lifecycle scripts must not rely on topological order in a cyclic workspace.
 assert.equal(root.scripts.build, "npm run build:core && npm --prefix packages/ui run build");
-for (const file of ["../lib/index.js", "../lib/index.d.ts", "../packages/ui/lib/index.js", "../packages/ui/lib/index.d.ts", "../packages/ui/lib/client.js"]) {
-  assert.ok((await readFile(new URL(file, import.meta.url), "utf8")).length > 0, `${file} must be built before packaging`);
+const builtFiles = ["../lib/index.js", "../lib/index.d.ts", "../packages/ui/lib/index.js", "../packages/ui/lib/index.d.ts", "../packages/ui/lib/client.js"];
+const builtSources = await Promise.all(builtFiles.map((file) => readFile(new URL(file, import.meta.url), "utf8")));
+for (const [index, source] of builtSources.entries()) {
+  assert.ok(source.length > 0, `${builtFiles[index]} must be built before packaging`);
 }
-const client = await readFile(new URL("../packages/ui/lib/client.js", import.meta.url), "utf8");
-assert.ok(client.includes('id: "dsh-project-mcp-ui"'), "browser module identity must stay on the full UI package name");
-for (const slot of ['name: "settings.plugins.tab"', 'name: "sidebar.panellist"', 'name: "main"', 'name: "settings.section"', 'name: "settings.section.icon"', 'name: "settings.general.item"', 'name: "plugins.bundle.config"']) {
-  assert.ok(client.includes(slot), `client bundle must keep the ${slot} registration`);
-}
-assert.ok(client.includes('"project-mcp"'), "the sidebar row and the main page must share one id");
-for (const service of ['"slots"', '"locale"', '"layout"', '"configForms"']) {
-  assert.ok(client.includes(service), `client bundle must inject ${service}`);
-}
-assert.ok(client.includes('"mcp-project-ui"'), "the visibility form reads the UI plugin entry id");
-assert.ok(client.includes('"dsh-project-mcp-manager"'), "the plugin page row is addressed by the manager bundle name");
+// Slot registrations are exercised behaviourally by test-ui-client-wiring.mjs
+// against the built browser module; only package metadata belongs here.
 assert.ok(ui.dsh.client.inject.includes("@deepseek-ai/dsh-client-ui-settings-plugins"), "the settings tab needs the slot package loaded first");
 assert.ok(ui.dsh.client.inject.includes("@deepseek-ai/dsh-client-ui-sidebar"), "the sidebar row needs the panel slot package loaded first");
 assert.ok(ui.dsh.client.inject.includes("@deepseek-ai/dsh-client-ui-settings"), "the settings entries need the settings slot package loaded first");
@@ -60,5 +55,39 @@ assert.ok(ui.dependencies["@deepseek-ai/schemastery"] !== undefined, "the host h
 const host = await readFile(new URL("../packages/ui/lib/index.js", import.meta.url), "utf8");
 for (const field of ["sidebar", "settingsSection", "settingsTab"]) {
   assert.ok(host.includes(field), `UI Config must declare the ${field} entry`);
+}
+
+// Lazy imports the official client's HTTP and subprocess packages directly;
+// their installed versions must stay exact and aligned with the official
+// client's declared contract, and Eager/Lazy must never resolve different copies.
+async function installedMetadata(resolver, name) {
+  let directory = dirname(resolver.resolve(name));
+  for (;;) {
+    try {
+      const value = JSON.parse(await readFile(join(directory, "package.json"), "utf8"));
+      if (value.name === name) return value;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    const parent = dirname(directory);
+    assert.notEqual(parent, directory, `cannot locate metadata for ${name}`);
+    directory = parent;
+  }
+}
+
+const require = createRequire(import.meta.url);
+const official = require("@deepseek-ai/dsh-mcp-client/package.json");
+const fromOfficial = createRequire(require.resolve("@deepseek-ai/dsh-mcp-client"));
+const lazyDependencies = ["@modelcontextprotocol/client", "@deepseek-ai/dsh-subprocess"];
+const lazyMetadata = await Promise.all(lazyDependencies.map(async (name) => {
+  const [direct, nested] = await Promise.all([installedMetadata(require, name), installedMetadata(fromOfficial, name)]);
+  return { name, direct, nested };
+}));
+for (const { name, direct, nested } of lazyMetadata) {
+  const declared = official.dependencies?.[name] ?? official.peerDependencies?.[name];
+  assert.equal(root.dependencies[name], direct.version, `${name} is an explicit exact runtime dependency`);
+  assert.equal(declared, direct.version, `${name} must match the official client's declared contract; review upgrades together`);
+  assert.equal(nested.version, direct.version, `${name} must not drift between Eager and Lazy`);
+  console.log(`PASS  ${name} stays exact at ${direct.version} for Eager and Lazy`);
 }
 console.log("PASS  default bundle ships loader and same-version UI components with built artifacts");
