@@ -1089,7 +1089,8 @@ export class ProjectMcpRegistry {
 
   private disposeRuntime(): void {
     this.disposed = true;
-    for (const id of [...this.restrictionFallbacks.keys()]) this.clearRestrictionFallback(id);
+    // Map 迭代允许删除当前键：直接遍历即可逐个清掉定时器与状态，无需数组快照。
+    for (const id of this.restrictionFallbacks.keys()) this.clearRestrictionFallback(id);
     if (this.timer !== undefined) clearTimeout(this.timer);
     if (this.liveWatchTimer !== undefined) clearInterval(this.liveWatchTimer);
     if (this.watcher !== undefined) void this.watcher.close().catch(() => {});
@@ -2718,25 +2719,15 @@ export class ProjectMcpRegistry {
     if (deny.length === 0) {
       if (previous === undefined) return;
       this.restrictions.delete(agent.id);
-      try {
-        previous();
-      } catch {
-        // agent 层已销毁
-      }
+      this.disposeRestriction(previous);
       this.clearRestrictionFallback(agent.id);
       return;
     }
     try {
-      // Agent scopes can be minted without declaring a tools dependency.
-      const tools = typeof agent.ctx.get === "function" ? agent.ctx.get("tools") : agent.ctx.tools;
-      const disposer = tools.restrict({ deny });
+      const disposer = this.agentTools(agent).restrict({ deny });
       if (previous !== undefined) {
         this.restrictions.delete(agent.id);
-        try {
-          previous();
-        } catch {
-          // agent 层已销毁
-        }
+        this.disposeRestriction(previous);
       }
       this.restrictions.set(agent.id, disposer);
       this.clearRestrictionFallback(agent.id);
@@ -2750,25 +2741,36 @@ export class ProjectMcpRegistry {
       // 再失败时同样走这里，续上退避链。兜底自身同步发的 tools/change 由
       // applyingRestrictions 守卫挡住，不会递归。
       if (previous === undefined || this.restrictionFallbacks.has(agent.id)) {
-        try {
-          const fallbackTools = typeof agent.ctx.get === "function" ? agent.ctx.get("tools") : agent.ctx.tools;
-          const fallback = this.registeredToolIds().filter((id) => id.startsWith("mcp__"));
-          if (fallback.length > 0) {
-            const disposer = fallbackTools.restrict({ deny: fallback });
-            if (previous !== undefined) {
-              try {
-                previous();
-              } catch {
-                // agent 层已销毁
-              }
-            }
-            this.restrictions.set(agent.id, disposer);
-            this.enterRestrictionFallback(agent, error);
-          }
-        } catch {
-          // 兜底也失败只能等下一次 sweep；上面的 warn 已留痕。
-        }
+        this.applyFailClosedRestriction(agent, previous, error);
       }
+    }
+  }
+
+  /** Agent scope 可能未声明 tools 依赖，优先经 ctx.get 取。 */
+  private agentTools(agent: any): any {
+    return typeof agent.ctx.get === "function" ? agent.ctx.get("tools") : agent.ctx.tools;
+  }
+
+  /** 释放旧限制；agent 层已销毁时 disposer 可能失效，吞错。 */
+  private disposeRestriction(disposer: () => void): void {
+    try {
+      disposer();
+    } catch {
+      // agent 层已销毁
+    }
+  }
+
+  /** fail-closed 兜底：临时 deny 全部已注册 MCP 工具；兜底也失败只能等下一次 sweep。 */
+  private applyFailClosedRestriction(agent: any, previous: (() => void) | undefined, error: unknown): void {
+    try {
+      const fallback = this.registeredToolIds().filter((id) => id.startsWith("mcp__"));
+      if (fallback.length === 0) return;
+      const disposer = this.agentTools(agent).restrict({ deny: fallback });
+      if (previous !== undefined) this.disposeRestriction(previous);
+      this.restrictions.set(agent.id, disposer);
+      this.enterRestrictionFallback(agent, error);
+    } catch {
+      // 兜底也失败只能等下一次 sweep；applyRestriction 的 warn 已留痕。
     }
   }
 
