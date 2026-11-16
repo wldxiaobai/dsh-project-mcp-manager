@@ -18,10 +18,12 @@ import {
   MCP_UI_STATE_PATH,
   MCP_UI_TOOL_PATH,
   MCP_UI_TOOLS_PATH,
+  MCP_UI_TRUST_PATH,
   type McpUiLayer,
   type McpUiOpenTarget,
   type McpUiServer,
-  type McpUiState
+  type McpUiState,
+  type McpUiTrust
 } from "./wire.js";
 
 export const name = "dsh-project-mcp-ui";
@@ -213,6 +215,16 @@ function applyConnected(ctx: Context) {
     // 抬头与「添加 MCP」默认写入位置同源：有焦点时是当前工作区，只有一个已知
     // 工作区时也是它，多个工作区且没有焦点时为空。
     const activeProject = writeTargets.find((target) => target.id === "project")?.projectRoot ?? null;
+    const trust: McpUiTrust = (() => {
+      const state = mcp.trustState(activeProject ?? "");
+      return {
+        mode: state.mode,
+        required: state.required,
+        // 没有活动工作区时没有「当前」可谈；页面据此不显示信任提示。
+        trusted: activeProject === null ? null : state.trusted,
+        store: state.store
+      };
+    })();
     return {
       revision,
       servers: serversFrom(snapshot, mcp),
@@ -223,7 +235,8 @@ function applyConnected(ctx: Context) {
       activeProjectKey: activeProject === null ? null : projectKeyOf(activeProject),
       homeDir: homedir(),
       contextCost: mcp.contextCost(),
-      resultCost: mcp.resultCost()
+      resultCost: mcp.resultCost(),
+      trust
     };
   };
 
@@ -321,6 +334,17 @@ function applyConnected(ctx: Context) {
         }
         const path = await mcp.setToolEnabled(source, projectRoot, rawName, tool, body.enabled === true);
         return Response.json({ ok: true, path });
+      }
+    },
+    {
+      path: MCP_UI_TRUST_PATH,
+      methods: ["POST"],
+      fetch: async (request) => {
+        const body = await readJson(request);
+        const projectRoot = asString(body.projectRoot, "projectRoot");
+        if (typeof body.trusted !== "boolean") throw new Error("trusted 必须是布尔值");
+        const trust = await mcp.setProjectTrusted(projectRoot, body.trusted);
+        return Response.json({ ok: true, trust });
       }
     },
     {

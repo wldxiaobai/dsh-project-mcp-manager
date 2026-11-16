@@ -10,6 +10,7 @@ import {
   MCP_UI_STATE_PATH,
   MCP_UI_TOOL_PATH,
   MCP_UI_TOOLS_PATH,
+  MCP_UI_TRUST_PATH,
   type McpUiContextCost,
   type McpUiResult,
   type McpUiResultCost,
@@ -432,6 +433,24 @@ export function McpPanel({ t }: McpPanelProps) {
   const addTarget = addTargets.find((item) => item.id === draft.scope);
   const scopeReady = (id: AddScope) => addTargets.some((item) => item.id === id);
   const addPath = addPathForTarget(addTarget, showUserPath);
+  const trust = state?.trust;
+
+  /** 信任当前工作区后立刻重读：装载由宿主对账完成，页面只等下一次状态。 */
+  const trustWorkspace = async () => {
+    if (busy || activeProject === null) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await post(MCP_UI_TRUST_PATH, { projectRoot: activeProject, trusted: true });
+      if (!result.ok) {
+        setError("message" in result ? result.message : t("error"));
+        return;
+      }
+      load();
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const { removes: pendingRemoves, title: pendingTitle, will: pendingWill, wont: pendingWont } = confirmationDisplay(pending, showUserPath, t);
   const changeMode = (row: McpUiServer, mode: "eager" | "lazy") => askOrRun({ kind: "server", action: "mode", row, mode });
@@ -439,6 +458,9 @@ export function McpPanel({ t }: McpPanelProps) {
   return (
     <div className="dsh-mcp-ui">
       <WorkspaceHeader activeProject={activeProject} activeProjectKey={activeProjectKey} servers={servers} contextCost={contextCost} resultCost={resultCost} t={t} />
+      {trust !== undefined && trust.required && trust.trusted === false && (
+        <TrustNotice busy={busy} onTrust={trustWorkspace} t={t} />
+      )}
       <div className="intro">
         <p>{t("intro")}</p>
         <Tooltip label={t("introHelp")} side="right" portal maxWidth={420} openOnClick>
@@ -693,8 +715,30 @@ function ServerGroups({ title, groups, busy, t, homeDir, writeTargets, onToggle,
   );
 }
 
-/** 「当前工作区」抬头：名称、路径、计数与范围说明。三个入口都渲染同一个面板，因此都带上这一块。 */
-function WorkspaceHeader({ activeProject, activeProjectKey, servers, contextCost, resultCost, t }: {
+/**
+ * 未信任工作区的提示条：只在 `projectTrust=allowlist` 且当前工作区未信任时出现。
+ * 说明「配置没有被读」而不是「配置为空」——两者在列表里长得一样。
+ */
+function TrustNotice({ busy, onTrust, t }: {
+  readonly busy: boolean;
+  readonly onTrust: () => void;
+  readonly t: McpPanelProps["t"];
+}) {
+  return (
+    <output className="trust-notice">
+      <IconWarningOutlineRegular size={16} />
+      <div className="trust-notice-body">
+        <p className="trust-notice-title">{t("trustNoticeTitle")}</p>
+        <p className="trust-notice-text">{t("trustNoticeBody")}</p>
+      </div>
+      <Button size="sm" variant="primary" disabled={busy} onClick={onTrust}>
+        {t("trustNoticeAction")}
+      </Button>
+    </output>
+  );
+}
+
+/** 「当前工作区」抬头：名称、路径、计数与范围说明。三个入口都渲染同一个面板，因此都带上这一块。 */function WorkspaceHeader({ activeProject, activeProjectKey, servers, contextCost, resultCost, t }: {
   readonly activeProject: string | null;
   readonly activeProjectKey: string | null;
   readonly servers: McpUiServer[];

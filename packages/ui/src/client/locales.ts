@@ -113,6 +113,9 @@ export type McpUiLocaleKey =
   | "workspaceUnknown"
   | "workspaceUnknownHint"
   | "workspaceScopeNote"
+  | "trustNoticeTitle"
+  | "trustNoticeBody"
+  | "trustNoticeAction"
   | "workspaceCurrent"
   | "workspaceServerCountOne"
   | "workspaceServerCount"
@@ -265,6 +268,9 @@ export const en: Record<McpUiLocaleKey, string> = {
   workspaceUnknown: "Current workspace not determined",
   workspaceUnknownHint: "Open a session or send a message to determine it.",
   workspaceScopeNote: "Automatically loads the MCP servers of the workspace you are in.",
+  trustNoticeTitle: "Workspace not trusted",
+  trustNoticeBody: "Project trust is set to allowlist, so this workspace's MCP configuration is not read. Trust it to load .dsh/mcp.yml, .dsh/mcp.json, and .mcp.json.",
+  trustNoticeAction: "Trust workspace",
   workspaceCurrent: "Current",
   workspaceServerCountOne: "1 server",
   workspaceServerCount: "{count} servers",
@@ -418,6 +424,9 @@ export const zh: Record<McpUiLocaleKey, string> = {
   workspaceUnknown: "当前工作区未确定",
   workspaceUnknownHint: "打开一个会话或发送一条消息后确定。",
   workspaceScopeNote: "将自动装载当前所在工作区的 MCP 服务器。",
+  trustNoticeTitle: "工作区未受信任",
+  trustNoticeBody: "projectTrust 当前为 allowlist，因此不会读取此工作区的 MCP 配置。信任后将装载 .dsh/mcp.yml、.dsh/mcp.json 与 .mcp.json。",
+  trustNoticeAction: "信任此工作区",
   workspaceCurrent: "当前",
   workspaceServerCountOne: "1 个服务器",
   workspaceServerCount: "{count} 个服务器",

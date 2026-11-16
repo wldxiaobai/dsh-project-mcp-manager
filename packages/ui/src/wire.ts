@@ -7,6 +7,19 @@ export const MCP_UI_SERVER_PATH = "/api/project-mcp/server";
 export const MCP_UI_ADD_PATH = "/api/project-mcp/add";
 export const MCP_UI_TOOL_PATH = "/api/project-mcp/tool";
 export const MCP_UI_TOOLS_PATH = "/api/project-mcp/tools";
+export const MCP_UI_TRUST_PATH = "/api/project-mcp/trust";
+
+/**
+ * 当前工作区的项目层信任状态。`trusted` 为 null 表示还没有活动工作区；
+ * `required` 为 false（`inherit` 模式）时页面不显示任何信任提示。
+ */
+export interface McpUiTrust {
+  mode: "inherit" | "allowlist";
+  required: boolean;
+  trusted: boolean | null;
+  /** `<dshHome>/mcp-trust.json`，排查用。 */
+  store: string;
+}
 
 export type McpUiLayer = "project" | "user";
 
@@ -100,6 +113,8 @@ export interface McpUiState {
   contextCost: McpUiContextCost;
   /** 当前会话仍保留的 MCP 工具调用结果占用；抬头「结果」标签的数据源。 */
   resultCost: McpUiResultCost;
+  /** 当前工作区的项目层信任状态（`projectTrust: "allowlist"` 时才有提示）。 */
+  trust: McpUiTrust;
 }
 
 export interface McpUiTool {
