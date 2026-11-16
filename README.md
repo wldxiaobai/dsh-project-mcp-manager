@@ -211,6 +211,14 @@ skipped with a warning and do not affect other servers. Claude user-state
 monoliths such as `~/.claude.json` (mixing credentials with project history)
 are **no longer read at all** as of v0.4.0.
 
+Project-layer loading can be gated per workspace: set the plugin config
+`projectTrust: allowlist` (or `DSH_MCP_PROJECT_TRUST=allowlist`) and the plugin
+will not read a workspace's `.dsh/mcp.yml`, `.dsh/mcp.json`, or `.mcp.json`
+until you trust that workspace (`dsh-mcp trust`, or the notice on the MCP
+Manager page). The default `inherit` keeps the mount-everywhere behavior, so
+existing installations and CI jobs are unaffected. Details:
+[workspace trust](docs/guide/trust.md).
+
 The MCP Manager page writes the same managed files, so adding a local-command
 server there spawns that command on the host. Its routes
 (`/api/project-mcp/*`) are served on the dsh connection: whoever can use the
@@ -237,6 +245,8 @@ Feature documentation lives in `docs/`, English and Chinese side by side:
   read-only legacy Claude Code layer.
 - [`${VAR}` expansion](docs/guide/env-expansion.md) — mount-time interpolation and
   its diagnostics.
+- [Workspace trust](docs/guide/trust.md) — the opt-in `projectTrust: allowlist`
+  gate, the `mcp-trust.json` store, and the CLI/UI trust commands.
 - [CLI `dsh-mcp`](docs/guide/cli.md) — scopes, write formats, ownership contract.
 - [How it works](docs/guide/how-it-works.md) — project discovery, mounting,
   hot reload, effective names, session visibility, and context cost.

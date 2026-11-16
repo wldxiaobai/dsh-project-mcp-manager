@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in workspace trust gate for the project layer. With
+  `projectTrust: "allowlist"` (plugin config) or `DSH_MCP_PROJECT_TRUST=allowlist`,
+  the plugin does not read `<workspace>/.dsh/mcp.yml`, `.dsh/mcp.json`, or
+  `.mcp.json` until that workspace is trusted. Project files are executable code
+  carriers, so this keeps a freshly cloned repository from spawning commands as
+  soon as dsh discovers it. The default stays `inherit` (mount everywhere), so
+  existing installations and CI jobs are unaffected.
+- `dsh-mcp trust [dir]`, `dsh-mcp untrust [dir]`, and `dsh-mcp trusted` manage
+  the `$DSH_HOME/mcp-trust.json` store; `dsh-mcp status` reports it. The MCP
+  Manager shows a notice with a **Trust workspace** button for an untrusted
+  current workspace, and adding a server for that workspace trusts it.
+- `projectMcp.trustState()` and `projectMcp.setProjectTrusted()`; the UI state
+  route carries a `trust` object and gains `/api/project-mcp/trust`.
+
 ## [0.13.0] - 2026-11-12
 
 Versioned together with `dsh-project-mcp-ui` 0.13.0. This source version and

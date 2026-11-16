@@ -21,6 +21,9 @@ dsh-mcp get gitlab    # winning-layer entry; secret values shown as key names on
 dsh-mcp remove gitlab # searches yml then json in priority order and deletes; read-only layers get edit guidance
 dsh-mcp status        # layer row counts, names, and diagnostic summary (no host connection)
 dsh-mcp import --from .cursor/mcp.json --dry-run   # preview mcpServers import; no writes
+dsh-mcp trust         # mark this workspace trusted in $DSH_HOME/mcp-trust.json
+dsh-mcp untrust ..    # revoke the parent directory's project root
+dsh-mcp trusted       # print the store path and every trusted root
 ```
 
 Scopes: `--scope project` (default; writes `<projectRoot>/.dsh/mcp.yml` under
@@ -54,6 +57,16 @@ diagnostic file is printed (the project file vs
 (add `--profile <name>` to keep one); `--scope user` still lists every
 user-layer file, including all profiles. Legacy idle rows from an older
 diagnostic file still print as not-mounted (no session), not as unhealthy.
+
+**`trust` / `untrust` / `trusted`** read and write
+`$DSH_HOME/mcp-trust.json`; they never touch a config file and never connect
+to a host. `trust [dir]` resolves the project root of `dir` (or the current
+directory) with the loader's rule — the nearest `.git` ancestor — and adds it
+to the store; `untrust [dir]` removes it; `trusted` prints the store path and
+every trusted root. The store only changes loading when the plugin runs with
+`projectTrust: "allowlist"` (or `DSH_MCP_PROJECT_TRUST=allowlist`); with the
+default `inherit` these commands change nothing observable. See
+[workspace trust](trust.md).
 
 **`import`** copies `{"mcpServers":{...}}` into a native yml or JSON file
 (`--scope` / `--format` / `--profile` match `add`; default scope is

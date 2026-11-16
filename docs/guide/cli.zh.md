@@ -19,6 +19,9 @@ dsh-mcp get gitlab    # 优先层条目；密钥值只显示键名
 dsh-mcp remove gitlab # 按优先序在 yml/json 中查找并删除；命中只读层时给出编辑指引
 dsh-mcp status        # 层行数、名称与诊断摘要（不连接宿主）
 dsh-mcp import --from .cursor/mcp.json --dry-run   # 预演 mcpServers 导入，不写盘
+dsh-mcp trust         # 把当前工作区写入 $DSH_HOME/mcp-trust.json
+dsh-mcp untrust ..    # 取消上一级目录的项目根
+dsh-mcp trusted       # 打印信任表路径与全部已信任项目根
 ```
 
 作用域：`--scope project`（缺省，写最近 `.git` 祖先下的 `.dsh/mcp.yml`）、
@@ -56,6 +59,14 @@ user/profile 为 `""`（宿主目录）；`-c` 显式覆盖。
 `-p`（`--profile`）也是本 CLI 的选项。这两个短名会连带吞掉下一个词元作为选项值：
 要把它们传给被 spawn 的服务器命令，请写在 `--` 之后（`--` 之后全部按位置参数透传）。
 `--from`、`--dry-run`、`--overwrite` 留给 `import`。其余以 `-` 开头的未知词元仍原样透传给服务器命令行。
+
+**`trust` / `untrust` / `trusted`** 只读写 `$DSH_HOME/mcp-trust.json`，
+不碰任何配置文件，也不连接宿主。`trust [dir]` 按装载器同一规则解析 `dir`（或当前
+目录）的项目根——最近的含 `.git` 的祖先——并写入信任表；`untrust [dir]` 移除；
+`trusted` 打印信任表路径与全部已信任根。只有当插件以
+`projectTrust: "allowlist"`（或 `DSH_MCP_PROJECT_TRUST=allowlist`）运行时，
+信任表才影响装载；缺省 `inherit` 下这三条命令不改变可观察行为。细节见
+[workspace 信任门](trust.zh.md)。
 
 **独占契约**：JSON 文件由本 CLI 独占（宿主插件与设置页都不写）。写入保留其他顶层键与键序、
 解析失败拒绝覆盖、原子写；`${VAR}` 原样写入，凭据留在环境里（见

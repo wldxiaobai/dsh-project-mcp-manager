@@ -123,6 +123,11 @@ UI（三个入口一起消失），不停用装载器，也不移除 UI 依赖�
 - 状态行 `N 个服务器 · M 运行中 · K 待使用 · J 已禁用`，只列出非零项；
 - 说明「将自动装载当前所在工作区的 MCP 服务器。」
 
+开启 `projectTrust: "allowlist"` 且当前工作区未受信任时，这行说明会变成提示条：
+插件没有读取该工作区的项目层配置，「信任此工作区」会把它写入
+`$DSH_HOME/mcp-trust.json` 并重新装载。在该工作区添加服务器同样视为信任。
+细节见 [workspace 信任门](trust.zh.md)。
+
 ### MCP 上下文占用
 
 抬头里还有小标签 `MCP 3.4k` 与 `结果 1.2k`，分别表示**当前会话每次请求都要带的
@@ -290,7 +295,12 @@ Windows 上会同时在资源管理器里选中它。写法见[配置格式](for
 
 在页面上添加本地命令服务器，等同手写一条 `stdio` 行：dsh 宿主会 spawn 这个
 命令。按需加载只是延后连接，不是延后信任：第一次搜索或调用仍会启动 stdio 命令；
-不带 `server` 的搜索会连接当前会话所有可见的按需服务器。页面路由
+不带 `server` 的搜索会连接当前会话所有可见的按需服务器。项目层装载可以加门：`projectTrust: "allowlist"`（或环境变量
+`DSH_MCP_PROJECT_TRUST=allowlist`）下，未信任工作区的 `.dsh/mcp.yml`、
+`.dsh/mcp.json` 与 `.mcp.json` 完全不会被读取；缺省 `inherit` 保持
+「发现即装载」。细节见 [workspace 信任门](trust.zh.md)。
+
+页面路由
 （`/api/project-mcp/*`）挂在 dsh connection 上，能使用这个 dsh
 web GUI 的人就能通过它添加并启动服务器。GUI 的访问权限应当等同受管配置文件的
 写权限来对待。

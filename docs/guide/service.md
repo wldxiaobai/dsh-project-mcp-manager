@@ -27,6 +27,8 @@ the SSE channel provided by the bundled companion UI.
 | `setToolEnabled(source, projectRoot, rawName, tool, enabled)` | Writes one exact tool name into the managed row's `tools.allow` / `tools.deny`. Glob characters are rejected. |
 | `toolStates(projectRoot, rawName)` | Registered tools (short names) and whether each is visible. Empty when the server is not active. |
 | `managedPathFor(source, projectRoot)` | The managed yml a row of that source writes to, or `undefined` when no profile name resolves. |
+| `trustState(projectRoot)` | Project-layer trust for that workspace: `mode` (`inherit` or `allowlist`), `required`, `trusted`, and the store path. In `inherit` mode `trusted` is always `true`. |
+| `setProjectTrusted(projectRoot, trusted)` | Writes or removes the workspace in `$DSH_HOME/mcp-trust.json` and reconciles. Only accepts a workspace the plugin already discovered. |
 | `prepareManagedYml(source, projectRoot)` | Creates that managed yml as an empty YAML list (`[]`) when missing and returns its absolute path; the first server write creates the managed block. |
 | `openConfigFile(source, projectRoot)` | Opens the managed yml through the host-provided opener. |
 | `subscribeUpdated(listener)` | Subscribes to the update signal described below; returns an unsubscribe function. |
@@ -207,6 +209,7 @@ import {
   type ProjectMcpService,
   type ProjectServerPhase,
   type ProjectServerState,
+  type ProjectTrustState,
   type ReconnectConfig,
   type ToolFilter,
 } from "dsh-project-mcp-manager";
@@ -218,7 +221,8 @@ import {
 `McpServerView.mode` is optional; absent means Eager. `McpAddDraft.mode` is also
 optional; the add form sends it only for Lazy. `contextCost()` returns
 `McpContextCost` with `McpServerContextCost` groups and a `ContextCostLevel`;
-`resultCost()` returns `McpResultCost` with `McpResultServerCost` groups. Both
+`resultCost()` returns `McpResultCost` with `McpResultServerCost` groups, and
+`trustState()` / `setProjectTrusted()` return `ProjectTrustState`. Both
 carry an optional `unsupported: "code-mode"` when the session runs in code mode
 (see [Code mode (PTC)](#code-mode-ptc)); the numeric fields are then zero.
 
