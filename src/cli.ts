@@ -20,9 +20,10 @@ import { mkdir, readdir, readFile } from "node:fs/promises";
 import { extractManagedRows, readPatchFile, updateManagedRows, type PatchRow } from "./mcp-file.js";
 import { byCodeUnit, inputFromPatchRow, mcpServerInputSchema, parseCliTransport, patchRowToView, rowNameOf, toPatchRow, type McpServerInput } from "./model.js";
 import { CC_PROJECT_FILE, FOREIGN_MCP_FORMAT_HINT, IGNORE_MCP_JSON_ENV, JSON_MCP_FILE, mcpJsonLayerEnabled, parseJsonServersValue, readDshJsonFile, readMcpJsonFile, type JsonReadResult, type McpRowSource, type SourcedRow } from "./json-file.js";
-import { MCP_YML_FILE, DIAG_FILE, dshHomeFor, profileMcpJsonFile, profileMcpYmlFile, projectDiagFile, userLayerPathsIn } from "./dsh-paths.js";
+import { MCP_YML_FILE, DIAG_FILE, dshHomeFor, profileMcpJsonFile, profileMcpYmlFile, projectDiagFile, projectTrustFile, userLayerPathsIn } from "./dsh-paths.js";
 import { readJsonServers, toJsonEntry, updateJsonServers } from "./json-write.js";
 import { mergeSourcedRows, parseDiagDocument, projectDshJsonFile, projectMcpFile, projectMcpJsonFile, type DiagDocument, type DiagSummary, type IdentityShadow } from "./registry.js";
+import { PROJECT_TRUST_ENV, parseProjectTrustMode, readTrustFile, setTrustedIn, trustSignature, trustedRoots, writeTrustFile } from "./trust.js";
 import { findProjectRoot } from "./project-root.js";
 
 export interface CliIo {
@@ -80,6 +81,9 @@ const HELP = `dsh-mcp —— 项目/用户/profile 级 MCP 服务器管理（原
   dsh-mcp remove <name> [--scope project|user|profile] [--format yml|json]
   dsh-mcp status [--scope project|user|profile] [--profile <name>]
   dsh-mcp import --from <file|-> [--scope project|user|profile] [--format yml|json] [--dry-run] [--overwrite] [--profile <name>]
+  dsh-mcp trust [dir]        # 把工作区写入信任表（projectTrust=allowlist 时才装载项目层）
+  dsh-mcp untrust [dir]      # 从信任表移除
+  dsh-mcp trusted            # 列出已信任的工作区与信任表路径
 
 写入位置：
   project（缺省）  <项目根>/.dsh/mcp.yml（--format json → <项目根>/.dsh/mcp.json）
@@ -98,6 +102,9 @@ const HELP = `dsh-mcp —— 项目/用户/profile 级 MCP 服务器管理（原
   sse 为 MCP SSE 端点传输，不受支持（后端只支持 stdio 与 streamable-http；把 type 改为 http，或删除 type 只留 url）。
   list/get 展示全部来源层（含遗留只读层），不显示任何密钥值。
   status 读取各层文件与诊断摘要（不连接运行中的宿主）。
+  trust/untrust/trusted 只读写 \${DSH_HOME}/mcp-trust.json；是否启用信任门由插件 Config 的
+    projectTrust 或环境变量 \${DSH_MCP_PROJECT_TRUST}（inherit|allowlist）决定，缺省 inherit。
+  trust 的目标目录按项目根规则解析（向上找最近的 .git，找不到就用该目录）。
   status --scope project|user|profile 同时过滤层列表与诊断文件（project 打项目诊断，user/profile 打全局诊断）。
   --scope profile 只列 profile 层；再配 --profile <name> 则只打该名。--scope user 仍列全部用户层（含所有 profile 文件）。
   import 只接受 {"mcpServers":{...}}（不接受 VS Code servers / 单条对象 / 数组）；同名默认跳过，--overwrite 才覆盖；--dry-run 预演影子冲突且不写盘。`
@@ -1069,10 +1076,73 @@ async function cmdStatus(parsed: ParsedArgs, io: CliIo, deps: CliDeps): Promise<
   const printedGlobal = parsed.scope === "project"
     ? false
     : await printDiagStatus(join(dshHomeOf(deps), DIAG_FILE), io);
+  if (parsed.scope !== "user" && parsed.scope !== "profile") {
+    const trustFile = projectTrustFile(dshHomeOf(deps));
+    let trusted = 0;
+    try {
+      trusted = trustedRoots(await readTrustFile(trustFile)).length;
+    } catch {
+      // 信任表损坏：只省略计数，不影响其它层的状态输出。
+      io.err(`信任表无法解析：${trustFile}`);
+    }
+    io.out(`项目信任表：${trustFile}（${trusted} 个项目；projectTrust 缺省 inherit）`);
+  }
   if (listed === 0 && !printedProject && !printedGlobal) {
     io.out("未配置 MCP 服务器；尚无运行时诊断（宿主未运行或零配置）。");
   }
   return 0;
+}
+
+/**
+ * 信任命令的目标工作区：显式目录（相对当前 cwd）或 cwd，按宿主同一套项目根规则
+ * 解析（向上找最近的 `.git`，找不到就用目录本身）。
+ */
+async function resolveTrustTarget(rest: string[], deps: CliDeps): Promise<string> {
+  const raw = rest[0];
+  const start = raw === undefined || raw === "" ? process.cwd() : resolve(raw);
+  const finder = deps.resolveProjectRoot ?? ((path: string) => findProjectRoot(path));
+  return finder(start);
+}
+
+async function applyTrustCommand(rest: string[], io: CliIo, deps: CliDeps, trusted: boolean): Promise<number> {
+  try {
+    const root = await resolveTrustTarget(rest, deps);
+    const file = projectTrustFile(dshHomeOf(deps));
+    const doc = await readTrustFile(file);
+    const next = setTrustedIn(doc, root, trusted);
+    // untrust 一个本来就不在表里的目录不写盘，避免每次误触都刷新 mtime。
+    if (trusted || trustSignature(next) !== trustSignature(doc)) await writeTrustFile(file, next);
+    io.out(`${trusted ? "已信任" : "已取消信任"} ${root}`);
+    io.out(`信任表：${file}`);
+    return 0;
+  } catch (error) {
+    return fail(io, error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function cmdTrust(rest: string[], io: CliIo, deps: CliDeps): Promise<number> {
+  return applyTrustCommand(rest, io, deps, true);
+}
+
+async function cmdUntrust(rest: string[], io: CliIo, deps: CliDeps): Promise<number> {
+  return applyTrustCommand(rest, io, deps, false);
+}
+
+async function cmdTrusted(io: CliIo, deps: CliDeps): Promise<number> {
+  try {
+    const file = projectTrustFile(dshHomeOf(deps));
+    const roots = trustedRoots(await readTrustFile(file));
+    const envMode = parseProjectTrustMode(process.env[PROJECT_TRUST_ENV]);
+    io.out(envMode === undefined
+      ? `信任模式：未由 ${PROJECT_TRUST_ENV} 指定（宿主按插件 Config 决定，缺省 inherit）`
+      : `信任模式：${envMode}（来自 ${PROJECT_TRUST_ENV}）`);
+    io.out(`信任表：${file}（${roots.length} 个项目）`);
+    if (roots.length === 0) io.out("（空；projectTrust=allowlist 时所有项目层配置都不会装载）");
+    for (const root of roots) io.out(root);
+    return 0;
+  } catch (error) {
+    return fail(io, error instanceof Error ? error.message : String(error));
+  }
 }
 
 export async function runCli(argv: string[], io: CliIo, deps: CliDeps = {}): Promise<number> {
@@ -1081,7 +1151,7 @@ export async function runCli(argv: string[], io: CliIo, deps: CliDeps = {}): Pro
   const [command, ...rest] = parsed.positional;
   if (parsed.help || command === undefined || command === "help") {
     io.out(HELP);
-    return command === undefined && !parsed.help ? fail(io, "缺少子命令（add|list|get|remove|status|import）") : 0;
+    return command === undefined && !parsed.help ? fail(io, "缺少子命令（add|list|get|remove|status|import|trust|untrust|trusted）") : 0;
   }
   switch (command) {
     case "add":
@@ -1096,8 +1166,14 @@ export async function runCli(argv: string[], io: CliIo, deps: CliDeps = {}): Pro
       return cmdStatus(parsed, io, deps);
     case "import":
       return cmdImport(parsed, rest, io, deps);
+    case "trust":
+      return cmdTrust(rest, io, deps);
+    case "untrust":
+      return cmdUntrust(rest, io, deps);
+    case "trusted":
+      return cmdTrusted(io, deps);
     default:
-      return fail(io, `未知子命令：${command}（支持 add|list|get|remove|status|import，dsh-mcp --help 查看用法）`);
+      return fail(io, `未知子命令：${command}（支持 add|list|get|remove|status|import|trust|untrust|trusted，dsh-mcp --help 查看用法）`);
   }
 }
 

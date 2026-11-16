@@ -27,6 +27,8 @@ export const DSH_DIR = ".dsh";
 export const DIAG_FILE = ".mcp-diag.json";
 /** 项目诊断目录（`<dshHome>/mcp-diag/<hash>.json`）。 */
 export const PROJECT_DIAG_DIR = "mcp-diag";
+/** workspace 信任表（`<dshHome>/mcp-trust.json`；`projectTrust: "allowlist"` 时读取）。 */
+export const TRUST_FILE = "mcp-trust.json";
 
 /**
  * dsh 家目录：`DSH_HOME` 非空则取其绝对化值，否则 `<home>/.dsh`。
@@ -80,6 +82,11 @@ export function profileMcpYmlFile(profilesDir: string, profile: string): string 
 export function projectDiagFile(dshHome: string, projectRoot: string): string {
   const id = createHash("sha256").update(projectKeyOf(projectRoot)).digest("hex").slice(0, 16);
   return join(dshHome, PROJECT_DIAG_DIR, `${id}.json`);
+}
+
+/** workspace 信任表路径（`<dshHome>/mcp-trust.json`）；一直落在 dsh 家目录，不进工作区。 */
+export function projectTrustFile(dshHome: string): string {
+  return join(dshHome, TRUST_FILE);
 }
 
 /** 旧版项目诊断路径（`<projectRoot>/.dsh/.mcp-diag.json`）。只用于删掉已留下的文件。 */

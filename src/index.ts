@@ -10,13 +10,15 @@
  * 运行时行为见 registry.ts 的类注释。
  */
 import { Context } from "@deepseek-ai/cordis";
+import Schema from "@deepseek-ai/schemastery";
 import { MCP_PLUGIN_NAME } from "./mcp-file.js";
 import { PROFILE_ENV } from "./dsh-paths.js";
 import { ProjectMcpRegistry, profileNameFromConfigPath } from "./registry.js";
 import { bindProjectMcpService, PROJECT_MCP_SERVICE } from "./service.js";
+import { resolveProjectTrustMode, type ProjectTrustMode } from "./trust.js";
 
 export { bindProjectMcpService, PROJECT_MCP_SERVICE, PROJECT_MCP_UPDATED_EVENT, type ProjectMcpService } from "./service.js";
-export type { FiberPhaseView, McpAddDraft, McpServerRuntimeView, McpWriteTarget, ProjectFileState, ProjectServerPhase, ProjectServerState } from "./registry.js";
+export type { FiberPhaseView, McpAddDraft, McpServerRuntimeView, McpWriteTarget, ProjectFileState, ProjectServerPhase, ProjectServerState, ProjectTrustState } from "./registry.js";
 export type { McpLoadingMode, McpScopeInfo, McpServerView, McpTransport, ReconnectConfig, ToolFilter } from "./model.js";
 export { projectKeyOf, serviceIdentityKeyOf } from "./model.js";
 export type { PatchRow } from "./mcp-file.js";
@@ -45,9 +47,29 @@ export const inject = ["tools", "agents"];
 
 /** 显式指定 profile 名的环境变量（实现在 dsh-paths.ts，registry 的校验共用）。 */
 export { PROFILE_ENV } from "./dsh-paths.js";
+/** 覆盖项目层信任模式的环境变量（headless/CI；优先于插件 Config）。 */
+export { PROJECT_TRUST_ENV } from "./trust.js";
+export type { ProjectTrustMode } from "./trust.js";
 
-export function apply(ctx: Context) {
+/**
+ * 插件配置（宿主 Loader 按此校验 bundle 行的 `config`）。
+ *
+ * `projectTrust` 缺省 `inherit`：与旧行为一致，总是读取项目层三个文件。
+ * `allowlist` 时只读取 `$DSH_HOME/mcp-trust.json` 里记录的 workspace；未信任的
+ * workspace 连配置文件都不读——`stdio` 行是可执行代码载体，这一步必须在读取前
+ * 挡住，而不是读取后再决定装不装。环境变量 `DSH_MCP_PROJECT_TRUST` 优先于此值。
+ */
+export const Config = Schema.object({
+  projectTrust: Schema.union(["inherit", "allowlist"]).default("inherit")
+});
+
+export interface PluginConfig {
+  projectTrust?: ProjectTrustMode;
+}
+
+export function apply(ctx: Context, config: PluginConfig = {}) {
   const registry = new ProjectMcpRegistry(ctx as any, {
+    projectTrust: resolveProjectTrustMode(config.projectTrust),
     /** 全局已装载 mcp-client 行的 serverName：从 loader include entry 的
      *  config.patches（dsh-app-boot 传入的已生效 patch 配置，含 bundle 层
      *  与 profile patch 层全部行）提取；loader.entries() 本身只暴露顶层

@@ -10,7 +10,7 @@
  * settle 时再发一次。插件原有导出（`inject`、
  * `globalNames()`、`activeProfile()`）不变。
  */
-import type { McpAddDraft, McpServerRuntimeView, McpWriteTarget, ProjectFileState, ProjectMcpRegistry, ProjectServerState } from "./registry.js";
+import type { McpAddDraft, McpServerRuntimeView, McpWriteTarget, ProjectFileState, ProjectMcpRegistry, ProjectServerState, ProjectTrustState } from "./registry.js";
 import type { McpLoadingMode } from "./model.js";
 import type { McpRowSource } from "./json-file.js";
 import type { McpContextCost, McpResultCost } from "./context-cost.js";
@@ -59,6 +59,14 @@ export interface ProjectMcpService {
   toolStates(projectRoot: string, rawName: string): { name: string; enabled: boolean }[];
   /** 该来源对应作用域的受管 yml 路径（只读层/解析不出 profile 时为 undefined）。 */
   managedPathFor(source: McpRowSource, projectRoot: string): string | undefined;
+  /**
+   * 某个 workspace 的项目层信任状态。`inherit` 模式（缺省）下 `required` 为
+   * false、`trusted` 恒为 true；`allowlist` 模式下未信任的 workspace 不读其
+   * `.dsh/mcp.yml`、`.dsh/mcp.json` 与 `.mcp.json`。
+   */
+  trustState(projectRoot: string): ProjectTrustState;
+  /** 信任/取消信任一个已发现的工作区；写 `$DSH_HOME/mcp-trust.json` 并重新对账。 */
+  setProjectTrusted(projectRoot: string, trusted: boolean): Promise<ProjectTrustState>;
   /** 确保受管 yml 存在（没有则创建空受管块）并返回其路径。 */
   prepareManagedYml(source: McpRowSource, projectRoot: string): Promise<string>;
   /** 添加对话框当前能写的位置：当前工作区、用户层、当前 profile。 */
@@ -84,6 +92,8 @@ export function bindProjectMcpService(registry: ProjectMcpRegistry): ProjectMcpS
     setToolEnabled: (source, projectRoot, rawName, tool, enabled) => registry.setToolEnabled(source, projectRoot, rawName, tool, enabled),
     toolStates: (projectRoot, rawName) => registry.toolStates(projectRoot, rawName),
     managedPathFor: (source, projectRoot) => registry.managedPathFor(source, projectRoot),
+    trustState: (projectRoot) => registry.trustState(projectRoot),
+    setProjectTrusted: (projectRoot, trusted) => registry.setProjectTrusted(projectRoot, trusted),
     prepareManagedYml: (source, projectRoot) => registry.prepareManagedYml(source, projectRoot),
     writeTargets: () => registry.writeTargets(),
     addServer: (source, projectRoot, draft) => registry.addServer(source, projectRoot, draft),

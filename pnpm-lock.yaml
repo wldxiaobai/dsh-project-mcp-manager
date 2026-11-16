@@ -115,6 +115,9 @@ importers:
       '@deepseek-ai/dsh-subprocess':
         specifier: 0.2.2-rc.1
         version: 0.2.2-rc.1(@deepseek-ai/cordis@4.1.0)(@deepseek-ai/dsh-http-proxy@0.2.2-rc.1(@deepseek-ai/cordis@4.1.0))
+      '@deepseek-ai/schemastery':
+        specifier: ~3.19.0
+        version: 3.19.0
       '@modelcontextprotocol/client':
         specifier: 2.2.0
         version: 2.2.0

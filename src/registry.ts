@@ -61,6 +61,7 @@ import {
   profileMcpJsonFile,
   profileMcpYmlFile,
   projectDiagFile,
+  projectTrustFile,
   userLayerPathsIn,
   type UserLayerPaths
 } from "./dsh-paths.js";
@@ -99,6 +100,16 @@ import {
   type McpServerView
 } from "./model.js";
 import { mcpToolBudgetStats, mcpToolCount, parseToolBudgetWarn, schemaToolId } from "./status.js";
+import {
+  emptyTrustDocument,
+  isTrustedIn,
+  readTrustFile,
+  setTrustedIn,
+  trustSignature,
+  writeTrustFile,
+  type ProjectTrustMode,
+  type TrustDocument
+} from "./trust.js";
 import { LazyConnections } from "./lazy/connection.js";
 import { LAZY_TOOL_NAMES, isLazyToolName, registerLazyTools, type LazyMount } from "./lazy/proxies.js";
 import { contextCostSignature, isCodeModeTools, mcpContextCost, mcpResultCost, resultCostSignature, type McpContextCost, type McpResultCost } from "./context-cost.js";
@@ -253,6 +264,19 @@ export interface ProjectFileState {
   source?: McpRowSource;
 }
 
+/**
+ * workspace 信任状态（`projectMcp.trustState()` 的返回值）。
+ * `inherit` 模式下 `required` 为 false 且 `trusted` 恒为 true。
+ */
+export interface ProjectTrustState {
+  mode: ProjectTrustMode;
+  /** 是否处于 `allowlist` 模式（只有这时 `trusted` 才有意义）。 */
+  required: boolean;
+  trusted: boolean;
+  /** 信任表路径（`<dshHome>/mcp-trust.json`），展示与排查用。 */
+  store: string;
+}
+
 export interface ProjectMcpRegistryOptions {
   /** 全局（profile patch）已装载 mcp-client 行的 serverName，用于生效名冲突判定。 */
   globalNames: () => Promise<string[]>;
@@ -280,6 +304,12 @@ export interface ProjectMcpRegistryOptions {
    * 靠它在运行中发现新工作区。`0` 或未设置则不启定时器（测试缺省关闭）。
    */
   liveWatchMs?: number;
+  /**
+   * 项目层信任模式（`index.ts` 已把 `DSH_MCP_PROJECT_TRUST` 与插件 Config 合成为
+   * 一个值）。`inherit` 缺省：与旧行为一致，总是读取项目文件；`allowlist`：只读
+   * `$DSH_HOME/mcp-trust.json` 里记录的 workspace，其余连文件都不读。
+   */
+  projectTrust?: ProjectTrustMode;
 }
 
 interface ProjectEntry {
@@ -936,6 +966,12 @@ export class ProjectMcpRegistry {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private chain: Promise<void> = Promise.resolve();
   private disposed = false;
+  /** 项目层信任模式（构造时已解析）。`inherit` 时信任门恒开。 */
+  private readonly projectTrustMode: ProjectTrustMode;
+  /** 本轮对账读到的信任表；`allowlist` 模式下 scanProject 用它判定。 */
+  private trustDoc: TrustDocument = emptyTrustDocument();
+  /** 未信任 workspace 的告警去重（projectKey）；信任后重新计。 */
+  private readonly untrustedWarned = new Set<string>();
   /** 配置文件读取次数（scan / 用户层；测试用指纹跳过断言）。 */
   private configReadCount = 0;
   /** 上一轮对账入口的配置文件指纹；全同则跳过重读。 */
@@ -990,6 +1026,7 @@ export class ProjectMcpRegistry {
   constructor(ctx: any, providers: ProjectMcpRegistryOptions) {
     this.ctx = ctx;
     this.providers = providers;
+    this.projectTrustMode = providers.projectTrust ?? "inherit";
 
     // dsh 0.2 的 agent/created 带 source（startup|resume|clear|compact），覆盖原 session-start 的补扫。
     // global：事件经会话作用域 carrier 派发，非 global 的监听可能被过滤掉，运行中新开的工作区就永远不会对账。
@@ -1665,6 +1702,9 @@ export class ProjectMcpRegistry {
       paths.mcpJson,
       ...(this.userLayer.profileYml === null ? [] : [this.userLayer.profileYml]),
       ...(this.userLayer.profileJson === null ? [] : [this.userLayer.profileJson]),
+      // allowlist 模式下 CLI 改信任表必须立刻触发对账：宿主可能长时间没有
+      // 其它文件事件，等下一次项目变更才生效会让命令行看起来「没作用」。
+      ...(this.projectTrustMode === "allowlist" ? [this.trustFilePath()] : []),
       ...(isSameFilePath(foreignPath, paths.mcpJson) ? [] : [foreignPath])
     ];
     // 排序只用于跨轮次相等性比较，须与 locale 无关保持稳定：统一走 byCodeUnit
@@ -1811,6 +1851,8 @@ export class ProjectMcpRegistry {
 
   /** 对账正文。成功才 emit；抛错时调用方清掉 `reconciling`，事件不发。 */
   private async reconcileAllInner(): Promise<void> {
+    // 信任表每轮重读：CLI 在宿主运行时改了文件也要生效（签名变化会作废配置指纹）。
+    await this.refreshTrust();
     const roots = await this.knownProjects();
     const hostGlobalNames = await this.providers.globalNames().catch(() => []);
     const { skip: skipReread, signature } = await this.shouldSkipConfigReread(roots, hostGlobalNames);
@@ -1935,6 +1977,17 @@ export class ProjectMcpRegistry {
    */
   private async scanProject(projectRoot: string, globalMountable: Set<string>): Promise<{ projectRoot: string; rows: DesiredProjectRow[] }> {
     const key = projectKeyOf(projectRoot);
+    // 信任门：未信任的 workspace 连配置文件都不读——stdio 行是可执行代码载体，
+    // 读取之后的每一步（解析、展开、spawn）都可能产生副作用。已经装载过的行由
+    // reconcileProject 按空期望集卸载；这里只保证不再产生新期望。
+    if (this.projectTrustMode === "allowlist" && !isTrustedIn(this.trustDoc, projectRoot)) {
+      this.suppressedGlobals.set(key, new Set());
+      // 上一次信任时留下的分文件目录必须作废：snapshot 从它拼行视图，残留行会让
+      // 管理页显示已经不存在的服务器。
+      this.lastScanFiles.delete(key);
+      this.warnUntrustedOnce(key, projectRoot);
+      return { projectRoot, rows: [] };
+    }
     const userPaths = this.resolveUserLayerPaths();
     // 只数 yml 来源的装载实例：用户层行同样落在 entry.servers 里，拿总数
     // 会把「纯用户层挂载」误判成「yml 装载后文件被删」，产生假 ENOENT 诊断。
@@ -3307,10 +3360,110 @@ export class ProjectMcpRegistry {
     return targets;
   }
 
+  /**
+   * 某个 workspace 的信任状态。`inherit` 模式下 `required` 为 false、`trusted`
+   * 恒为 true——调用方只需判断 `required && !trusted`。
+   */
+  trustState(projectRoot: string): ProjectTrustState {
+    const required = this.projectTrustMode === "allowlist";
+    return {
+      mode: this.projectTrustMode,
+      required,
+      trusted: required ? isTrustedIn(this.trustDoc, projectRoot) : true,
+      store: this.trustFilePath()
+    };
+  }
+
+  /**
+   * 信任/取消信任一个当前已发现的工作区：写 `<dshHome>/mcp-trust.json`，作废配置
+   * 指纹并立即对账。只接受 `knownProjects()` 里的路径——UI 请求体里的 `projectRoot`
+   * 不可信，不能让它把任意目录写进信任表。
+   */
+  async setProjectTrusted(projectRoot: string, trusted: boolean): Promise<ProjectTrustState> {
+    const root = resolve(projectRoot);
+    return this.enqueue(async () => {
+      const known = await this.knownProjects();
+      if (!known.some((item) => projectKeyOf(item) === projectKeyOf(root))) {
+        throw new Error("未知的工作区：只接受当前已发现的工作区");
+      }
+      await this.applyTrust(root, trusted);
+      await this.reconcileAll();
+      return this.trustState(root);
+    });
+  }
+
+  private trustFilePath(): string {
+    return projectTrustFile(this.diagHome());
+  }
+
+  /**
+   * 每轮对账重读信任表；信任集变化时作废配置指纹与扫描缓存——否则「刚被 CLI
+   * 信任」的 workspace 会沿用上一轮的空期望，继续不装载。
+   */
+  private async refreshTrust(): Promise<void> {
+    if (this.projectTrustMode !== "allowlist") return;
+    let next: TrustDocument;
+    try {
+      next = await readTrustFile(this.trustFilePath());
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.warnGated("trust-read", `项目 MCP 信任表读取失败：${message}（本轮按「全部未信任」处理）`, () =>
+        this.ctx.logger.warn(`项目 MCP 信任表读取失败：${message}（本轮按「全部未信任」处理）`));
+      next = emptyTrustDocument();
+    }
+    if (trustSignature(next) === trustSignature(this.trustDoc)) return;
+    this.trustDoc = next;
+    for (const key of this.untrustedWarned) {
+      if (next.projects[key] !== undefined) this.untrustedWarned.delete(key);
+    }
+    this.lastScanDesired.clear();
+    this.lastScanFiles.clear();
+    this.lastFingerprintSig = "";
+    this.configEpoch += 1;
+  }
+
+  /** 调用方需持有 enqueue 链：写信任表、更新内存、作废缓存（对账由调用方触发）。 */
+  private async applyTrust(projectRoot: string, trusted: boolean): Promise<void> {
+    let current: TrustDocument;
+    try {
+      current = await readTrustFile(this.trustFilePath());
+    } catch {
+      // 读失败（损坏/权限）以内存为准覆盖写：用户的点击不能被一张坏文件吃掉。
+      current = this.trustDoc;
+    }
+    const next = setTrustedIn(current, projectRoot, trusted);
+    await writeTrustFile(this.trustFilePath(), next);
+    this.trustDoc = next;
+    const key = projectKeyOf(projectRoot);
+    if (trusted) this.untrustedWarned.delete(key);
+    else await this.removeProjectDiag(projectRoot);
+    this.lastScanDesired.delete(key);
+    this.lastFingerprintSig = "";
+    this.configEpoch += 1;
+  }
+
+  /** 未信任的 workspace 只告警一次（每个对账轮次不重复刷）。 */
+  private warnUntrustedOnce(key: string, projectRoot: string): void {
+    if (this.untrustedWarned.has(key)) return;
+    this.untrustedWarned.add(key);
+    this.ctx.logger.warn(`项目 MCP（${projectRoot}）：workspace 未受信任，跳过其 MCP 配置（projectTrust=allowlist）。信任后自动重载：dsh-mcp trust "${projectRoot}"，或在 MCP 管理页点「信任此工作区」`);
+  }
+
+  /** 取消信任时清掉陈旧诊断：writeSummaries 只遍历已挂载项目，不会自己删这一份。 */
+  private async removeProjectDiag(projectRoot: string): Promise<void> {
+    await rm(projectDiagFile(this.diagHome(), projectRoot), { force: true }).catch(() => {});
+    await this.removeLegacyProjectDiag(projectRoot);
+  }
+
   /** 表单确认后追加一条受管 yml 行（没有文件就创建）。同名已存在则拒绝，不改文件。 */
   async addServer(source: McpRowSource, projectRoot: string, draft: McpAddDraft): Promise<string> {
     return this.enqueue(async () => {
       this.assertWritableTarget(source, projectRoot, "add");
+      // 在管理页明确添加一行，本身就是对该 workspace 的信任决定：否则写完仍是
+      // 「添加成功但服务器不见了」，反而诱导用户去关掉信任门。
+      if (this.projectTrustMode === "allowlist" && this.writeSlot(source) === "project" && !isTrustedIn(this.trustDoc, projectRoot)) {
+        await this.applyTrust(projectRoot, true);
+      }
       const validated = mcpServerInputSchema.safeParse(inputFromAddDraft(source, draft));
       if (!validated.success) {
         const first = validated.error.issues[0];
