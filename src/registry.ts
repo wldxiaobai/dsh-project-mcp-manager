@@ -2165,25 +2165,26 @@ export class ProjectMcpRegistry {
     }
   }
 
+  private pruneKeyed(
+    store: { keys(): Iterable<string>; delete(key: string): boolean },
+    knownKeys: Set<string>
+  ): void {
+    for (const key of store.keys()) {
+      if (!knownKeys.has(key)) store.delete(key);
+    }
+  }
+
   /** 逐项目状态表按本轮已知项目剪枝（projects 的保留是有意为之，见 reconcileProject）。 */
   private prunePerProjectState(knownKeys: Set<string>): void {
-    for (const key of this.suppressedGlobals.keys()) {
-      if (!knownKeys.has(key)) this.suppressedGlobals.delete(key);
-    }
-    for (const key of this.identityShadowSigs.keys()) {
-      if (!knownKeys.has(key)) this.identityShadowSigs.delete(key);
-    }
-    for (const key of this.lastScanDesired.keys()) {
-      if (!knownKeys.has(key)) this.lastScanDesired.delete(key);
-    }
-    for (const key of this.lastScanFiles.keys()) {
-      if (!knownKeys.has(key)) this.lastScanFiles.delete(key);
-    }
-    for (const key of this.untrustedDiagRoots.keys()) {
-      if (!knownKeys.has(key)) this.untrustedDiagRoots.delete(key);
-    }
-    for (const key of this.scanDiagWritten) {
-      if (!knownKeys.has(key)) this.scanDiagWritten.delete(key);
+    for (const store of [
+      this.suppressedGlobals,
+      this.identityShadowSigs,
+      this.lastScanDesired,
+      this.lastScanFiles,
+      this.untrustedDiagRoots,
+      this.scanDiagWritten
+    ]) {
+      this.pruneKeyed(store, knownKeys);
     }
     this.pruneWarnGates(knownKeys);
   }
@@ -2431,6 +2432,7 @@ export class ProjectMcpRegistry {
 
   private async writeSummaries(): Promise<void> {
     const at = new Date().toISOString();
+    // 诊断写盘有意逐工作区串行：避免多工作区同时竞争文件锁与原子 rename，并保持告警日志顺序稳定。
     for (const [key, entry] of this.projects) {
       const blocked = this.untrustedDiagRoots.has(key);
       const catalog = blocked ? [] : (this.lastScanDesired.get(key)?.rows ?? []);
@@ -2466,6 +2468,7 @@ export class ProjectMcpRegistry {
    * 本轮 scan 有值得保留的错误时改写摘要；否则只删除仍标着 `untrusted` 的文件。
    */
   private async settleTrustedEmptyDiags(at: string): Promise<void> {
+    // 逐工作区串行清理/改写，与 writeSummaries 保持同一锁序语义。
     for (const [key, entry] of this.lastScanDesired) {
       if (this.projects.has(key) || this.untrustedDiagRoots.has(key) || entry.rows.length > 0) continue;
       if (this.scanDiagWritten.has(key)) {
