@@ -178,7 +178,7 @@ export function trustChrome(
   trust: { required: boolean; trusted: boolean | null } | undefined,
   activeProject: string | null
 ): TrustChrome {
-  if (trust === undefined || trust.required !== true || activeProject === null || activeProject === "") return "hidden";
+  if (trust?.required !== true || activeProject === null || activeProject === "") return "hidden";
   if (trust.trusted === true) return "revoke";
   if (trust.trusted === false) return "notice";
   return "hidden";
