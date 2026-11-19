@@ -12,6 +12,7 @@
  *
  * 纯函数（parse/set/isTrusted）与 I/O 分开，便于 CLI、registry 与测试共用；
  * 写入走 `mcp-file.ts` 的锁 + 原子写，和受管 yml 同一套并发约定。
+ * 改某一项用 `updateTrustFile`（锁内读-改-写）；读取失败拒绝覆盖整表。
  */
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -98,13 +99,36 @@ export async function readTrustFile(path: string): Promise<TrustDocument> {
   return parseTrustDocument(parsed);
 }
 
-/** 锁内原子写；键排序让文件在 diff 里稳定。 */
-export async function writeTrustFile(path: string, doc: TrustDocument): Promise<void> {
+/** 键排序后的文件正文；diff 稳定，写路径共用。 */
+function trustFilePayload(doc: TrustDocument): string {
   const projects: Record<string, TrustRecord> = {};
   for (const key of Object.keys(doc.projects).sort(byCodeUnit)) projects[key] = doc.projects[key];
   const payload: TrustDocument = { version: TRUST_DOCUMENT_VERSION, projects };
+  return JSON.stringify(payload, null, 2) + "\n";
+}
+
+/** 锁内原子写整份文档；键排序让文件在 diff 里稳定。调用方已持有完整文档时用它。 */
+export async function writeTrustFile(path: string, doc: TrustDocument): Promise<void> {
   await withPatchLock(path, async () => {
-    await writeFileAtomic(path, JSON.stringify(payload, null, 2) + "\n");
+    await writeFileAtomic(path, trustFilePayload(doc));
+  });
+}
+
+/**
+ * 锁内读-改-写。读取失败（损坏 JSON、权限等）直接拒绝，不用另一份文档覆盖整表。
+ * `mutate` 返回 `null` 表示不写盘（例如取消信任一个本来就不在表里的目录）。
+ * 返回锁内读到、并在写盘时改完的文档。
+ */
+export async function updateTrustFile(
+  path: string,
+  mutate: (doc: TrustDocument) => TrustDocument | null
+): Promise<TrustDocument> {
+  return withPatchLock(path, async () => {
+    const current = await readTrustFile(path);
+    const next = mutate(current);
+    if (next === null) return current;
+    await writeFileAtomic(path, trustFilePayload(next));
+    return next;
   });
 }
 
