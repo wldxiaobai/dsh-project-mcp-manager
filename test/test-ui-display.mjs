@@ -107,12 +107,13 @@ const home = "C:\\Users\\haima";
 
 {
   const allow = { required: true, trusted: false };
-  assert.equal(trustChrome(allow, "D:\\work"), "notice");
-  assert.equal(trustChrome({ required: true, trusted: true }, "D:\\work"), "revoke");
-  assert.equal(trustChrome({ required: true, trusted: null }, "D:\\work"), "hidden");
-  assert.equal(trustChrome({ required: false, trusted: true }, "D:\\work"), "hidden");
+  const workDir = String.raw`D:\work`;
+  assert.equal(trustChrome(allow, workDir), "notice");
+  assert.equal(trustChrome({ required: true, trusted: true }, workDir), "revoke");
+  assert.equal(trustChrome({ required: true, trusted: null }, workDir), "hidden");
+  assert.equal(trustChrome({ required: false, trusted: true }, workDir), "hidden");
   assert.equal(trustChrome(allow, null), "hidden");
-  assert.equal(trustChrome(undefined, "D:\\work"), "hidden");
+  assert.equal(trustChrome(undefined, workDir), "hidden");
   assert.equal(en.trustNoticeAction, "Trust workspace");
   assert.equal(zh.trustNoticeAction, "信任此工作区");
   assert.equal(en.trustRevokeAction, "Revoke trust");

@@ -204,7 +204,7 @@ async function withTrustRegistry(options, run) {
       globalNames: async () => [],
       userLayerPaths: userLayerPathsIn(join(home, ".dsh")),
       ...(options.projectTrust === undefined ? {} : { projectTrust: options.projectTrust }),
-      ...(options.providers ?? {})
+      ...options.providers
     });
     ctx.agentsList.push(fakeAgent("session-trust", project));
     await registry.reconcileNow();
