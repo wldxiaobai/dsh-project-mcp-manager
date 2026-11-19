@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in workspace trust gate for the project layer. With
+  `projectTrust: "allowlist"` (plugin config) or `DSH_MCP_PROJECT_TRUST=allowlist`,
+  the plugin does not read `<workspace>/.dsh/mcp.yml`, `.dsh/mcp.json`, or
+  `.mcp.json` until that workspace is trusted. Project files are executable code
+  carriers, so this keeps a freshly cloned repository from spawning commands as
+  soon as dsh discovers it. The default stays `inherit` (mount everywhere), so
+  existing installations and CI jobs are unaffected.
+- `dsh-mcp trust [dir]`, `dsh-mcp untrust [dir]`, and `dsh-mcp trusted` manage
+  the `$DSH_HOME/mcp-trust.json` store; `dsh-mcp status` reports it. The MCP
+  Manager shows a notice with a **Trust workspace** button for an untrusted
+  current workspace, and adding a server for that workspace trusts it.
+- `projectMcp.trustState()` and `projectMcp.setProjectTrusted()`; the UI state
+  route carries a `trust` object and gains `/api/project-mcp/trust`.
+- An untrusted workspace that still has project-layer config files now leaves a
+  workspace-level diagnostic (`summary.untrusted` and one `untrusted` event)
+  without reading those files. `dsh-mcp status` prints the block. A workspace
+  with no such files still leaves no diagnostic. The MCP Manager can also
+  revoke that trust.
+
+### Fixed
+
+- Trusting a workspace, or starting again in `inherit`, clears a leftover
+  `summary.untrusted` when the workspace has no rows to keep. A parse error
+  is rewritten as a normal summary, so `dsh-mcp status` stops printing the
+  block. `stat` errors other than a missing file no longer look like "no
+  config" and delete that diagnostic.
+- Updates to `mcp-trust.json` read and modify the file inside the lock. A
+  failed read is rejected instead of replacing the table from memory.
+- Adding a server trusts the workspace only after the draft is valid and the
+  managed row is written.
+- `dsh-mcp status` reports `DSH_MCP_PROJECT_TRUST` when it is set. `dsh-mcp
+  untrust` writes the workspace diagnostic itself, and does not claim success
+  for a root that was not in the store.
+
 ## [0.13.0] - 2026-11-12
 
 Versioned together with `dsh-project-mcp-ui` 0.13.0. This source version and

@@ -26,6 +26,8 @@
 | `setToolEnabled(source, projectRoot, rawName, tool, enabled)` | 把一个精确工具名写进受管行的 `tools.allow` / `tools.deny`。含 glob 字符的拒绝。 |
 | `toolStates(projectRoot, rawName)` | 已注册工具（短名）与各自是否可见。服务器未 active 时为空。 |
 | `managedPathFor(source, projectRoot)` | 该来源的行会写到哪份受管 yml；解析不出 profile 名时为 `undefined`。 |
+| `trustState(projectRoot)` | 该工作区的项目层信任状态：`mode`（`inherit` / `allowlist`）、`required`、`trusted` 与信任表路径。`inherit` 模式下 `trusted` 恒为 `true`。 |
+| `setProjectTrusted(projectRoot, trusted)` | 在 `$DSH_HOME/mcp-trust.json` 中写入或移除该工作区并重新对账。只接受插件已发现的工作区。 |
 | `prepareManagedYml(source, projectRoot)` | 受管 yml 不存在时建一个 YAML 空列表（`[]`），返回绝对路径；第一次写服务器时再生成受管块。 |
 | `openConfigFile(source, projectRoot)` | 经宿主注入的 opener 打开受管 yml。 |
 | `subscribeUpdated(listener)` | 订阅下文的更新信号；返回退订函数。 |
@@ -174,6 +176,7 @@ import {
   type ProjectMcpService,
   type ProjectServerPhase,
   type ProjectServerState,
+  type ProjectTrustState,
   type ReconnectConfig,
   type ToolFilter,
 } from "dsh-project-mcp-manager";
@@ -186,7 +189,8 @@ import {
 `McpContextCost`，分项是 `McpServerContextCost`，并带 `ContextCostLevel`；
 `resultCost()` 返回 `McpResultCost`，分项是 `McpResultServerCost`。两者在会话走
 代码模式时都带可选 `unsupported: "code-mode"`（见[代码模式（PTC）](#代码模式ptc)），
-此时数值字段为零。
+此时数值字段为零。`trustState()` / `setProjectTrusted()` 返回 `ProjectTrustState`
+（`mode`、`required`、`trusted`、`store`），没有 `unsupported` 字段。
 
 ## 对配套 UI 的语义化版本
 

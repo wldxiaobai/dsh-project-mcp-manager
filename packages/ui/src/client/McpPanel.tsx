@@ -10,6 +10,7 @@ import {
   MCP_UI_STATE_PATH,
   MCP_UI_TOOL_PATH,
   MCP_UI_TOOLS_PATH,
+  MCP_UI_TRUST_PATH,
   type McpUiContextCost,
   type McpUiResult,
   type McpUiResultCost,
@@ -22,7 +23,7 @@ import type { McpUiLocaleKey } from "./locales.ts";
 import { collapseServers, partitionShadowed, type LogicalServer } from "./collapse.ts";
 import { displayHomePath, profileNameFromFile, serverActionsOpen } from "./display.ts";
 import { parsePastedConfig, type PasteConfigFailure } from "./paste-config.ts";
-import { addPathForTarget, badgeTone, confirmationDisplay, emptyDraft, partitionRows, profileEnd, validateAddDraft, type AddDraft, type AddScope } from "./panel-helpers.ts";
+import { addPathForTarget, badgeTone, confirmationDisplay, emptyDraft, partitionRows, profileEnd, trustChrome, validateAddDraft, type AddDraft, type AddScope } from "./panel-helpers.ts";
 import { contextCostView, formatTokenCount, orderWorkspaceGroups, resultCostView, workspaceGroupMarker, workspaceHeader, type ContextCostView, type ResultCostView, type WorkspaceGroupMarker } from "./workspace.ts";
 import { PANEL_CSS } from "./style.ts";
 
@@ -191,6 +192,7 @@ export function McpPanel({ t }: McpPanelProps) {
   const [draft, setDraft] = useState<AddDraft>(emptyDraft([]));
   const [formError, setFormError] = useState<string | null>(null);
   const [pasteNote, setPasteNote] = useState<string | null>(null);
+  const [revokeOpen, setRevokeOpen] = useState(false);
   const loadRef = useRef<() => void>(() => {});
   const loadSeq = useRef(0);
   const settleTimer = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
@@ -432,6 +434,26 @@ export function McpPanel({ t }: McpPanelProps) {
   const addTarget = addTargets.find((item) => item.id === draft.scope);
   const scopeReady = (id: AddScope) => addTargets.some((item) => item.id === id);
   const addPath = addPathForTarget(addTarget, showUserPath);
+  const trust = state?.trust;
+  const chrome = trustChrome(trust, activeProject);
+
+  /** 信任或取消信任当前工作区后立刻重读：装载由宿主对账完成，页面只等下一次状态。 */
+  const setWorkspaceTrusted = async (trusted: boolean) => {
+    if (busy || activeProject === null) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await post(MCP_UI_TRUST_PATH, { projectRoot: activeProject, trusted });
+      if (!result.ok) {
+        setError("message" in result ? result.message : t("error"));
+        return;
+      }
+      setRevokeOpen(false);
+      load();
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const { removes: pendingRemoves, title: pendingTitle, will: pendingWill, wont: pendingWont } = confirmationDisplay(pending, showUserPath, t);
   const changeMode = (row: McpUiServer, mode: "eager" | "lazy") => askOrRun({ kind: "server", action: "mode", row, mode });
@@ -439,6 +461,9 @@ export function McpPanel({ t }: McpPanelProps) {
   return (
     <div className="dsh-mcp-ui">
       <WorkspaceHeader activeProject={activeProject} activeProjectKey={activeProjectKey} servers={servers} contextCost={contextCost} resultCost={resultCost} t={t} />
+      {chrome === "notice" && (
+        <TrustNotice busy={busy} onTrust={() => void setWorkspaceTrusted(true)} t={t} />
+      )}
       <div className="intro">
         <p>{t("intro")}</p>
         <Tooltip label={t("introHelp")} side="right" portal maxWidth={420} openOnClick>
@@ -472,6 +497,11 @@ export function McpPanel({ t }: McpPanelProps) {
             </Button>
           )}
         />
+        {chrome === "revoke" && (
+          <Button variant="ghost" size="sm" disabled={busy} onClick={() => setRevokeOpen(true)}>
+            {t("trustRevokeAction")}
+          </Button>
+        )}
       </div>
       {error !== null && (
         <p className="dsh-mcp-banner" role="alert">
@@ -503,6 +533,20 @@ export function McpPanel({ t }: McpPanelProps) {
       >
         {pendingWont !== "" && <p className="dsh-mcp-confirm-note">{pendingWont}</p>}
       </Modal>
+
+      <Modal
+        open={revokeOpen}
+        onClose={() => setRevokeOpen(false)}
+        title={t("trustRevokeTitle")}
+        closeLabel={t("cancel")}
+        description={t("trustRevokeBody")}
+        footer={(
+          <>
+            <Button variant="ghost" size="sm" onClick={() => setRevokeOpen(false)}>{t("cancel")}</Button>
+            <Button variant="primary" size="sm" disabled={busy} onClick={() => void setWorkspaceTrusted(false)}>{t("trustRevokeAction")}</Button>
+          </>
+        )}
+      />
 
       <Modal
         open={addOpen}
@@ -693,8 +737,30 @@ function ServerGroups({ title, groups, busy, t, homeDir, writeTargets, onToggle,
   );
 }
 
-/** 「当前工作区」抬头：名称、路径、计数与范围说明。三个入口都渲染同一个面板，因此都带上这一块。 */
-function WorkspaceHeader({ activeProject, activeProjectKey, servers, contextCost, resultCost, t }: {
+/**
+ * 未信任工作区的提示条：只在 `projectTrust=allowlist` 且当前工作区未信任时出现。
+ * 说明「配置没有被读」而不是「配置为空」——两者在列表里长得一样。
+ */
+function TrustNotice({ busy, onTrust, t }: {
+  readonly busy: boolean;
+  readonly onTrust: () => void;
+  readonly t: McpPanelProps["t"];
+}) {
+  return (
+    <output className="trust-notice">
+      <IconWarningOutlineRegular size={16} />
+      <div className="trust-notice-body">
+        <p className="trust-notice-title">{t("trustNoticeTitle")}</p>
+        <p className="trust-notice-text">{t("trustNoticeBody")}</p>
+      </div>
+      <Button size="sm" variant="primary" disabled={busy} onClick={onTrust}>
+        {t("trustNoticeAction")}
+      </Button>
+    </output>
+  );
+}
+
+/** 「当前工作区」抬头：名称、路径、计数与范围说明。三个入口都渲染同一个面板，因此都带上这一块。 */function WorkspaceHeader({ activeProject, activeProjectKey, servers, contextCost, resultCost, t }: {
   readonly activeProject: string | null;
   readonly activeProjectKey: string | null;
   readonly servers: McpUiServer[];

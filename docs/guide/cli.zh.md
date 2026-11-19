@@ -19,6 +19,9 @@ dsh-mcp get gitlab    # 优先层条目；密钥值只显示键名
 dsh-mcp remove gitlab # 按优先序在 yml/json 中查找并删除；命中只读层时给出编辑指引
 dsh-mcp status        # 层行数、名称与诊断摘要（不连接宿主）
 dsh-mcp import --from .cursor/mcp.json --dry-run   # 预演 mcpServers 导入，不写盘
+dsh-mcp trust         # 把当前工作区写入 $DSH_HOME/mcp-trust.json
+dsh-mcp untrust ..    # 取消上一级目录的项目根
+dsh-mcp trusted       # 打印信任表路径与全部已信任项目根
 ```
 
 作用域：`--scope project`（缺省，写最近 `.git` 祖先下的 `.dsh/mcp.yml`）、
@@ -35,7 +38,7 @@ user/profile 为 `""`（宿主目录）；`-c` 显式覆盖。
 
 **`status`** 读取七层来源文件与诊断文件（项目诊断在 `$DSH_HOME/mcp-diag/<hash>.json`，
 全局诊断在 `$DSH_HOME/.mcp-diag.json`，都不写进工作区）：打印每层行数与名称，再打印最近一次对账的
-`summary`（已装载 / 跳过原因 / 不健康行 / 工具预算）。旧版按需挂载写下的诊断文件还可能带
+`summary`（已装载 / 跳过原因 / 不健康行 / 工具预算）。`summary.untrusted` 为 true 时另打印一行「已拦截」：工作区未受信任，项目层配置没有被读取。信任表那一行在设置了 `DSH_MCP_PROJECT_TRUST` 时打印该值，否则说明由宿主配置决定、缺省 `inherit`。旧版按需挂载写下的诊断文件还可能带
 「未装载（无会话）」，当前版本常驻挂载已不再产生。不连接宿主内存；宿主从未对账
 时文件不存在，命令会说明空态。`--scope project|user|profile` 同时过滤层列表与诊断文件
 （项目诊断对 `project`，`$DSH_HOME/.mcp-diag.json` 对 `user`/`profile`）。
@@ -56,6 +59,19 @@ user/profile 为 `""`（宿主目录）；`-c` 显式覆盖。
 `-p`（`--profile`）也是本 CLI 的选项。这两个短名会连带吞掉下一个词元作为选项值：
 要把它们传给被 spawn 的服务器命令，请写在 `--` 之后（`--` 之后全部按位置参数透传）。
 `--from`、`--dry-run`、`--overwrite` 留给 `import`。其余以 `-` 开头的未知词元仍原样透传给服务器命令行。
+
+**`trust` / `untrust` / `trusted`** 在文件锁内读写 `$DSH_HOME/mcp-trust.json`，
+不碰任何配置文件，也不连接宿主。`trust [dir]` 按装载器同一规则解析 `dir`（或当前
+目录）的项目根——最近的含 `.git` 的祖先——并写入信任表；`untrust [dir]` 移除。
+目录本来就不在表里时会说明这一点，并且不写盘。项目层配置文件仍在时，`untrust`
+写入工作区级诊断（只检查文件是否存在，不读内容），因此宿主没在运行时 `status`
+也能打印「已拦截」。`trust` 会清掉这份摘要上的 `summary.untrusted`。`trusted`
+打印信任表路径与全部已信任根。信任表损坏时拒绝覆盖。只有当插件以
+`projectTrust: "allowlist"`（或 `DSH_MCP_PROJECT_TRUST=allowlist`）运行时，
+信任表才影响装载。缺省 `inherit` 下宿主仍会读取项目层文件；`untrust` 仍可能
+写下 `status` 会打印的工作区诊断，下一次 `inherit` 对账会在没有可保留内容时
+清掉这行「已拦截」。细节见
+[workspace 信任门](trust.zh.md)。
 
 **独占契约**：JSON 文件由本 CLI 独占（宿主插件与设置页都不写）。写入保留其他顶层键与键序、
 解析失败拒绝覆盖、原子写；`${VAR}` 原样写入，凭据留在环境里（见

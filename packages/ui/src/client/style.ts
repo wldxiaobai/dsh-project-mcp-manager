@@ -68,6 +68,41 @@ export const PANEL_CSS = `
   gap: 8px;
   min-width: 0;
 }
+/* 未信任工作区提示条：说明「没读配置」而不是「没有配置」。 */
+.dsh-mcp-ui .trust-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--dsw-alias-settings-card-stroke);
+  border-radius: 10px;
+  background: var(--dsw-alias-settings-card-fill);
+  color: var(--dsw-alias-label-secondary);
+}
+.dsh-mcp-ui .trust-notice > svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--dsw-alias-state-business-primary);
+}
+.dsh-mcp-ui .trust-notice-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.dsh-mcp-ui .trust-notice-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+  color: var(--dsw-alias-label-primary);
+}
+.dsh-mcp-ui .trust-notice-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+}
 .dsh-mcp-ui .workspace-label {
   margin: 0;
   font-size: 12px;

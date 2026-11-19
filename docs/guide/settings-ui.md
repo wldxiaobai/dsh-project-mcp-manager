@@ -146,6 +146,14 @@ All three entries render the same panel, so all three open with the same
   — with only the non-zero parts;
 - the note "Automatically loads the MCP servers of the workspace you are in."
 
+With `projectTrust: "allowlist"` and the current workspace not trusted, a
+notice is added above the introduction. The introduction line stays. The
+notice says this workspace's project configuration was not read, and
+**Trust workspace** writes it to `$DSH_HOME/mcp-trust.json` and reloads.
+Adding a server for the workspace trusts it as well, after the new row passes
+validation and is written. When the workspace is already trusted, the toolbar
+offers **Revoke trust**. See [workspace trust](trust.md).
+
 ### MCP context cost
 
 The header also carries short tags such as `MCP 3.4k` and `Results 1.2k`: roughly
@@ -364,4 +372,8 @@ the trust decision: the first search or call still starts the stdio command,
 and a search without `server` connects every visible Lazy server. The page's
 routes (`/api/project-mcp/*`) are served on the dsh connection, so anyone who
 can use this dsh web GUI can add and start servers through it. Treat access to
-the GUI as access to the managed config files.
+the GUI as access to the managed config files. Project-layer loading can also be
+gated: with `projectTrust: "allowlist"` (or `DSH_MCP_PROJECT_TRUST=allowlist`)
+an untrusted workspace's `.dsh/mcp.yml`, `.dsh/mcp.json`, and `.mcp.json` are
+not read at all, while the default `inherit` keeps the mount-everywhere
+behavior. See [workspace trust](trust.md).

@@ -17,6 +17,7 @@ const expectedRoutes = [
   ["/api/project-mcp/server", ["POST"]],
   ["/api/project-mcp/tool", ["POST"]],
   ["/api/project-mcp/tools", ["POST"]],
+  ["/api/project-mcp/trust", ["POST"]],
   ["/api/project-mcp/events", ["GET"]]
 ];
 
@@ -37,8 +38,15 @@ function mockProjectMcp(options = {}) {
   const listeners = new Set();
   const counts = { subscribed: 0, unsubscribed: 0 };
   const modeCalls = [];
+  const trustCalls = [];
   let writeTargets = options.writeTargets ?? [];
   let failMode = options.failMode;
+  let trust = options.trust ?? {
+    mode: "inherit",
+    required: false,
+    trusted: true,
+    store: String.raw`C:\Users\mock\.dsh\mcp-trust.json`
+  };
   const service = {
     snapshot: async () => options.snapshot ?? [],
     managedPathFor: (source) => options.managedPathFor?.(source) ?? options.managedPath,
@@ -65,6 +73,12 @@ function mockProjectMcp(options = {}) {
       servers: [{ name: "mock", calls: 1, estTokens: 800 }]
     },
     toolStates: () => [{ name: "mock-tool", enabled: true }],
+    trustState: () => trust,
+    setProjectTrusted(projectRoot, trusted) {
+      trustCalls.push({ projectRoot, trusted });
+      trust = { ...trust, trusted };
+      return Promise.resolve(trust);
+    },
     subscribeUpdated(callback) {
       listeners.add(callback);
       counts.subscribed += 1;
@@ -79,8 +93,12 @@ function mockProjectMcp(options = {}) {
     listeners,
     counts,
     modeCalls,
+    trustCalls,
     setWriteTargets(next) {
       writeTargets = next;
+    },
+    setTrust(next) {
+      trust = next;
     },
     setFailMode(next) {
       failMode = next;
@@ -246,7 +264,7 @@ async function assertClosed(stream) {
     assert.equal(uiFiber.state, ACTIVE);
     assert.equal(scopedFiber.state, ACTIVE);
     assertRoutes(connection);
-    assert.equal(connection.counts.registered, 7);
+    assert.equal(connection.counts.registered, 8);
     assert.equal(mcp.listeners.size, 1);
     assert.equal((await readState(connection)).revision, 0);
     mcp.updated();
@@ -257,6 +275,8 @@ async function assertClosed(stream) {
     assert.deepEqual(state.writeTargets, []);
     assert.equal(state.activeProject, null, "no focused workspace is reported as null");
     assert.equal(state.activeProjectKey, null, "no focused workspace has no identity key");
+    assert.equal(state.trust.required, false, "inherit mode needs no trust");
+    assert.equal(state.trust.trusted, null, "no focused workspace has no trust verdict");
     assert.equal(typeof state.homeDir, "string");
     assert.equal(state.contextCost.estTokens, 1200, "the state carries the definition cost");
     assert.equal(state.resultCost.calls, 1, "the state carries the retained-result cost");
@@ -267,6 +287,30 @@ async function assertClosed(stream) {
     assert.equal(focused.activeProject, String.raw`D:\work`, "the active workspace follows the project write target");
     assert.equal(focused.activeProjectKey, projectKeyOf(String.raw`D:\work`),
       "the workspace identity is the host's projectKeyOf(), not a browser-side guess");
+    assert.equal(focused.trust.trusted, true, "inherit trusts every workspace");
+
+    mcp.setTrust({ mode: "allowlist", required: true, trusted: false, store: String.raw`C:\mock\.dsh\mcp-trust.json` });
+    const untrusted = await readState(connection);
+    assert.equal(untrusted.trust.required, true);
+    assert.equal(untrusted.trust.trusted, false, "allowlist reports an untrusted active workspace");
+    const { route: trustRoute } = connection.routes.get("/api/project-mcp/trust");
+    const trustedResponse = await trustRoute.fetch(new Request("http://localhost" + trustRoute.path, {
+      method: "POST", body: JSON.stringify({ projectRoot: String.raw`D:\work`, trusted: true }), headers: { "content-type": "application/json" }
+    }));
+    assert.equal(trustedResponse.status, 200);
+    assert.equal((await trustedResponse.json()).ok, true);
+    assert.deepEqual(mcp.trustCalls.at(-1), { projectRoot: String.raw`D:\work`, trusted: true }, "the route forwards the workspace and the verdict");
+    const revokedResponse = await trustRoute.fetch(new Request("http://localhost" + trustRoute.path, {
+      method: "POST", body: JSON.stringify({ projectRoot: String.raw`D:\work`, trusted: false }), headers: { "content-type": "application/json" }
+    }));
+    assert.equal(revokedResponse.status, 200);
+    assert.deepEqual(mcp.trustCalls.at(-1), { projectRoot: String.raw`D:\work`, trusted: false }, "the route also forwards revoke");
+    const rejected = await trustRoute.fetch(new Request("http://localhost" + trustRoute.path, {
+      method: "POST", body: JSON.stringify({ projectRoot: String.raw`D:\work`, trusted: "yes" }), headers: { "content-type": "application/json" }
+    }));
+    assert.equal(rejected.status, 400, "non-boolean verdicts are rejected");
+    mcp.setTrust({ mode: "inherit", required: false, trusted: true, store: String.raw`C:\mock\.dsh\mcp-trust.json` });
+
     mcp.setWriteTargets([]);
     const { route: toolRoute } = connection.routes.get("/api/project-mcp/tools");
     const invalid = await toolRoute.fetch(new Request("http://localhost" + toolRoute.path, {
@@ -274,13 +318,13 @@ async function assertClosed(stream) {
     }));
     assert.equal(invalid.status, 400, "existing route guards remain active");
     assert.equal((await invalid.json()).ok, false);
-    pass("late connection registers exactly seven routes and state updates still work");
+    pass("late connection registers exactly eight routes and state updates still work");
 
     await firstConnectionProvider.dispose();
     assert.equal(scopedFiber.state, PENDING);
     assert.equal(uiFiber.state, ACTIVE);
     assert.equal(connection.routes.size, 0);
-    assert.equal(connection.counts.unregistered, 7);
+    assert.equal(connection.counts.unregistered, 8);
     assert.equal(mcp.listeners.size, 0);
     assert.equal(mcp.counts.unsubscribed, 1);
     assert.equal(mcpProvider.state, ACTIVE);
@@ -291,7 +335,7 @@ async function assertClosed(stream) {
     await scopedFiber.await();
     assert.equal(connectionScope(ctx, uiFiber), scopedFiber, "reuse the existing scoped fiber");
     assertRoutes(connection);
-    assert.equal(connection.counts.registered, 14);
+    assert.equal(connection.counts.registered, 16);
     assert.equal(mcp.listeners.size, 1);
     assert.equal(mcp.counts.subscribed, 2);
     assert.equal((await readState(connection)).revision, 0, "fresh scope resets its revision");
@@ -303,7 +347,7 @@ async function assertClosed(stream) {
     assert.equal(uiFiber.state, DISPOSED);
     assert.equal(scopedFiber.state, DISPOSED);
     assert.equal(connection.routes.size, 0);
-    assert.equal(connection.counts.unregistered, 14);
+    assert.equal(connection.counts.unregistered, 16);
     assert.equal(mcp.listeners.size, 0);
     assert.equal(mcp.counts.unsubscribed, 2);
     assert.equal(mcpProvider.state, ACTIVE, "UI does not own the core provider");
@@ -569,7 +613,7 @@ await withPingTimers(async (timers) => {
     assert.deepEqual(await failed.json(), { ok: false, message: "mock write failed" });
     assert.deepEqual(mcp.modeCalls, [{ source: "dsh-project", projectRoot, rawName: "alpha", mode: "eager" }],
       "the failed attempt is the only core call");
-    assert.equal(connection.routes.size, 7, "a rejected mode write leaves the route table intact");
+    assert.equal(connection.routes.size, 8, "a rejected mode write leaves the route table intact");
     assert.equal(mcp.listeners.size, 1, "a rejected mode write leaves the update subscription intact");
     mcp.setFailMode(undefined);
     pass("core errors surface as a 400 response without success side effects");

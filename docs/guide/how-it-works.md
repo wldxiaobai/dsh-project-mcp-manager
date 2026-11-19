@@ -2,7 +2,7 @@
 
 English | [中文](how-it-works.zh.md)
 
-[← README](../../README.md) ｜ Related: [configuration sources and layers](layers.md) · [configuration format](format.md) · [query surface](service.md)
+[← README](../../README.md) ｜ Related: [configuration sources and layers](layers.md) · [configuration format](format.md) · [workspace trust](trust.md) · [query surface](service.md)
 
 - **Project discovery**: the `session.header.cwd` of an active agent session,
   plus the dsh process start directory → walk up to the nearest ancestor
@@ -21,6 +21,12 @@ English | [中文](how-it-works.zh.md)
   **Every user-layer row mounts exactly one instance** (global, independent of
   the number of projects) — see
   [configuration sources and layers](layers.md).
+- **Workspace trust**: with `projectTrust: "allowlist"` (or
+  `DSH_MCP_PROJECT_TRUST=allowlist`) an untrusted workspace's project-layer
+  files are not read; the plugin only checks that they exist. Trusting the
+  workspace, or running in the default `inherit` mode, clears a leftover
+  "blocked" diagnostic when that workspace has no rows to keep. See
+  [workspace trust](trust.md).
 - **Hot reload**: chokidar watches each known project root and its `.dsh`
   directory (depth 1). The allow-list is that root, `.dsh`, and the three
   config files; every other path is ignored, so the watcher does not open

@@ -16,13 +16,14 @@
  */
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { mkdir, readdir, readFile } from "node:fs/promises";
-import { extractManagedRows, readPatchFile, updateManagedRows, type PatchRow } from "./mcp-file.js";
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { extractManagedRows, readPatchFile, updateManagedRows, withPatchLock, type PatchRow } from "./mcp-file.js";
 import { byCodeUnit, inputFromPatchRow, mcpServerInputSchema, parseCliTransport, patchRowToView, rowNameOf, toPatchRow, type McpServerInput } from "./model.js";
 import { CC_PROJECT_FILE, FOREIGN_MCP_FORMAT_HINT, IGNORE_MCP_JSON_ENV, JSON_MCP_FILE, mcpJsonLayerEnabled, parseJsonServersValue, readDshJsonFile, readMcpJsonFile, type JsonReadResult, type McpRowSource, type SourcedRow } from "./json-file.js";
-import { MCP_YML_FILE, DIAG_FILE, dshHomeFor, profileMcpJsonFile, profileMcpYmlFile, projectDiagFile, userLayerPathsIn } from "./dsh-paths.js";
+import { MCP_YML_FILE, DIAG_FILE, dshHomeFor, legacyProjectDiagFile, profileMcpJsonFile, profileMcpYmlFile, projectDiagFile, projectTrustFile, userLayerPathsIn } from "./dsh-paths.js";
 import { readJsonServers, toJsonEntry, updateJsonServers } from "./json-write.js";
-import { mergeSourcedRows, parseDiagDocument, projectDshJsonFile, projectMcpFile, projectMcpJsonFile, type DiagDocument, type DiagSummary, type IdentityShadow } from "./registry.js";
+import { mergeSourcedRows, parseDiagDocument, projectDshJsonFile, projectLayerConfigPaths, projectMcpFile, projectMcpJsonFile, untrustedDiagMessage, type DiagDocument, type DiagSummary, type IdentityShadow } from "./registry.js";
+import { PROJECT_TRUST_ENV, parseProjectTrustMode, readTrustFile, setTrustedIn, trustSignature, trustedRoots, updateTrustFile } from "./trust.js";
 import { findProjectRoot } from "./project-root.js";
 
 export interface CliIo {
@@ -80,6 +81,9 @@ const HELP = `dsh-mcp —— 项目/用户/profile 级 MCP 服务器管理（原
   dsh-mcp remove <name> [--scope project|user|profile] [--format yml|json]
   dsh-mcp status [--scope project|user|profile] [--profile <name>]
   dsh-mcp import --from <file|-> [--scope project|user|profile] [--format yml|json] [--dry-run] [--overwrite] [--profile <name>]
+  dsh-mcp trust [dir]        # 把工作区写入信任表（projectTrust=allowlist 时才装载项目层）
+  dsh-mcp untrust [dir]      # 从信任表移除
+  dsh-mcp trusted            # 列出已信任的工作区与信任表路径
 
 写入位置：
   project（缺省）  <项目根>/.dsh/mcp.yml（--format json → <项目根>/.dsh/mcp.json）
@@ -98,6 +102,11 @@ const HELP = `dsh-mcp —— 项目/用户/profile 级 MCP 服务器管理（原
   sse 为 MCP SSE 端点传输，不受支持（后端只支持 stdio 与 streamable-http；把 type 改为 http，或删除 type 只留 url）。
   list/get 展示全部来源层（含遗留只读层），不显示任何密钥值。
   status 读取各层文件与诊断摘要（不连接运行中的宿主）。
+  trust/untrust/trusted 读写 \${DSH_HOME}/mcp-trust.json，不改配置文件、不连接宿主。
+    是否启用信任门由插件 Config 的 projectTrust 或环境变量 \${DSH_MCP_PROJECT_TRUST}
+    （inherit|allowlist）决定，缺省 inherit。untrust 在项目层配置文件仍在时写入工作区级诊断
+    （只检查文件是否存在，不读内容）；目录本来就不在表里则不写盘。
+  trust 的目标目录按项目根规则解析（向上找最近的 .git，找不到就用该目录）。
   status --scope project|user|profile 同时过滤层列表与诊断文件（project 打项目诊断，user/profile 打全局诊断）。
   --scope profile 只列 profile 层；再配 --profile <name> 则只打该名。--scope user 仍列全部用户层（含所有 profile 文件）。
   import 只接受 {"mcpServers":{...}}（不接受 VS Code servers / 单条对象 / 数组）；同名默认跳过，--overwrite 才覆盖；--dry-run 预演影子冲突且不写盘。`
@@ -995,6 +1004,9 @@ function printDiagSummary(summary: DiagSummary, io: CliIo): void {
   const projects = summary.projects === undefined ? "" : `，项目 ${summary.projects}`;
   const skipPart = skipped === "" ? "" : `，跳过 ${skipped}`;
   io.out(`  行 ${summary.rows}，已装载 ${summary.mounted}${projects}${skipPart}`);
+  if (summary.untrusted === true) {
+    io.out("  已拦截：工作区未受信任（projectTrust=allowlist），项目层配置未读取。运行 dsh-mcp trust 信任该工作区");
+  }
   for (const item of summary.unhealthy) io.out(`  不健康：${item.name} (${item.reason})`);
   // 只读兼容：仅旧版诊断文件（按需挂载时代的宽限卸载）会带 idle；当前实现不再产生。
   for (const name of summary.idle ?? []) io.out(`  未装载（无会话）：${name}`);
@@ -1069,10 +1081,197 @@ async function cmdStatus(parsed: ParsedArgs, io: CliIo, deps: CliDeps): Promise<
   const printedGlobal = parsed.scope === "project"
     ? false
     : await printDiagStatus(join(dshHomeOf(deps), DIAG_FILE), io);
+  if (parsed.scope !== "user" && parsed.scope !== "profile") {
+    const trustFile = projectTrustFile(dshHomeOf(deps));
+    let trusted = 0;
+    try {
+      trusted = trustedRoots(await readTrustFile(trustFile)).length;
+    } catch {
+      // 信任表损坏：只省略计数，不影响其它层的状态输出。
+      io.err(`信任表无法解析：${trustFile}`);
+    }
+    const envMode = parseProjectTrustMode(process.env[PROJECT_TRUST_ENV]);
+    const modeNote = envMode === undefined
+      ? `未由 ${PROJECT_TRUST_ENV} 指定（宿主按插件 Config 决定，缺省 inherit）`
+      : `${envMode}（来自 ${PROJECT_TRUST_ENV}）`;
+    io.out(`项目信任表：${trustFile}（${trusted} 个项目；${modeNote}）`);
+  }
   if (listed === 0 && !printedProject && !printedGlobal) {
     io.out("未配置 MCP 服务器；尚无运行时诊断（宿主未运行或零配置）。");
   }
   return 0;
+}
+
+/**
+ * 信任命令的目标工作区：显式目录（相对当前 cwd）或 cwd，按宿主同一套项目根规则
+ * 解析（向上找最近的 `.git`，找不到就用目录本身）。
+ */
+async function resolveTrustTarget(rest: string[], deps: CliDeps): Promise<string> {
+  const raw = rest[0];
+  const start = raw === undefined || raw === "" ? process.cwd() : resolve(raw);
+  const finder = deps.resolveProjectRoot ?? ((path: string) => findProjectRoot(path));
+  return finder(start);
+}
+
+/** 配置文件在不在：ENOENT / ENOTDIR 才算没有。其它 stat 错误按「可能还在」处理，避免误删诊断。 */
+async function configPathPresent(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ENOENT" || code === "ENOTDIR") return false;
+    return true;
+  }
+}
+
+async function projectLayerPresent(projectRoot: string, dshHome: string): Promise<boolean> {
+  const paths = projectLayerConfigPaths(projectRoot, userLayerPathsIn(dshHome), mcpJsonLayerEnabled());
+  for (const path of paths) {
+    if (await configPathPresent(path)) return true;
+  }
+  return false;
+}
+
+/** 锁内改一份项目诊断。`unchanged` 不写盘。解析失败的旧文件按空文档重写。 */
+async function withDiagFile(path: string, mutate: (doc: DiagDocument) => DiagDocument | "unchanged"): Promise<void> {
+  await withPatchLock(path, async () => {
+    const tmp = path + `.tmp-${process.pid}`;
+    try {
+      let doc: DiagDocument = { events: [] };
+      try {
+        doc = parseDiagDocument(JSON.parse(await readFile(path, "utf8")));
+      } catch {
+        doc = { events: [] };
+      }
+      const next = mutate(doc);
+      if (next === "unchanged") return;
+      const payload = {
+        ...(next.project === undefined || next.project === "" ? {} : { project: next.project }),
+        ...(next.summary === undefined ? {} : { summary: next.summary }),
+        events: next.events
+      };
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(tmp, JSON.stringify(payload, null, 2), "utf8");
+      await rename(tmp, path);
+    } catch {
+      await rm(tmp, { force: true }).catch(() => {});
+      throw new Error("写入诊断文件失败");
+    }
+  });
+}
+
+/**
+ * 宿主没在跑时，status 只能看见磁盘上的诊断。trust / untrust 自己把工作区级
+ * 摘要对齐：取消信任且文件仍在则标 `untrusted`（不读内容）；信任则去掉这个标记。
+ * 没有项目层文件时删掉诊断，保持零配置不留痕。
+ */
+async function alignTrustDiag(dshHome: string, projectRoot: string, trusted: boolean): Promise<void> {
+  const path = projectDiagFile(dshHome, projectRoot);
+  const legacy = legacyProjectDiagFile(projectRoot);
+  if (!trusted) {
+    if (!(await projectLayerPresent(projectRoot, dshHome))) {
+      await rm(path, { force: true }).catch(() => {});
+      await rm(legacy, { force: true }).catch(() => {});
+      return;
+    }
+    const summary: DiagSummary = {
+      at: new Date().toISOString(),
+      rows: 0,
+      mounted: 0,
+      skippedByReason: {},
+      unhealthy: [],
+      untrusted: true
+    };
+    await withDiagFile(path, (doc) => {
+      const events = doc.events.at(-1)?.kind === "untrusted"
+        ? doc.events
+        : [...doc.events, { ts: new Date().toISOString(), kind: "untrusted", message: untrustedDiagMessage(projectRoot) }];
+      return {
+        project: projectRoot,
+        summary,
+        events: events.length > 30 ? events.slice(-30) : events
+      };
+    });
+    await rm(legacy, { force: true }).catch(() => {});
+    return;
+  }
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch {
+    return;
+  }
+  try {
+    if (parseDiagDocument(JSON.parse(raw)).summary?.untrusted !== true) return;
+  } catch {
+    return;
+  }
+  await withDiagFile(path, (doc) => {
+    if (doc.summary?.untrusted !== true) return "unchanged";
+    const summary = { ...doc.summary };
+    delete summary.untrusted;
+    return { ...doc, project: doc.project ?? projectRoot, summary };
+  });
+}
+
+async function applyTrustCommand(rest: string[], io: CliIo, deps: CliDeps, trusted: boolean): Promise<number> {
+  try {
+    const root = await resolveTrustTarget(rest, deps);
+    const home = dshHomeOf(deps);
+    const file = projectTrustFile(home);
+    let absent = false;
+    await updateTrustFile(file, (doc) => {
+      const next = setTrustedIn(doc, root, trusted);
+      // untrust 一个本来就不在表里的目录不写盘，避免每次误触都刷新 mtime。
+      if (!trusted && trustSignature(next) === trustSignature(doc)) {
+        absent = true;
+        return null;
+      }
+      return next;
+    });
+    if (absent) {
+      io.out(`未在信任表中：${root}`);
+      io.out(`信任表：${file}`);
+      return 0;
+    }
+    try {
+      await alignTrustDiag(home, root, trusted);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return fail(io, `信任表已更新，但诊断写入失败：${message}`);
+    }
+    io.out(`${trusted ? "已信任" : "已取消信任"} ${root}`);
+    io.out(`信任表：${file}`);
+    return 0;
+  } catch (error) {
+    return fail(io, error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function cmdTrust(rest: string[], io: CliIo, deps: CliDeps): Promise<number> {
+  return applyTrustCommand(rest, io, deps, true);
+}
+
+async function cmdUntrust(rest: string[], io: CliIo, deps: CliDeps): Promise<number> {
+  return applyTrustCommand(rest, io, deps, false);
+}
+
+async function cmdTrusted(io: CliIo, deps: CliDeps): Promise<number> {
+  try {
+    const file = projectTrustFile(dshHomeOf(deps));
+    const roots = trustedRoots(await readTrustFile(file));
+    const envMode = parseProjectTrustMode(process.env[PROJECT_TRUST_ENV]);
+    io.out(envMode === undefined
+      ? `信任模式：未由 ${PROJECT_TRUST_ENV} 指定（宿主按插件 Config 决定，缺省 inherit）`
+      : `信任模式：${envMode}（来自 ${PROJECT_TRUST_ENV}）`);
+    io.out(`信任表：${file}（${roots.length} 个项目）`);
+    if (roots.length === 0) io.out("（空；projectTrust=allowlist 时所有项目层配置都不会装载）");
+    for (const root of roots) io.out(root);
+    return 0;
+  } catch (error) {
+    return fail(io, error instanceof Error ? error.message : String(error));
+  }
 }
 
 export async function runCli(argv: string[], io: CliIo, deps: CliDeps = {}): Promise<number> {
@@ -1081,7 +1280,7 @@ export async function runCli(argv: string[], io: CliIo, deps: CliDeps = {}): Pro
   const [command, ...rest] = parsed.positional;
   if (parsed.help || command === undefined || command === "help") {
     io.out(HELP);
-    return command === undefined && !parsed.help ? fail(io, "缺少子命令（add|list|get|remove|status|import）") : 0;
+    return command === undefined && !parsed.help ? fail(io, "缺少子命令（add|list|get|remove|status|import|trust|untrust|trusted）") : 0;
   }
   switch (command) {
     case "add":
@@ -1096,8 +1295,14 @@ export async function runCli(argv: string[], io: CliIo, deps: CliDeps = {}): Pro
       return cmdStatus(parsed, io, deps);
     case "import":
       return cmdImport(parsed, rest, io, deps);
+    case "trust":
+      return cmdTrust(rest, io, deps);
+    case "untrust":
+      return cmdUntrust(rest, io, deps);
+    case "trusted":
+      return cmdTrusted(io, deps);
     default:
-      return fail(io, `未知子命令：${command}（支持 add|list|get|remove|status|import，dsh-mcp --help 查看用法）`);
+      return fail(io, `未知子命令：${command}（支持 add|list|get|remove|status|import|trust|untrust|trusted，dsh-mcp --help 查看用法）`);
   }
 }
 
