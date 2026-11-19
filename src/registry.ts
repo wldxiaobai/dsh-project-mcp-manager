@@ -650,6 +650,16 @@ function buildScanDiag(input: {
   return payload;
 }
 
+/** 连续对账不重复追加同一条未信任事件；中间插入过其它事件后再被拦住时仍记一条。 */
+function isRepeatUntrustedEvent(events: Record<string, unknown>[], event: Record<string, unknown>): boolean {
+  if (event.kind !== "untrusted") return false;
+  return events.at(-1)?.kind === "untrusted";
+}
+
+function untrustedDiagMessage(projectRoot: string): string {
+  return `工作区未受信任（projectTrust=allowlist），未读取项目层 MCP 配置。信任后自动重载：dsh-mcp trust "${projectRoot}"`;
+}
+
 function jsonIssueNotes(result: JsonReadResult): string[] {
   return [...result.entryErrors, ...(result.formatHint === undefined ? [] : [result.formatHint])];
 }
@@ -743,6 +753,11 @@ export interface DiagSummary {
   skippedByReason: Record<string, number>;
   unhealthy: DiagUnhealthy[];
   /**
+   * 工作区级拦截：`allowlist` 下该工作区未受信任，且磁盘上存在项目层配置文件。
+   * 这些文件没有被读取，所以这里不按服务器名计数；`rows` 为 0。
+   */
+  untrusted?: boolean;
+  /**
    * 只读兼容：仅旧版诊断文件（按需挂载时代的宽限卸载）可能带这一项，当前实现
    * 不再产生；`dsh-mcp status` 仍会为旧文件打印。不要新增写入方。
    */
@@ -822,6 +837,7 @@ function parseDiagSummary(raw: unknown): DiagSummary | undefined {
     mounted: raw.mounted,
     skippedByReason: parseSkippedByReason(raw.skippedByReason),
     unhealthy: parseUnhealthyList(raw.unhealthy),
+    ...(raw.untrusted === true ? { untrusted: true } : {}),
     ...(idle.length > 0 ? { idle } : {}),
     ...(toolBudget === undefined ? {} : { toolBudget })
   };
@@ -972,6 +988,11 @@ export class ProjectMcpRegistry {
   private trustDoc: TrustDocument = emptyTrustDocument();
   /** 未信任 workspace 的告警去重（projectKey）；信任后重新计。 */
   private readonly untrustedWarned = new Set<string>();
+  /**
+   * 未信任且磁盘上存在项目层配置文件的工作区（projectKey → root）。
+   * 只记「有文件」，不记文件内容；对账跳过重读时仍用它刷新工作区级诊断。
+   */
+  private readonly untrustedDiagRoots = new Map<string, string>();
   /** 配置文件读取次数（scan / 用户层；测试用指纹跳过断言）。 */
   private configReadCount = 0;
   /** 上一轮对账入口的配置文件指纹；全同则跳过重读。 */
@@ -1985,9 +2006,13 @@ export class ProjectMcpRegistry {
       // 上一次信任时留下的分文件目录必须作废：snapshot 从它拼行视图，残留行会让
       // 管理页显示已经不存在的服务器。
       this.lastScanFiles.delete(key);
+      // 只 stat 三个项目层文件在不在，不 readFile：有文件才留工作区级诊断，
+      // 没有文件则删掉上一份，保持零配置不留痕。
+      await this.noteUntrustedProject(key, projectRoot);
       this.warnUntrustedOnce(key, projectRoot);
       return { projectRoot, rows: [] };
     }
+    this.untrustedDiagRoots.delete(key);
     const userPaths = this.resolveUserLayerPaths();
     // 只数 yml 来源的装载实例：用户层行同样落在 entry.servers 里，拿总数
     // 会把「纯用户层挂载」误判成「yml 装载后文件被删」，产生假 ENOENT 诊断。
@@ -2109,6 +2134,9 @@ export class ProjectMcpRegistry {
     }
     for (const key of this.lastScanFiles.keys()) {
       if (!knownKeys.has(key)) this.lastScanFiles.delete(key);
+    }
+    for (const key of this.untrustedDiagRoots.keys()) {
+      if (!knownKeys.has(key)) this.untrustedDiagRoots.delete(key);
     }
     this.pruneWarnGates(knownKeys);
   }
@@ -2249,6 +2277,8 @@ export class ProjectMcpRegistry {
 
   // ── 装载诊断（项目：<dshHome>/mcp-diag/<hash>.json；全局：<dshHome>/.mcp-diag.json）──
   // 不写进用户工作区。调用方只在有异常或有配置行时写入：无配置的干净项目不创建文件。
+  // allowlist 下未信任但磁盘上存在项目层文件时例外：不读取内容，只写工作区级
+  // `summary.untrusted` 与一条 `untrusted` 事件。
   // 文件形态：`{ project?, summary?, events: [...] }`（旧版纯数组读入后当作 events）。
 
   private diagHome(): string {
@@ -2284,7 +2314,7 @@ export class ProjectMcpRegistry {
           } catch {
             doc = { events: [] };
           }
-          if (event !== undefined) {
+          if (event !== undefined && !isRepeatUntrustedEvent(doc.events, event)) {
             doc.events.push({ ts: new Date().toISOString(), ...event });
             if (doc.events.length > 30) doc.events = doc.events.slice(-30);
           }
@@ -2355,18 +2385,14 @@ export class ProjectMcpRegistry {
   private async writeSummaries(): Promise<void> {
     const at = new Date().toISOString();
     for (const [key, entry] of this.projects) {
-      const catalog = this.lastScanDesired.get(key)?.rows ?? [];
-      const summary = this.summarizeScope(key, entry.servers, catalog, at);
-      const path = projectDiagFile(this.diagHome(), entry.projectRoot);
-      await this.removeLegacyProjectDiag(entry.projectRoot);
-      if (summary.rows === 0 && summary.unhealthy.length === 0) {
-        try {
-          await readFile(path);
-        } catch {
-          continue;
-        }
-      }
-      await this.writeDiagAt(path, undefined, summary, entry.projectRoot);
+      const blocked = this.untrustedDiagRoots.has(key);
+      const catalog = blocked ? [] : (this.lastScanDesired.get(key)?.rows ?? []);
+      await this.writeProjectDiagSummary(entry.projectRoot, key, entry.servers, catalog, at);
+    }
+    // 从未装载过的未信任工作区没有 projects 条目，但仍要留下工作区级诊断。
+    for (const [key, projectRoot] of this.untrustedDiagRoots) {
+      if (this.projects.has(key)) continue;
+      await this.writeProjectDiagSummary(projectRoot, key, new Map(), [], at);
     }
     const globalSummary = this.summarizeScope(GLOBAL_SCOPE_KEY, this.globalServers, this.lastGlobalDesired, at, this.projects.size);
     const userHasContent = this.userLayer.ymlRows.length + this.userLayer.jsonRows.length + this.userLayer.profileRows.length + this.userLayer.profileYmlRows.length > 0
@@ -2383,6 +2409,37 @@ export class ProjectMcpRegistry {
       }
     }
     await this.writeDiagAt(globalPath, undefined, globalSummary);
+  }
+
+  /**
+   * 刷新一份项目诊断的 summary。未信任拦截不按行计数：`rows` 保持 0，
+   * 另标 `untrusted`，并补一条不重复的 `untrusted` 事件。
+   */
+  private async writeProjectDiagSummary(
+    projectRoot: string,
+    key: string,
+    servers: Map<string, ProjectServerState>,
+    catalog: DesiredProjectRow[],
+    at: string
+  ): Promise<void> {
+    const blocked = this.untrustedDiagRoots.has(key);
+    const summary = this.summarizeScope(key, servers, catalog, at);
+    if (blocked) summary.untrusted = true;
+    const path = projectDiagFile(this.diagHome(), projectRoot);
+    await this.removeLegacyProjectDiag(projectRoot);
+    if (summary.rows === 0 && summary.unhealthy.length === 0 && summary.untrusted !== true) {
+      try {
+        await readFile(path);
+      } catch {
+        return;
+      }
+    }
+    await this.writeDiagAt(
+      path,
+      blocked ? { kind: "untrusted", message: untrustedDiagMessage(projectRoot) } : undefined,
+      summary,
+      projectRoot
+    );
   }
 
   /** 装载一个期望行；返回跳过原因（有则不建装载实例），undefined = 已发起装载。 */
@@ -3436,7 +3493,8 @@ export class ProjectMcpRegistry {
     this.trustDoc = next;
     const key = projectKeyOf(projectRoot);
     if (trusted) this.untrustedWarned.delete(key);
-    else await this.removeProjectDiag(projectRoot);
+    // 不在这里删诊断：下一轮 scan 若仍有项目层文件，要写成「未信任所以没读」；
+    // 文件已经不在时再由 noteUntrustedProject 删掉陈旧诊断。
     this.lastScanDesired.delete(key);
     this.lastFingerprintSig = "";
     this.configEpoch += 1;
@@ -3449,7 +3507,36 @@ export class ProjectMcpRegistry {
     this.ctx.logger.warn(`项目 MCP（${projectRoot}）：workspace 未受信任，跳过其 MCP 配置（projectTrust=allowlist）。信任后自动重载：dsh-mcp trust "${projectRoot}"，或在 MCP 管理页点「信任此工作区」`);
   }
 
-  /** 取消信任时清掉陈旧诊断：writeSummaries 只遍历已挂载项目，不会自己删这一份。 */
+  /**
+   * 未信任工作区的诊断门：只 stat 项目层三个文件（与指纹同一条只读路径），
+   * 不 readFile。有文件则记入 untrustedDiagRoots，等对账结束写工作区级诊断；
+   * 没有文件则清掉标记和陈旧诊断，保持零配置不留痕。
+   */
+  private async noteUntrustedProject(key: string, projectRoot: string): Promise<void> {
+    if (await this.projectLayerConfigPresent(projectRoot)) {
+      this.untrustedDiagRoots.set(key, projectRoot);
+      return;
+    }
+    this.untrustedDiagRoots.delete(key);
+    await this.removeProjectDiag(projectRoot);
+  }
+
+  /** 该工作区是否有「本会作为项目层读取」的配置文件。同路径的用户层文件不算。 */
+  private async projectLayerConfigPresent(projectRoot: string): Promise<boolean> {
+    const userPaths = this.resolveUserLayerPaths();
+    const candidates: string[] = [];
+    const ymlPath = projectMcpFile(projectRoot);
+    const jsonPath = projectDshJsonFile(projectRoot);
+    if (!isSameFilePath(ymlPath, userPaths.mcpYml)) candidates.push(ymlPath);
+    if (!isSameFilePath(jsonPath, userPaths.mcpJson)) candidates.push(jsonPath);
+    if (mcpJsonLayerEnabled()) candidates.push(projectMcpJsonFile(projectRoot));
+    for (const path of candidates) {
+      if (await this.statConfigFile(path) !== "missing") return true;
+    }
+    return false;
+  }
+
+  /** 删掉该工作区的项目诊断。没有项目层文件的未信任工作区用它保持不留痕。 */
   private async removeProjectDiag(projectRoot: string): Promise<void> {
     await rm(projectDiagFile(this.diagHome(), projectRoot), { force: true }).catch(() => {});
     await this.removeLegacyProjectDiag(projectRoot);

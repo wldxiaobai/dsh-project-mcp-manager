@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   current workspace, and adding a server for that workspace trusts it.
 - `projectMcp.trustState()` and `projectMcp.setProjectTrusted()`; the UI state
   route carries a `trust` object and gains `/api/project-mcp/trust`.
+- An untrusted workspace that still has project-layer config files now leaves a
+  workspace-level diagnostic (`summary.untrusted` and one `untrusted` event)
+  without reading those files. `dsh-mcp status` prints the block. A workspace
+  with no such files still leaves no diagnostic.
 
 ## [0.13.0] - 2026-11-12
 

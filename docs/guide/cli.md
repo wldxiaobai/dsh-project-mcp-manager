@@ -46,7 +46,9 @@ show those filters (pattern text only).
 (per-project `$DSH_HOME/mcp-diag/<hash>.json`, global `$DSH_HOME/.mcp-diag.json`;
 neither is written into a workspace). It
 prints each layer's row count and names, then the latest `summary`
-(mounted / skipped / unhealthy / tool-budget hits). A diagnostic file written by
+(mounted / skipped / unhealthy / tool-budget hits). `summary.untrusted: true`
+prints an extra line: the workspace is untrusted, so its project-layer files
+were not read. A diagnostic file written by
 an older on-demand version may also print `idle-not-mounted` names; current
 versions keep every discovered workspace mounted and no longer produce them. It
 does not inspect host memory: if the

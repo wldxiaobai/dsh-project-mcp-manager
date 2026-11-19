@@ -19,7 +19,7 @@ import {
   trustedRoots,
   writeTrustFile
 } from "../lib/trust.js";
-import { createReporter, fakeAgent, fakeCtx, pathExists, rmRetry, stdioRow } from "./helpers/registry-harness.mjs";
+import { createReporter, diagFile, fakeAgent, fakeCtx, pathExists, readDiag, readDiagSummary, rmRetry, stdioRow } from "./helpers/registry-harness.mjs";
 
 const { pass, report } = createReporter("PROJECT TRUST");
 
@@ -133,7 +133,9 @@ async function withTrustRegistry(options, run) {
   try {
     await mkdir(join(home, ".dsh"), { recursive: true });
     await mkdir(join(project, ".dsh"), { recursive: true });
-    await writeManagedRows(projectMcpFile(project), [stdioRow(options.row)], { createIfMissing: true });
+    if (options.row !== undefined) {
+      await writeManagedRows(projectMcpFile(project), [stdioRow(options.row)], { createIfMissing: true });
+    }
     process.chdir(dir);
     ctx = fakeCtx();
     const registry = new ProjectMcpRegistry(ctx, {
@@ -163,13 +165,23 @@ async function withTrustRegistry(options, run) {
     assert.equal(ctx.mounts.length, 0, "an untrusted workspace mounts nothing");
     assert.equal(registry.trustState(project).required, true);
     assert.equal(registry.trustState(project).trusted, false);
+    const diagHome = join(home, ".dsh");
+    const blocked = await readDiag(diagHome, project);
+    assert.equal(blocked.filter((event) => event.kind === "untrusted").length, 1, "an untrusted workspace with a config file records one workspace-level event");
+    assert.equal(JSON.stringify(blocked).includes("guarded"), false, "the diagnostic must not contain row contents that were not read");
+    const blockedSummary = await readDiagSummary(diagHome, project);
+    assert.equal(blockedSummary.untrusted, true);
+    assert.equal(blockedSummary.rows, 0, "untrusted summary does not count unread rows");
     const readsBefore = registry.debugConfigReadCount;
     await registry.reconcileNow();
     assert.equal(registry.debugConfigReadCount, readsBefore, "an untrusted workspace is not re-read either");
+    const blockedAgain = await readDiag(diagHome, project);
+    assert.equal(blockedAgain.filter((event) => event.kind === "untrusted").length, 1, "a repeat reconcile does not stack untrusted events");
 
     await registry.setProjectTrusted(project, true);
     assert.equal(ctx.mounts.length, 1, "trusting mounts the project rows");
     assert.equal(ctx.mounts[0].serverName, "guarded");
+    assert.equal((await readDiagSummary(diagHome, project)).untrusted, undefined, "trusting clears the workspace-level block");
     assert.ok(registry.debugConfigReadCount > readsBefore, "trusting forces a config reread");
     assert.equal(registry.trustState(project).trusted, true);
     assert.equal(await pathExists(projectTrustFile(join(home, ".dsh"))), true);
@@ -179,6 +191,11 @@ async function withTrustRegistry(options, run) {
     const snapshot = await registry.snapshot();
     assert.equal(snapshot.flatMap((file) => file.servers).length, 0, "untrusted snapshot exposes no servers");
     assert.equal(await pathExists(join(home, ".dsh", "mcp-trust.json")), true, "the store itself stays");
+    assert.equal(await pathExists(diagFile(diagHome, project)), true, "untrust keeps a workspace-level diagnostic when config files remain");
+    assert.equal((await readDiagSummary(diagHome, project)).untrusted, true);
+    const status = { out: [], err: [] };
+    assert.equal(await runCli(["status"], { out: (line) => status.out.push(line), err: (line) => status.err.push(line) }, { home, resolveProjectRoot: async () => project }), 0);
+    assert.ok(status.out.some((line) => line.includes("已拦截")), "status reports the untrusted block");
 
     // 外部（CLI / 手改）写入信任表：下一次对账必须发现签名变化并重新读取，
     // 不能因为配置指纹未变而沿用上一轮的空期望。
@@ -193,11 +210,17 @@ async function withTrustRegistry(options, run) {
   });
 
   // 缺省 inherit：与旧行为一致（不配置也照常装载）。
-  await withTrustRegistry({ row: "legacy" }, async ({ ctx, registry, project }) => {
+  await withTrustRegistry({ row: "legacy" }, async ({ ctx, registry, project, home }) => {
     assert.equal(ctx.mounts.length, 1, "inherit mode keeps the old always-mount behavior");
     assert.equal(registry.trustState(project).required, false);
     assert.equal(registry.trustState(project).trusted, true);
+    assert.notEqual((await readDiagSummary(join(home, ".dsh"), project))?.untrusted, true, "inherit does not mark the workspace untrusted");
     pass("registry: inherit is the default and never consults the trust store");
+  });
+
+  await withTrustRegistry({ projectTrust: "allowlist" }, async ({ home, project }) => {
+    assert.equal(await pathExists(diagFile(join(home, ".dsh"), project)), false, "an untrusted workspace with no project files leaves no diagnostic");
+    pass("registry: untrusted workspace without config files stays traceless");
   });
 
 report();

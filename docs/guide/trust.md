@@ -45,8 +45,12 @@ blocking every project.
 - User and profile layers are **not** gated: `~/.dsh/mcp.yml`,
   `~/.dsh/mcp.json`, and the profile `mcp.yml`/`mcp.json` belong to your own
   machine and still mount globally.
-- Revoking trust unmounts that workspace's rows on the next reconcile and
-  deletes its stale `$DSH_HOME/mcp-diag/<hash>.json`.
+- Revoking trust unmounts that workspace's rows on the next reconcile. When a
+  project-layer file is still on disk (presence only; the file is not read),
+  the project diagnostic becomes a workspace-level record: `summary.untrusted:
+  true` plus one `untrusted` event, and `dsh-mcp status` prints that the
+  workspace was blocked. A workspace with none of those files leaves no
+  diagnostic, and a previous file is removed.
 - The plugin logs one warning per untrusted workspace and exposes the state on
   the `projectMcp` service (`trustState`, `setProjectTrusted`).
 - Adding a server from the MCP Manager for the current workspace **trusts that

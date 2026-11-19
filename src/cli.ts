@@ -1002,6 +1002,9 @@ function printDiagSummary(summary: DiagSummary, io: CliIo): void {
   const projects = summary.projects === undefined ? "" : `，项目 ${summary.projects}`;
   const skipPart = skipped === "" ? "" : `，跳过 ${skipped}`;
   io.out(`  行 ${summary.rows}，已装载 ${summary.mounted}${projects}${skipPart}`);
+  if (summary.untrusted === true) {
+    io.out("  已拦截：工作区未受信任（projectTrust=allowlist），项目层配置未读取。运行 dsh-mcp trust 信任该工作区");
+  }
   for (const item of summary.unhealthy) io.out(`  不健康：${item.name} (${item.reason})`);
   // 只读兼容：仅旧版诊断文件（按需挂载时代的宽限卸载）会带 idle；当前实现不再产生。
   for (const name of summary.idle ?? []) io.out(`  未装载（无会话）：${name}`);

@@ -37,8 +37,10 @@ $env:DSH_MCP_PROJECT_TRUST = "allowlist"
   所以未信任的文件完全没有副作用。
 - 用户层与 profile 层**不受**信任门限制：`~/.dsh/mcp.yml`、`~/.dsh/mcp.json`
   与 profile 的 `mcp.yml`/`mcp.json` 属于你自己的机器，仍按全局装载。
-- 取消信任会在下一轮对账卸载该工作区的行，并删除它陈旧的
-  `$DSH_HOME/mcp-diag/<hash>.json`。
+- 取消信任会在下一轮对账卸载该工作区的行。磁盘上仍有项目层配置文件时
+  （只检查文件是否存在，不读取内容），项目诊断改成工作区级记录：
+  `summary.untrusted: true` 和一条 `untrusted` 事件，`dsh-mcp status` 会打印
+  「已拦截」。没有这些文件时不写诊断，并删掉上一份陈旧文件。
 - 插件对每个未信任工作区只记一条警告，并经 `projectMcp` 服务暴露状态
   （`trustState`、`setProjectTrusted`）。
 - 在 MCP 管理页给当前工作区添加服务器会**信任该工作区**：写入一行本身已是明确

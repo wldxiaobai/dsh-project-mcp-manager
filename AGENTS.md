@@ -57,7 +57,7 @@ npx tsc --noEmit       # 仅类型检查
 - **工具预算护栏**：装载/巡检后按生效名统计 `ctx.tools.schemas()` 的数量与描述/schema 字节；超过 `DSH_MCP_TOOL_BUDGET_WARN`（缺省 200 工具 / 256KiB）告警一次并写入 `summary.toolBudget`，**永不裁剪**。
 - **工作区挂载**：启动时从已恢复会话和进程 cwd 发现工作区，运行中继续发现新工作区。已发现且有 MCP 配置的工作区在插件运行期间保持装载。焦点只影响管理页展示和写入目标。Eager 通过会话级 `tools.restrict({ deny })` 隔离，宿主工具目录变化时同步刷新过滤。新建会话在 `agent/created` 串行返回前等待其可见 Eager 就绪（上限 `EAGER_STARTUP_WAIT_MS` 20s、100ms 轮询），首条模型请求即可见工具；启动恢复 replay 不等待。**等待不能放在 `agent/pre-step`**：宿主在 pre-step 之前已冻结本步工具/提示词快照，那里等待无法让首条请求看到新挂载的工具。Lazy 连接由各会话首次 `mcp_search` 激活，代理调用按会话项目筛选。
 - **Lazy 加载模式**：`mode` 是行级可选字段（受管 yml 写 `config.mode`，JSON 条目写顶层 `mode`），`toPatchRow()` 写入、`toOfficialConfig()` 剥掉，缺省 `eager`。Lazy 行不建官方 fiber，挂载后 `phase: active` 但 `toolCount` 为 0；存在启用 Lazy 行时注册宿主级 `mcp_search` / `mcp_describe` / `mcp_call`，没有可见 Lazy 挂载的会话 deny 这三个名字。每台行由 `LazyConnections` 按会话维护独立连接：会话首次 `mcp_search` 激活自己的连接，同一会话的搜索、描述、调用共享；`mcp_describe` / `mcp_call` 未搜索时提示先 `mcp_search`；连接跨空闲与工作区切换保持，会话结束、行卸载/替换或插件销毁时释放。搜索、描述、调用都按行级 `tools.allow` / `deny` 过滤，完整名按 Eager 的 64 字符规范化/哈希口径；不带 `server` 的搜索会连接所有可见 Lazy 行。Lazy 不执行 `reconnect` / `failOnStartupError`，不读 instructions/Resources，`maxInstructionBytes` 不生效，健康巡检也不对 0 工具 Lazy 行做 unmount/mount；连接失败在下一次请求重试。需要上述宿主能力时用 Eager。
-- **零配置项目不留痕**：无配置行的项目不建 projects 条目、不写诊断文件（诊断只在有异常或有行时写；文件形态 `{ project?, summary?, events }`，events 保留最近 30 条；对账结束刷新 `summary`，`rows` 按配置目录即使当前未挂）。项目诊断写 `$DSH_HOME/mcp-diag/<sha256(projectKey)前16hex>.json`，不进工作区；对账时删掉遗留的 `<projectRoot>/.dsh/.mcp-diag.json`。全局层的诊断写 `$DSH_HOME/.mcp-diag.json`。
+- **零配置项目不留痕**：无配置行的项目不建 projects 条目、不写诊断文件（诊断只在有异常或有行时写；文件形态 `{ project?, summary?, events }`，events 保留最近 30 条；对账结束刷新 `summary`，`rows` 按配置目录即使当前未挂）。`allowlist` 下未信任但磁盘上存在项目层配置文件时例外：只 stat、不读取，写工作区级 `summary.untrusted` 与一条 `untrusted` 事件；没有这些文件仍然不留痕，并删掉上一份诊断。项目诊断写 `$DSH_HOME/mcp-diag/<sha256(projectKey)前16hex>.json`，不进工作区；对账时删掉遗留的 `<projectRoot>/.dsh/.mcp-diag.json`。全局层的诊断写 `$DSH_HOME/.mcp-diag.json`。
 - **`!!js` 标签不支持**：受管块内出现未解析 YAML 标签必须显式报错（否则值静默降级为字面量字符串），env/headers/disabled 只能写字面值。
 - **reconnect 上限镜像**：`MAX_TIMER_DELAY_MS = 2147483647` 必须与 dsh-mcp-client 保持一致，越界值要在本地 zod 校验拦下而非留到 ctx.plugin 爆 plugin-throw。
 - **传输值域镜像**：`SUPPORTED_MCP_TRANSPORTS`（`stdio` | `streamable-http`）必须与 dsh-mcp-client 的 `config.transport` 判别联合保持一致。schema、CLI `--transport`、JSON `type` 映射与报错文案全部从它派生；未知/不受支持值（含 MCP SSE 端点传输）在本地给出可执行文案，不留到 `ctx.plugin` 爆 plugin-throw。官方新增传输时：常量加值 + 一条别名映射 + 文档 + 测试，不要再加判定分支。
@@ -66,7 +66,7 @@ npx tsc --noEmit       # 仅类型检查
 
 ## 安全边界
 
-`stdio` 行会在 dsh 宿主进程里 spawn `command` —— 项目与用户层配置文件都是**可执行代码载体**：项目文件只用于可信项目，用户层文件属于本机自己的配置。可选的 `projectTrust: "allowlist"`（或 `DSH_MCP_PROJECT_TRUST=allowlist`）把「可信」变成显式状态：未信任的 workspace 连项目层文件都不读，信任经 `dsh-mcp trust` 或管理页提示条写入 `$DSH_HOME/mcp-trust.json`；缺省 `inherit` 保持旧行为。装载失败/无效的行跳过并告警，不影响其他服务器。
+`stdio` 行会在 dsh 宿主进程里 spawn `command` —— 项目与用户层配置文件都是**可执行代码载体**：项目文件只用于可信项目，用户层文件属于本机自己的配置。可选的 `projectTrust: "allowlist"`（或 `DSH_MCP_PROJECT_TRUST=allowlist`）把「可信」变成显式状态：未信任的 workspace 连项目层文件都不读，信任经 `dsh-mcp trust` 或管理页提示条写入 `$DSH_HOME/mcp-trust.json`；缺省 `inherit` 保持旧行为。未信任但配置文件仍在时，项目诊断只记工作区级 `untrusted`（`dsh-mcp status` 打印「已拦截」），不按服务器行列出跳过原因。装载失败/无效的行跳过并告警，不影响其他服务器。
 
 ## Git 提交节奏
 
