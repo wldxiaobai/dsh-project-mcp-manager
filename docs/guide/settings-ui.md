@@ -146,11 +146,13 @@ All three entries render the same panel, so all three open with the same
   — with only the non-zero parts;
 - the note "Automatically loads the MCP servers of the workspace you are in."
 
-With `projectTrust: "allowlist"` enabled and the current workspace not
-trusted, that note becomes a notice: the plugin did not read this workspace's
-project configuration, and **Trust workspace** writes it to
-`$DSH_HOME/mcp-trust.json` and reloads. Adding a server for the workspace
-trusts it as well. See [workspace trust](trust.md).
+With `projectTrust: "allowlist"` and the current workspace not trusted, a
+notice is added above the introduction. The introduction line stays. The
+notice says this workspace's project configuration was not read, and
+**Trust workspace** writes it to `$DSH_HOME/mcp-trust.json` and reloads.
+Adding a server for the workspace trusts it as well, after the new row passes
+validation and is written. When the workspace is already trusted, the toolbar
+offers **Revoke trust**. See [workspace trust](trust.md).
 
 ### MCP context cost
 

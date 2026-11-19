@@ -56,6 +56,7 @@ Most records are written in Chinese.
 - [SonarCloud PR #30: 33 issues reviewed and necessary fixes](code-review/sonar-pr30.zh.md)
 - [PR #32 keep-workspace-mounted: two-round review](code-review/pr32-keep-workspace-mounted.zh.md)
 - [SonarCloud PR #32: 14 issues reviewed and necessary fixes](code-review/sonar-pr32.zh.md)
+- [feat/project-trust (workspace trust gate and workspace-level diagnostics)](code-review/review-feat-project-trust.zh.md)
 
 ## Testing and maintenance
 

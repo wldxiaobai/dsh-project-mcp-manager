@@ -2,7 +2,7 @@
 
 [English](how-it-works.md) | 中文
 
-[← 返回 README](../README.zh.md) ｜ 相关：[配置来源与分层](layers.zh.md) · [配置格式](format.zh.md) · [查询面](service.zh.md)
+[← 返回 README](../README.zh.md) ｜ 相关：[配置来源与分层](layers.zh.md) · [配置格式](format.zh.md) · [workspace 信任门](trust.zh.md) · [查询面](service.zh.md)
 
 - **项目发现**：在线 agent 会话的 `session.header.cwd` + dsh 进程启动目录 →
   向上找最近的含 `.git` 的祖先目录作为项目根（无 `.git` 时退回目录本身）。
@@ -16,6 +16,11 @@
   Lazy 服务器仍按需建立连接。
   **用户层每行只装载一个实例**（全局，与项目数无关）
   ——详见[配置来源与分层](layers.zh.md)。
+- **workspace 信任门**：`projectTrust: "allowlist"`（或
+  `DSH_MCP_PROJECT_TRUST=allowlist`）时，未受信任的工作区不读取项目层文件，
+  只检查这些文件是否存在。信任该工作区，或改回缺省的 `inherit`，会清掉没有
+  可保留行时留下的「已拦截」诊断。见
+  [workspace 信任门](trust.zh.md)。
 - **热重载**：chokidar 只监听已知项目根和它的 `.dsh`（depth 1）。放行的是
   项目根、`.dsh` 和三个配置文件，其它路径一律忽略，因此不会打开 `lib/`、
   `src/`、`build/`，Windows 上构建时可以删掉这些目录。只有**已知项目根的精确

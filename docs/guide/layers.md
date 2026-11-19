@@ -2,11 +2,13 @@
 
 English | [中文](layers.zh.md)
 
-[← README](../../README.md) ｜ Related: [configuration format](format.md) · [`${VAR}` expansion](env-expansion.md) · [CLI `dsh-mcp`](cli.md)
+[← README](../../README.md) ｜ Related: [configuration format](format.md) · [`${VAR}` expansion](env-expansion.md) · [workspace trust](trust.md) · [CLI `dsh-mcp`](cli.md)
 
 The plugin reads seven sources and merges them **first-come-first-served**. The
 first three are **project layers** (mounted per project, isolated per session);
-the last four are **user layers** (host-level **global mounting**):
+the last four are **user layers** (host-level **global mounting**). Project-layer
+files can be gated so an untrusted workspace is not read at all; see
+[workspace trust](trust.md). User and profile layers are not gated.
 
 | # | Source | Path | Semantics |
 |---|---|---|---|

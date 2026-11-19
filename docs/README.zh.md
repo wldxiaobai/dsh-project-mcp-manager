@@ -182,7 +182,7 @@ pnpm test          # 先构建，再跑装载器、CLI、页面辅助、Lazy 与
 项目层装载可按工作区加门：设置插件配置 `projectTrust: allowlist`（或环境变量
 `DSH_MCP_PROJECT_TRUST=allowlist`）后，插件在信任该工作区之前不会读取它的
 `.dsh/mcp.yml`、`.dsh/mcp.json` 与 `.mcp.json`（信任方式：`dsh-mcp trust`，
-或 MCP 管理页上的提示条）。缺省 `inherit` 保持「发现即装载」，现有安装与 CI 不受
+或 MCP 管理页上的提示条；同一页也可以取消信任）。缺省 `inherit` 保持「发现即装载」，现有安装与 CI 不受
 影响。细节见[workspace 信任门](guide/trust.zh.md)。
 
 MCP 管理页写的是同一批受管文件，在页面上添加本地命令服务器，宿主就会 spawn 那条

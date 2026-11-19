@@ -25,7 +25,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An untrusted workspace that still has project-layer config files now leaves a
   workspace-level diagnostic (`summary.untrusted` and one `untrusted` event)
   without reading those files. `dsh-mcp status` prints the block. A workspace
-  with no such files still leaves no diagnostic.
+  with no such files still leaves no diagnostic. The MCP Manager can also
+  revoke that trust.
+
+### Fixed
+
+- Trusting a workspace, or starting again in `inherit`, clears a leftover
+  `summary.untrusted` when the workspace has no rows to keep. A parse error
+  is rewritten as a normal summary, so `dsh-mcp status` stops printing the
+  block. `stat` errors other than a missing file no longer look like "no
+  config" and delete that diagnostic.
+- Updates to `mcp-trust.json` read and modify the file inside the lock. A
+  failed read is rejected instead of replacing the table from memory.
+- Adding a server trusts the workspace only after the draft is valid and the
+  managed row is written.
+- `dsh-mcp status` reports `DSH_MCP_PROJECT_TRUST` when it is set. `dsh-mcp
+  untrust` writes the workspace diagnostic itself, and does not claim success
+  for a root that was not in the store.
 
 ## [0.13.0] - 2026-11-12
 

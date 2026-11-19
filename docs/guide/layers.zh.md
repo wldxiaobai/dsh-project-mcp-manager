@@ -2,10 +2,11 @@
 
 [English](layers.md) | 中文
 
-[← 返回 README](../README.zh.md) ｜ 相关：[配置格式](format.zh.md) · [`${VAR}` 展开](env-expansion.zh.md) · [CLI `dsh-mcp`](cli.zh.md)
+[← 返回 README](../README.zh.md) ｜ 相关：[配置格式](format.zh.md) · [`${VAR}` 展开](env-expansion.zh.md) · [workspace 信任门](trust.zh.md) · [CLI `dsh-mcp`](cli.zh.md)
 
 插件读取七个来源，按**先到先得**合并。前三层属于**项目层**（按项目装载、按会话
-隔离），后四层属于**用户层**（宿主级**全局装载**）：
+隔离），后四层属于**用户层**（宿主级**全局装载**）。项目层可以加门，未受信任的
+工作区完全不读；见 [workspace 信任门](trust.zh.md)。用户层与 profile 层不加门。
 
 | 序 | 来源 | 路径 | 语义 |
 |---|---|---|---|

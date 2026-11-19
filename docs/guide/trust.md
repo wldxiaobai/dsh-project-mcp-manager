@@ -49,20 +49,28 @@ blocking every project.
   project-layer file is still on disk (presence only; the file is not read),
   the project diagnostic becomes a workspace-level record: `summary.untrusted:
   true` plus one `untrusted` event, and `dsh-mcp status` prints that the
-  workspace was blocked. A workspace with none of those files leaves no
-  diagnostic, and a previous file is removed.
+  workspace was blocked. `dsh-mcp untrust` writes that record itself, so
+  `status` is accurate even when the host is not running. A workspace with
+  none of those files leaves no diagnostic, and a previous file is removed.
+- Trusting the workspace, or running again in `inherit`, clears a leftover
+  `summary.untrusted` when the scan has no rows and no error worth keeping.
+  A parse error is written as a normal summary, so `status` stops printing
+  the block. A stat error other than "file not found" is not treated as
+  "no config file", so a permission failure does not delete that diagnostic.
 - The plugin logs one warning per untrusted workspace and exposes the state on
   the `projectMcp` service (`trustState`, `setProjectTrusted`).
 - Adding a server from the MCP Manager for the current workspace **trusts that
-  workspace**: writing a row there is already an explicit decision, and
-  "added but silently not mounted" would be worse.
+  workspace** after the draft passes validation and the row is written.
+  A rejected draft does not open the gate. Writing a row there is already an
+  explicit decision, and "added but silently not mounted" would be worse.
 
 ## Trust a workspace
 
 Three equivalent ways, all writing the same store:
 
-1. **MCP Manager page** — an untrusted current workspace shows a notice with a
-   **Trust workspace** button.
+1. **MCP Manager page** — an untrusted current workspace shows a notice above
+   the introduction (the introduction line stays) with a **Trust workspace**
+   button. A trusted workspace offers **Revoke trust** in the toolbar.
 2. **CLI** — `dsh-mcp trust [dir]` trusts the project root of `dir` (or the
    current directory), `dsh-mcp untrust [dir]` revokes it, and
    `dsh-mcp trusted` lists the store.

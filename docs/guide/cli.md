@@ -48,7 +48,9 @@ neither is written into a workspace). It
 prints each layer's row count and names, then the latest `summary`
 (mounted / skipped / unhealthy / tool-budget hits). `summary.untrusted: true`
 prints an extra line: the workspace is untrusted, so its project-layer files
-were not read. A diagnostic file written by
+were not read. The trust-store line reports `DSH_MCP_PROJECT_TRUST` when that
+variable is set; otherwise it says the host config decides and the default is
+`inherit`. A diagnostic file written by
 an older on-demand version may also print `idle-not-mounted` names; current
 versions keep every discovered workspace mounted and no longer produce them. It
 does not inspect host memory: if the
@@ -61,13 +63,20 @@ user-layer file, including all profiles. Legacy idle rows from an older
 diagnostic file still print as not-mounted (no session), not as unhealthy.
 
 **`trust` / `untrust` / `trusted`** read and write
-`$DSH_HOME/mcp-trust.json`; they never touch a config file and never connect
-to a host. `trust [dir]` resolves the project root of `dir` (or the current
-directory) with the loader's rule — the nearest `.git` ancestor — and adds it
-to the store; `untrust [dir]` removes it; `trusted` prints the store path and
-every trusted root. The store only changes loading when the plugin runs with
-`projectTrust: "allowlist"` (or `DSH_MCP_PROJECT_TRUST=allowlist`); with the
-default `inherit` these commands change nothing observable. See
+`$DSH_HOME/mcp-trust.json` inside the file lock. They never touch a config
+file and never connect to a host. `trust [dir]` resolves the project root of
+`dir` (or the current directory) with the loader's rule — the nearest `.git`
+ancestor — and adds it to the store; `untrust [dir]` removes it. Untrusting a
+root that is not in the store prints that fact and does not write the file.
+When a project-layer file is still present, `untrust` records a workspace-level
+diagnostic (presence only; the file is not read) so `status` can print the
+block without a running host. `trust` clears that `summary.untrusted` flag.
+`trusted` prints the store path and every trusted root. A corrupt store is
+rejected instead of being overwritten. The store only changes loading when the plugin runs with
+`projectTrust: "allowlist"` (or `DSH_MCP_PROJECT_TRUST=allowlist`). In the
+default `inherit` mode the host still loads project files; `untrust` can still
+write the workspace diagnostic that `status` prints, and the next inherit
+reconcile clears that block when the workspace has nothing to keep. See
 [workspace trust](trust.md).
 
 **`import`** copies `{"mcpServers":{...}}` into a native yml or JSON file

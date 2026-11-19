@@ -176,6 +176,7 @@ import {
   type ProjectMcpService,
   type ProjectServerPhase,
   type ProjectServerState,
+  type ProjectTrustState,
   type ReconnectConfig,
   type ToolFilter,
 } from "dsh-project-mcp-manager";
@@ -188,7 +189,8 @@ import {
 `McpContextCost`，分项是 `McpServerContextCost`，并带 `ContextCostLevel`；
 `resultCost()` 返回 `McpResultCost`，分项是 `McpResultServerCost`。两者在会话走
 代码模式时都带可选 `unsupported: "code-mode"`（见[代码模式（PTC）](#代码模式ptc)），
-此时数值字段为零。
+此时数值字段为零。`trustState()` / `setProjectTrusted()` 返回 `ProjectTrustState`
+（`mode`、`required`、`trusted`、`store`），没有 `unsupported` 字段。
 
 ## 对配套 UI 的语义化版本
 

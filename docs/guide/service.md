@@ -221,10 +221,11 @@ import {
 `McpServerView.mode` is optional; absent means Eager. `McpAddDraft.mode` is also
 optional; the add form sends it only for Lazy. `contextCost()` returns
 `McpContextCost` with `McpServerContextCost` groups and a `ContextCostLevel`;
-`resultCost()` returns `McpResultCost` with `McpResultServerCost` groups, and
-`trustState()` / `setProjectTrusted()` return `ProjectTrustState`. Both
+`resultCost()` returns `McpResultCost` with `McpResultServerCost` groups. Both
 carry an optional `unsupported: "code-mode"` when the session runs in code mode
 (see [Code mode (PTC)](#code-mode-ptc)); the numeric fields are then zero.
+`trustState()` / `setProjectTrusted()` return `ProjectTrustState` (`mode`,
+`required`, `trusted`, `store`) and do not carry that field.
 
 ## Semver for the companion UI
 

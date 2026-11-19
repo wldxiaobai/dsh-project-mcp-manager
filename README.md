@@ -215,7 +215,7 @@ Project-layer loading can be gated per workspace: set the plugin config
 `projectTrust: allowlist` (or `DSH_MCP_PROJECT_TRUST=allowlist`) and the plugin
 will not read a workspace's `.dsh/mcp.yml`, `.dsh/mcp.json`, or `.mcp.json`
 until you trust that workspace (`dsh-mcp trust`, or the notice on the MCP
-Manager page). The default `inherit` keeps the mount-everywhere behavior, so
+Manager page; the same page can revoke it). The default `inherit` keeps the mount-everywhere behavior, so
 existing installations and CI jobs are unaffected. Details:
 [workspace trust](docs/guide/trust.md).
 
