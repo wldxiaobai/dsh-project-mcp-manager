@@ -171,6 +171,19 @@ export function badgeTone(row: Pick<McpUiServer, "needsYmlTakeover" | "active">)
   return "neutral";
 }
 
+export type TrustChrome = "notice" | "revoke" | "hidden";
+
+/** allowlist 且已确定当前工作区时：未信任出提示条，已信任出取消信任。 */
+export function trustChrome(
+  trust: { required: boolean; trusted: boolean | null } | undefined,
+  activeProject: string | null
+): TrustChrome {
+  if (trust === undefined || trust.required !== true || activeProject === null || activeProject === "") return "hidden";
+  if (trust.trusted === true) return "revoke";
+  if (trust.trusted === false) return "notice";
+  return "hidden";
+}
+
 export function addPathForTarget(target: McpUiWriteTarget | undefined, showUserPath: (path: string) => string): string {
   if (target === undefined) return "";
   if (target.id === "project") return target.path;

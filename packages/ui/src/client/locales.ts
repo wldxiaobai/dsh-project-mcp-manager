@@ -116,6 +116,9 @@ export type McpUiLocaleKey =
   | "trustNoticeTitle"
   | "trustNoticeBody"
   | "trustNoticeAction"
+  | "trustRevokeAction"
+  | "trustRevokeTitle"
+  | "trustRevokeBody"
   | "workspaceCurrent"
   | "workspaceServerCountOne"
   | "workspaceServerCount"
@@ -271,6 +274,9 @@ export const en: Record<McpUiLocaleKey, string> = {
   trustNoticeTitle: "Workspace not trusted",
   trustNoticeBody: "Project trust is set to allowlist, so this workspace's MCP configuration is not read. Trust it to load .dsh/mcp.yml, .dsh/mcp.json, and .mcp.json.",
   trustNoticeAction: "Trust workspace",
+  trustRevokeAction: "Revoke trust",
+  trustRevokeTitle: "Revoke trust for this workspace?",
+  trustRevokeBody: "Until you trust it again, this workspace's project MCP configuration will not be read. User and profile servers stay loaded.",
   workspaceCurrent: "Current",
   workspaceServerCountOne: "1 server",
   workspaceServerCount: "{count} servers",
@@ -427,6 +433,9 @@ export const zh: Record<McpUiLocaleKey, string> = {
   trustNoticeTitle: "工作区未受信任",
   trustNoticeBody: "projectTrust 当前为 allowlist，因此不会读取此工作区的 MCP 配置。信任后将装载 .dsh/mcp.yml、.dsh/mcp.json 与 .mcp.json。",
   trustNoticeAction: "信任此工作区",
+  trustRevokeAction: "取消信任",
+  trustRevokeTitle: "取消信任此工作区？",
+  trustRevokeBody: "取消后，在再次信任之前不会读取此工作区的项目层 MCP 配置。用户层与 profile 层服务器仍会装载。",
   workspaceCurrent: "当前",
   workspaceServerCountOne: "1 个服务器",
   workspaceServerCount: "{count} 个服务器",

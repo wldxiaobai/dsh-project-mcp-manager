@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { displayHomePath, isProfileSource, profileEndKind, profileNameFromFile, serverActionsOpen } from "../packages/ui/src/client/display.ts";
 import { en, zh } from "../packages/ui/src/client/locales.ts";
+import { trustChrome } from "../packages/ui/src/client/panel-helpers.ts";
 
 let passed = 0;
 function pass(name) {
@@ -102,6 +103,21 @@ const home = "C:\\Users\\haima";
   const nonTrailing = "/Users/haima/" + slashes + "mcp.yml";
   assert.equal(displayHomePath(nonTrailing, "/Users/haima"), "~/" + slashes + "mcp.yml");
   pass("home path normalization handles trailing and long slash runs");
+}
+
+{
+  const allow = { required: true, trusted: false };
+  assert.equal(trustChrome(allow, "D:\\work"), "notice");
+  assert.equal(trustChrome({ required: true, trusted: true }, "D:\\work"), "revoke");
+  assert.equal(trustChrome({ required: true, trusted: null }, "D:\\work"), "hidden");
+  assert.equal(trustChrome({ required: false, trusted: true }, "D:\\work"), "hidden");
+  assert.equal(trustChrome(allow, null), "hidden");
+  assert.equal(trustChrome(undefined, "D:\\work"), "hidden");
+  assert.equal(en.trustNoticeAction, "Trust workspace");
+  assert.equal(zh.trustNoticeAction, "信任此工作区");
+  assert.equal(en.trustRevokeAction, "Revoke trust");
+  assert.equal(zh.trustRevokeAction, "取消信任");
+  pass("trust chrome shows a notice or a revoke action");
 }
 
 console.log(passed + " passed");

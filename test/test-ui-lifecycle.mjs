@@ -300,6 +300,11 @@ async function assertClosed(stream) {
     assert.equal(trustedResponse.status, 200);
     assert.equal((await trustedResponse.json()).ok, true);
     assert.deepEqual(mcp.trustCalls.at(-1), { projectRoot: String.raw`D:\work`, trusted: true }, "the route forwards the workspace and the verdict");
+    const revokedResponse = await trustRoute.fetch(new Request("http://localhost" + trustRoute.path, {
+      method: "POST", body: JSON.stringify({ projectRoot: String.raw`D:\work`, trusted: false }), headers: { "content-type": "application/json" }
+    }));
+    assert.equal(revokedResponse.status, 200);
+    assert.deepEqual(mcp.trustCalls.at(-1), { projectRoot: String.raw`D:\work`, trusted: false }, "the route also forwards revoke");
     const rejected = await trustRoute.fetch(new Request("http://localhost" + trustRoute.path, {
       method: "POST", body: JSON.stringify({ projectRoot: String.raw`D:\work`, trusted: "yes" }), headers: { "content-type": "application/json" }
     }));

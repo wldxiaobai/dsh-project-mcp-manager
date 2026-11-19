@@ -23,7 +23,7 @@ import type { McpUiLocaleKey } from "./locales.ts";
 import { collapseServers, partitionShadowed, type LogicalServer } from "./collapse.ts";
 import { displayHomePath, profileNameFromFile, serverActionsOpen } from "./display.ts";
 import { parsePastedConfig, type PasteConfigFailure } from "./paste-config.ts";
-import { addPathForTarget, badgeTone, confirmationDisplay, emptyDraft, partitionRows, profileEnd, validateAddDraft, type AddDraft, type AddScope } from "./panel-helpers.ts";
+import { addPathForTarget, badgeTone, confirmationDisplay, emptyDraft, partitionRows, profileEnd, trustChrome, validateAddDraft, type AddDraft, type AddScope } from "./panel-helpers.ts";
 import { contextCostView, formatTokenCount, orderWorkspaceGroups, resultCostView, workspaceGroupMarker, workspaceHeader, type ContextCostView, type ResultCostView, type WorkspaceGroupMarker } from "./workspace.ts";
 import { PANEL_CSS } from "./style.ts";
 
@@ -192,6 +192,7 @@ export function McpPanel({ t }: McpPanelProps) {
   const [draft, setDraft] = useState<AddDraft>(emptyDraft([]));
   const [formError, setFormError] = useState<string | null>(null);
   const [pasteNote, setPasteNote] = useState<string | null>(null);
+  const [revokeOpen, setRevokeOpen] = useState(false);
   const loadRef = useRef<() => void>(() => {});
   const loadSeq = useRef(0);
   const settleTimer = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
@@ -434,18 +435,20 @@ export function McpPanel({ t }: McpPanelProps) {
   const scopeReady = (id: AddScope) => addTargets.some((item) => item.id === id);
   const addPath = addPathForTarget(addTarget, showUserPath);
   const trust = state?.trust;
+  const chrome = trustChrome(trust, activeProject);
 
-  /** 信任当前工作区后立刻重读：装载由宿主对账完成，页面只等下一次状态。 */
-  const trustWorkspace = async () => {
+  /** 信任或取消信任当前工作区后立刻重读：装载由宿主对账完成，页面只等下一次状态。 */
+  const setWorkspaceTrusted = async (trusted: boolean) => {
     if (busy || activeProject === null) return;
     setBusy(true);
     setError(null);
     try {
-      const result = await post(MCP_UI_TRUST_PATH, { projectRoot: activeProject, trusted: true });
+      const result = await post(MCP_UI_TRUST_PATH, { projectRoot: activeProject, trusted });
       if (!result.ok) {
         setError("message" in result ? result.message : t("error"));
         return;
       }
+      setRevokeOpen(false);
       load();
     } finally {
       setBusy(false);
@@ -458,8 +461,8 @@ export function McpPanel({ t }: McpPanelProps) {
   return (
     <div className="dsh-mcp-ui">
       <WorkspaceHeader activeProject={activeProject} activeProjectKey={activeProjectKey} servers={servers} contextCost={contextCost} resultCost={resultCost} t={t} />
-      {trust !== undefined && trust.required && trust.trusted === false && (
-        <TrustNotice busy={busy} onTrust={trustWorkspace} t={t} />
+      {chrome === "notice" && (
+        <TrustNotice busy={busy} onTrust={() => void setWorkspaceTrusted(true)} t={t} />
       )}
       <div className="intro">
         <p>{t("intro")}</p>
@@ -494,6 +497,11 @@ export function McpPanel({ t }: McpPanelProps) {
             </Button>
           )}
         />
+        {chrome === "revoke" && (
+          <Button variant="ghost" size="sm" disabled={busy} onClick={() => setRevokeOpen(true)}>
+            {t("trustRevokeAction")}
+          </Button>
+        )}
       </div>
       {error !== null && (
         <p className="dsh-mcp-banner" role="alert">
@@ -525,6 +533,20 @@ export function McpPanel({ t }: McpPanelProps) {
       >
         {pendingWont !== "" && <p className="dsh-mcp-confirm-note">{pendingWont}</p>}
       </Modal>
+
+      <Modal
+        open={revokeOpen}
+        onClose={() => setRevokeOpen(false)}
+        title={t("trustRevokeTitle")}
+        closeLabel={t("cancel")}
+        description={t("trustRevokeBody")}
+        footer={(
+          <>
+            <Button variant="ghost" size="sm" onClick={() => setRevokeOpen(false)}>{t("cancel")}</Button>
+            <Button variant="primary" size="sm" disabled={busy} onClick={() => void setWorkspaceTrusted(false)}>{t("trustRevokeAction")}</Button>
+          </>
+        )}
+      />
 
       <Modal
         open={addOpen}
